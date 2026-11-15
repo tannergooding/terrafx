@@ -15,14 +15,14 @@ public sealed partial class Renderer
     private static Vector4 Multiply(Vector4 left, Vector4 right)
         => new(left.X * right.X, left.Y * right.Y, left.Z * right.Z, left.W * right.W);
 
-    private void BuildSpriteC0Graph(
+    private Action<int>? BuildSpriteC0Graph(
         RenderSnapshot snapshot,
         RenderGraph graph,
         ref RenderGraphBuiltInColorState? colorState)
     {
         if (snapshot.SpriteDraws.IsEmpty)
         {
-            return;
+            return null;
         }
 
         var device = _graphicsDevice
@@ -81,6 +81,7 @@ public sealed partial class Renderer
                     TextureFormat.Rgba16Float,
                     TextureUsage.ColorAttachment | TextureUsage.Sampled,
                     "builtin-hdr-working-target")));
+        var builtInColorState = colorState;
         var alignment = checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment);
         var frameBytes = RenderCameraGpuDataBufferBuilder.CreateFrameBuffer(
             snapshot.Cameras.AsSpan(),
@@ -157,11 +158,6 @@ public sealed partial class Renderer
             batchPageVersions.Add(batchKey, version);
         }
 
-        var hdrTargetInitialized = colorState.HasColorContents;
-        var currentColorVersion = colorState.CurrentColorVersion;
-        var previousPass = colorState.PreviousPass;
-        var hasPreviousPass = colorState.HasPreviousPass;
-        var passIndex = colorState.NextPassIndex;
         var batchesByCamera = new Dictionary<Guid, List<RenderSpriteBatch>>();
 
         foreach (var batch in batches)
@@ -175,8 +171,23 @@ public sealed partial class Renderer
             cameraBatches.Add(batch);
         }
 
-        for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
+        void AppendCamera(int cameraIndex)
         {
+            var hdrTargetInitialized = builtInColorState.HasColorContents;
+            var currentColorVersion = builtInColorState.CurrentColorVersion;
+            var previousPass = builtInColorState.PreviousPass;
+            var hasPreviousPass = builtInColorState.HasPreviousPass;
+            var passIndex = builtInColorState.NextPassIndex;
+
+            void StoreColorState()
+            {
+                builtInColorState.CurrentColorVersion = currentColorVersion;
+                builtInColorState.HasColorContents = hdrTargetInitialized;
+                builtInColorState.HasPreviousPass = hasPreviousPass;
+                builtInColorState.NextPassIndex = passIndex;
+                builtInColorState.PreviousPass = previousPass;
+            }
+
             var camera = snapshot.Cameras[cameraIndex];
             var area = RenderCameraViewport.CreateArea(camera.Viewport, snapshot.TargetExtent);
             var clearsFullTarget = (area.X == 0)
@@ -195,13 +206,13 @@ public sealed partial class Renderer
 
             _ = batchesByCamera.TryGetValue(camera.CameraId, out var cameraBatches);
             var batchCount = cameraBatches?.Count ?? 0;
-            var cameraAlreadyWroteColor = colorState.HasColorWrite(camera.CameraId);
+            var cameraAlreadyWroteColor = builtInColorState.HasColorWrite(camera.CameraId);
 
             if (batchCount == 0)
             {
                 if (!clearColor || cameraAlreadyWroteColor)
                 {
-                    continue;
+                    return;
                 }
 
                 if (!hdrTargetInitialized && !clearsFullTarget)
@@ -225,8 +236,9 @@ public sealed partial class Renderer
                     AttachmentStoreAction.Store,
                     camera.ClearColor);
                 hdrTargetInitialized = true;
-                colorState.MarkColorWrite(camera.CameraId);
-                continue;
+                builtInColorState.MarkColorWrite(camera.CameraId);
+                StoreColorState();
+                return;
             }
 
             if (!hdrTargetInitialized)
@@ -297,15 +309,13 @@ public sealed partial class Renderer
                     camera.ClearColor);
                 previousPass = pass;
                 hasPreviousPass = true;
-                colorState.MarkColorWrite(camera.CameraId);
+                builtInColorState.MarkColorWrite(camera.CameraId);
             }
+
+            StoreColorState();
         }
 
-        colorState.CurrentColorVersion = currentColorVersion;
-        colorState.HasColorContents = hdrTargetInitialized;
-        colorState.HasPreviousPass = hasPreviousPass;
-        colorState.NextPassIndex = passIndex;
-        colorState.PreviousPass = previousPass;
+        return AppendCamera;
     }
 
     private void BuildToneMapGraph(

@@ -86,7 +86,6 @@ internal sealed partial class SceneAssetStoreTests
         bool missingTangents = false,
         bool includeSprite = false,
         bool includeSecondCamera = false,
-        bool expectMixedSecondaryCameraRejection = false,
         byte baseColorTextureAlpha = byte.MaxValue,
         float baseColorAlpha = 1.0f,
         float vertexColorAlpha = 1.0f)
@@ -507,46 +506,57 @@ internal sealed partial class SceneAssetStoreTests
                 return;
             }
 
-            if (expectMixedSecondaryCameraRejection)
-            {
-                Assert.That(includeSprite && includeSecondCamera, Is.True);
-                _ = Assert.Throws<NotSupportedException>(() => engineHost.Renderer.BuildGraph(meshSnapshot, targetTexture));
-                return;
-            }
-
             var graph = engineHost.Renderer.BuildGraph(meshSnapshot, targetTexture);
             var compileResponse = graph.Compile();
             Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The Mesh graph compile omitted its plan.");
-            Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2));
-            Assert.That(plan.BuiltInSpriteState?.Passes, Has.Count.EqualTo(includeSprite ? 1 : 0));
+            var cameraCount = includeSecondCamera ? 2 : 1;
+            Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2 * cameraCount));
+            Assert.That(plan.BuiltInSpriteState?.Passes, Has.Count.EqualTo(includeSprite ? cameraCount : 0));
             Assert.That(plan.BuiltInSpriteState?.ToneMapPasses, Has.Count.EqualTo(1));
 
             if (includeSprite)
             {
                 var builtInState = plan.BuiltInSpriteState
                     ?? throw new InvalidOperationException("The mixed graph omitted its built-in submission state.");
-                var lastMeshPassIndex = -1;
-
-                foreach (var meshPassId in builtInState.MeshPasses.Keys)
-                {
-                    lastMeshPassIndex = Math.Max(lastMeshPassIndex, plan.OrderedPasses.IndexOf(meshPassId));
-                }
-
-                var spritePassId = builtInState.Passes.Keys.Single();
+                var firstMeshPassId = builtInState.MeshPasses.Keys.First();
+                var firstSpritePassId = builtInState.Passes.Keys.First();
+                var lastSpritePassIndex = -1;
                 var toneMapPassId = builtInState.ToneMapPasses.Keys.Single();
-                var spritePassIndex = plan.OrderedPasses.IndexOf(spritePassId);
                 var toneMapPassIndex = plan.OrderedPasses.IndexOf(toneMapPassId);
                 var meshColorResourceId = plan.AttachmentWrites
-                    .First(write => !write.IsDepth && builtInState.MeshPasses.ContainsKey(write.PassId))
+                    .First(write => !write.IsDepth && (write.PassId == firstMeshPassId))
                     .Version.ResourceId;
                 var spriteColorResourceId = plan.AttachmentWrites
-                    .First(write => !write.IsDepth && builtInState.Passes.ContainsKey(write.PassId))
+                    .First(write => !write.IsDepth && (write.PassId == firstSpritePassId))
                     .Version.ResourceId;
+
+                for (var cameraIndex = 0; cameraIndex < cameraCount; cameraIndex++)
+                {
+                    var meshPassIndices = builtInState.MeshPasses
+                        .Where(pass => pass.Value.CameraIndex == cameraIndex)
+                        .Select(pass => plan.OrderedPasses.IndexOf(pass.Key))
+                        .ToArray();
+                    var spritePass = builtInState.Passes
+                        .Single(pass => pass.Value.CameraIndex == cameraIndex);
+                    var spritePassIndex = plan.OrderedPasses.IndexOf(spritePass.Key);
+                    Assert.That(meshPassIndices, Has.Length.EqualTo(2));
+                    Assert.That(meshPassIndices.Max(), Is.LessThan(spritePassIndex));
+                    lastSpritePassIndex = Math.Max(lastSpritePassIndex, spritePassIndex);
+
+                    if (cameraIndex + 1 < cameraCount)
+                    {
+                        var nextCameraFirstMeshPassIndex = builtInState.MeshPasses
+                            .Where(pass => pass.Value.CameraIndex == cameraIndex + 1)
+                            .Select(pass => plan.OrderedPasses.IndexOf(pass.Key))
+                            .Min();
+                        Assert.That(spritePassIndex, Is.LessThan(nextCameraFirstMeshPassIndex));
+                    }
+                }
+
                 Assert.Multiple(() => {
-                    Assert.That(lastMeshPassIndex, Is.LessThan(spritePassIndex));
-                    Assert.That(spritePassIndex, Is.LessThan(toneMapPassIndex));
+                    Assert.That(lastSpritePassIndex, Is.LessThan(toneMapPassIndex));
                     Assert.That(spriteColorResourceId, Is.EqualTo(meshColorResourceId));
                 });
             }
@@ -833,14 +843,6 @@ internal sealed partial class SceneAssetStoreTests
             missingTextureUv0: true);
 
     [Test]
-    public Task SnapshotBuiltInMeshC0GraphRejectsMixedSecondaryCamerasAsync()
-        => RunSnapshotBuiltInMeshC0GraphAsync(
-            GraphicsBackend.Vulkan,
-            includeSprite: true,
-            includeSecondCamera: true,
-            expectMixedSecondaryCameraRejection: true);
-
-    [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsNormalMapWithoutTangentsAsync()
         => RunSnapshotBuiltInMeshC0GraphAsync(
             GraphicsBackend.Vulkan,
@@ -988,6 +990,13 @@ internal sealed partial class SceneAssetStoreTests
             graphicsBackend,
             useAlphaBlend: true,
             baseColorAlpha: 0.5f);
+
+    [Test]
+    public Task SnapshotBuiltInMeshC0GraphSupportsMixedSecondaryCamerasInCameraOrderAsync()
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            GraphicsBackend.Vulkan,
+            includeSprite: true,
+            includeSecondCamera: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

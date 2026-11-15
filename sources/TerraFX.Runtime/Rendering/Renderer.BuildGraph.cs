@@ -33,7 +33,7 @@ public sealed partial class Renderer
     /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> or <paramref name="offscreenColorTarget"/> is null.</exception>
     /// <exception cref="ArgumentException">The target belongs to another device or has another extent.</exception>
     /// <exception cref="InvalidOperationException">The selected GraphicsDevice is not ready.</exception>
-    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice, or a combined Sprite/Mesh C0 snapshot has multiple cameras.</exception>
+    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice.</exception>
     /// <exception cref="ObjectDisposedException">The snapshot or target has been disposed.</exception>
     public RenderGraph BuildGraph(RenderSnapshot snapshot, GpuTexture offscreenColorTarget)
     {
@@ -69,15 +69,21 @@ public sealed partial class Renderer
             offscreenColorTarget));
         RenderGraphBuiltInColorState? colorState = null;
 
-        if (!snapshot.SpriteDraws.IsEmpty
-            && HasMeshCameraDraws(snapshot)
-            && (snapshot.Cameras.Length > 1))
-        {
-            throw new NotSupportedException("Combined Sprite/Mesh C0 currently requires one camera until secondary-camera composition is admitted.");
-        }
+        var appendSpriteCamera = BuildSpriteC0Graph(snapshot, graph, ref colorState);
+        var interleaveSpriteCameras = (appendSpriteCamera is not null) && HasMeshCameraDraws(snapshot);
+        BuildMeshC0Graph(
+            snapshot,
+            graph,
+            ref colorState,
+            interleaveSpriteCameras ? appendSpriteCamera : null);
 
-        BuildMeshC0Graph(snapshot, graph, ref colorState);
-        BuildSpriteC0Graph(snapshot, graph, ref colorState);
+        if ((appendSpriteCamera is not null) && !interleaveSpriteCameras)
+        {
+            for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
+            {
+                appendSpriteCamera(cameraIndex);
+            }
+        }
 
         if (colorState is not null)
         {
@@ -94,7 +100,7 @@ public sealed partial class Renderer
     /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> or <paramref name="surface"/> is null.</exception>
     /// <exception cref="ArgumentException">The Surface belongs to another device or has another extent.</exception>
     /// <exception cref="InvalidOperationException">The selected GraphicsDevice or Surface is not ready.</exception>
-    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice, or a combined Sprite/Mesh C0 snapshot has multiple cameras.</exception>
+    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice.</exception>
     /// <exception cref="ObjectDisposedException">The snapshot or Surface has been disposed or retired.</exception>
     public RenderGraph BuildGraph(RenderSnapshot snapshot, Surface surface)
     {
@@ -126,15 +132,21 @@ public sealed partial class Renderer
             surface));
         RenderGraphBuiltInColorState? colorState = null;
 
-        if (!snapshot.SpriteDraws.IsEmpty
-            && HasMeshCameraDraws(snapshot)
-            && (snapshot.Cameras.Length > 1))
-        {
-            throw new NotSupportedException("Combined Sprite/Mesh C0 currently requires one camera until secondary-camera composition is admitted.");
-        }
+        var appendSpriteCamera = BuildSpriteC0Graph(snapshot, graph, ref colorState);
+        var interleaveSpriteCameras = (appendSpriteCamera is not null) && HasMeshCameraDraws(snapshot);
+        BuildMeshC0Graph(
+            snapshot,
+            graph,
+            ref colorState,
+            interleaveSpriteCameras ? appendSpriteCamera : null);
 
-        BuildMeshC0Graph(snapshot, graph, ref colorState);
-        BuildSpriteC0Graph(snapshot, graph, ref colorState);
+        if ((appendSpriteCamera is not null) && !interleaveSpriteCameras)
+        {
+            for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
+            {
+                appendSpriteCamera(cameraIndex);
+            }
+        }
 
         if (colorState is not null)
         {

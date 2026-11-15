@@ -298,7 +298,8 @@ public sealed partial class Renderer
     private void BuildMeshC0Graph(
         RenderSnapshot snapshot,
         RenderGraph graph,
-        ref RenderGraphBuiltInColorState? colorState)
+        ref RenderGraphBuiltInColorState? colorState,
+        Action<int>? afterCamera = null)
     {
         if (snapshot is not RenderSnapshot3D meshSnapshot || meshSnapshot.MeshDraws.IsEmpty)
         {
@@ -615,6 +616,7 @@ public sealed partial class Renderer
                 TextureFormat.Rgba16Float,
                 TextureUsage.ColorAttachment | TextureUsage.Sampled,
                 "builtin-hdr-working-target")));
+        var builtInColorState = colorState;
         var depthVersion = graph.CreateTransientTexture(new TextureDescription(
             TextureDimension.Dimension2D,
             snapshot.TargetExtent.Width,
@@ -632,6 +634,24 @@ public sealed partial class Renderer
         var previousPass = colorState.PreviousPass;
         var hasPreviousPass = colorState.HasPreviousPass;
         var passIndex = colorState.NextPassIndex;
+
+        void StoreColorState()
+        {
+            builtInColorState.CurrentColorVersion = currentColorVersion;
+            builtInColorState.HasColorContents = hasColorContents;
+            builtInColorState.HasPreviousPass = hasPreviousPass;
+            builtInColorState.NextPassIndex = passIndex;
+            builtInColorState.PreviousPass = previousPass;
+        }
+
+        void LoadColorState()
+        {
+            currentColorVersion = builtInColorState.CurrentColorVersion;
+            hasColorContents = builtInColorState.HasColorContents;
+            previousPass = builtInColorState.PreviousPass;
+            hasPreviousPass = builtInColorState.HasPreviousPass;
+            passIndex = builtInColorState.NextPassIndex;
+        }
 
         for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
         {
@@ -657,6 +677,8 @@ public sealed partial class Renderer
             {
                 if (!clearColor && !clearDepth)
                 {
+                    afterCamera?.Invoke(cameraIndex);
+                    LoadColorState();
                     continue;
                 }
 
@@ -700,6 +722,9 @@ public sealed partial class Renderer
                     hasDepthContents = true;
                 }
 
+                StoreColorState();
+                afterCamera?.Invoke(cameraIndex);
+                LoadColorState();
                 continue;
             }
 
@@ -889,13 +914,13 @@ public sealed partial class Renderer
                 previousPass = pass;
                 hasPreviousPass = true;
             }
+
+            StoreColorState();
+            afterCamera?.Invoke(cameraIndex);
+            LoadColorState();
         }
 
-        colorState.CurrentColorVersion = currentColorVersion;
-        colorState.HasColorContents = hasColorContents;
-        colorState.HasPreviousPass = hasPreviousPass;
-        colorState.NextPassIndex = passIndex;
-        colorState.PreviousPass = previousPass;
+        StoreColorState();
 
         if (meshPassCount == 0)
         {
