@@ -880,6 +880,77 @@ internal sealed class WorldPersistenceCommitTests
         }
     }
 
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The standalone owner-thread test synchronously joins persistence and retirement tasks before disposing its Worlds.")]
+    public void StandaloneLoadTransfersDefaultDomainOwnership()
+    {
+        var schemas = CreateCommitSchemas();
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var savePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.default-domain-handoff.state");
+        var assetRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
+        AssetStore? assets = null;
+        WorldPersistence? persistence = null;
+        World? world = null;
+        World? replacementWorld = null;
+
+        try
+        {
+            assets = AssetStore.CreateAsync(new AssetStoreOptions(
+                packagePath,
+                SHA256.HashData(packageBytes),
+                assetRegistration)).GetAwaiter().GetResult();
+            var registrationBuilder = new WorldRegistrationBuilder(schemas);
+            _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+            world = World.Create(new WorldOptions(registrationBuilder.Build()) {
+                CpuWorkerCount = 0,
+                InitialReplayLineageId = Guid.NewGuid(),
+                MaximumPersistenceAdmissionBytes = 8_589_934_592L,
+                MaximumSnapshotBytes = 16L * 1024 * 1024,
+                WorldGuid = Guid.NewGuid(),
+            });
+            persistence = new WorldPersistence(assets, CreateCommitPersistenceMetadata());
+            _ = world.CreateEntity(new EntityDescription());
+            _ = world.Step();
+            var save = persistence.SaveAsync(
+                world,
+                new SaveOptions(savePath, SaveDurabilityPolicy.BestEffort)).GetAwaiter().GetResult();
+            Assert.That(save.Status, Is.AnyOf(SaveStatus.DurableCommitted, SaveStatus.BestEffortCommitted), save.Diagnostic?.Message);
+            using var preparation = persistence.PrepareLoadAsync(
+                world,
+                savePath,
+                new LoadOptions(WorldRestoreIntent.Branch) {
+                    IdentityBranchId = Guid.NewGuid(),
+                    MaximumSnapshotBytes = 16L * 1024 * 1024,
+                }).GetAwaiter().GetResult();
+            Assert.That(preparation.Status, Is.EqualTo(WorldLoadPreparationStatus.Prepared));
+            var plan = preparation.Plan
+                ?? throw new InvalidOperationException("The default-domain checkpoint did not produce its Load plan.");
+            var receipt = persistence.CommitLoadAsync(plan).GetAwaiter().GetResult();
+            Assert.That(receipt.Status, Is.EqualTo(WorldLoadStatus.Loaded), receipt.Rejection?.Message);
+            replacementWorld = receipt.ReplacementWorld
+                ?? throw new InvalidOperationException("The default-domain Load omitted its replacement World.");
+            (receipt.OldWorldRetirement
+                ?? throw new InvalidOperationException("The default-domain Load omitted old-World retirement."))
+                .GetAwaiter()
+                .GetResult();
+        }
+        finally
+        {
+            replacementWorld?.Dispose();
+            world?.Dispose();
+            persistence?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            assets?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+            File.Delete(packagePath);
+            File.Delete(savePath);
+            File.Delete(string.Concat(savePath, ".bak"));
+        }
+    }
+
     private sealed class DomainClosureState
     {
         internal DomainClosureState(WorldAdmissionDomain domain)

@@ -62,11 +62,13 @@ public sealed partial class World
     internal bool TryCaptureLoadReplacement(
         WorldGuidReplacementPreparation preparation,
         out WorldDomainOperationCreditBundle? operationCredits,
+        out WorldDefaultDomainHandoff? defaultDomainHandoff,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal)
     {
         ArgumentNullException.ThrowIfNull(preparation);
         operationCredits = null;
+        defaultDomainHandoff = null;
 
         lock (_sceneStorageGate)
         {
@@ -88,6 +90,7 @@ public sealed partial class World
                     }
 
                     operationCredits = preparation.TransferCapturedCredits();
+                    defaultDomainHandoff = preparation.TransferCapturedDefaultDomainHandoff();
                     return true;
                 }
             }
@@ -99,6 +102,7 @@ public sealed partial class World
         CommittedWorldPublication restoredPublication,
         WorldGuidReplacementPreparation preparation,
         WorldDomainOperationCreditBundle operationCredits,
+        WorldDefaultDomainHandoff? defaultDomainHandoff,
         out WorldGuidRefusal bindingRefusal)
     {
         ArgumentNullException.ThrowIfNull(replacementWorld);
@@ -128,7 +132,7 @@ public sealed partial class World
                         || !replacementWorld._isRestoreHierarchyInstalled
                         || !replacementWorld._isRestoreClockStateRestored
                         || (replacementWorld._committedPublication is not null)
-                        || replacementWorld._ownsAdmissionDomain
+                        || (replacementWorld._defaultDomainOwner is not null)
                         || (restoredPublication.WorldGuid != replacementWorld._worldGuid)
                         || (restoredPublication.WorldOwnerId != replacementWorld._ownerId)
                         || (restoredPublication.ExecutionSessionId != replacementWorld._executionSessionId)
@@ -141,6 +145,19 @@ public sealed partial class World
                         throw new InvalidOperationException("The candidate, marker, or admission-domain handoff is not ready for replacement.");
                     }
 
+                    var currentDefaultDomainOwner = _defaultDomainOwner;
+
+                    if ((currentDefaultDomainOwner is null) != (defaultDomainHandoff is null)
+                        || (currentDefaultDomainOwner is not null
+                            && !defaultDomainHandoff!.IsBoundTo(
+                                currentDefaultDomainOwner,
+                                _admissionDomain,
+                                _worldGuidGrant,
+                                replacementWorld._worldGuidGrant)))
+                    {
+                        throw new InvalidOperationException("The default-domain handoff does not match the exact target and replacement bindings.");
+                    }
+
                     if (!preparation.TryCommitWithCredits(
                             operationCredits,
                             out _,
@@ -150,10 +167,14 @@ public sealed partial class World
                         return false;
                     }
 
-                    if (_ownsAdmissionDomain)
+                    if (currentDefaultDomainOwner is not null)
                     {
-                        _ownsAdmissionDomain = false;
-                        replacementWorld._ownsAdmissionDomain = true;
+                        replacementWorld._defaultDomainOwner = defaultDomainHandoff!.Consume(
+                            currentDefaultDomainOwner,
+                            _admissionDomain,
+                            _worldGuidGrant,
+                            replacementWorld._worldGuidGrant);
+                        _defaultDomainOwner = null;
                     }
 
                     replacementWorld._committedMutationRevision =

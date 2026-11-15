@@ -491,13 +491,98 @@ public sealed partial class World
                         throw new InvalidOperationException("The successful load-credit reservation did not produce its bundle.");
                     }
 
+                    WorldDomainOperationCredit? handoffCredit = null;
+                    var defaultDomainOwner = _defaultDomainOwner;
+                    WorldDefaultDomainHandoff? handoff = null;
+
                     try
                     {
+                        if (defaultDomainOwner is not null
+                            && !_admissionDomain.TryReserveOperationCredit(
+                                WorldDefaultDomainHandoff.HandoffBytes,
+                                out handoffCredit))
+                        {
+                            Exception? cleanupFailure = null;
+
+                            try
+                            {
+                                credits.Dispose();
+                            }
+                            catch (InvalidOperationException releaseException)
+                            {
+                                cleanupFailure = releaseException;
+                            }
+
+                            if (!_registry.TryReleaseFresh(replacementGrant))
+                            {
+                                var bindingReleaseFailure = new InvalidOperationException(
+                                    "The refused default-domain handoff could not release its successor binding.");
+                                cleanupFailure = (cleanupFailure is null)
+                                    ? bindingReleaseFailure
+                                    : new AggregateException(cleanupFailure, bindingReleaseFailure);
+                            }
+
+                            if (cleanupFailure is not null)
+                            {
+                                throw cleanupFailure;
+                            }
+
+                            preparation = null;
+                            bindingRefusal = default;
+                            operationCreditRefusal = WorldAdmissionRefusal.OperationCapacity;
+                            return false;
+                        }
+
+                        if ((defaultDomainOwner is not null) && (handoffCredit is null))
+                        {
+                            Exception? cleanupFailure = null;
+
+                            try
+                            {
+                                credits.Dispose();
+                            }
+                            catch (InvalidOperationException releaseException)
+                            {
+                                cleanupFailure = releaseException;
+                            }
+
+                            if (!_registry.TryReleaseFresh(replacementGrant))
+                            {
+                                var bindingReleaseFailure = new InvalidOperationException(
+                                    "The inconsistent default-domain handoff could not release its successor binding.");
+                                cleanupFailure = (cleanupFailure is null)
+                                    ? bindingReleaseFailure
+                                    : new AggregateException(cleanupFailure, bindingReleaseFailure);
+                            }
+
+                            if (cleanupFailure is not null)
+                            {
+                                throw new AggregateException(
+                                    new InvalidOperationException("The successful default-domain handoff reservation omitted its credit."),
+                                    cleanupFailure);
+                            }
+
+                            throw new InvalidOperationException("The successful default-domain handoff reservation omitted its credit.");
+                        }
+
+                        if (defaultDomainOwner is not null)
+                        {
+                            handoff = new WorldDefaultDomainHandoff(
+                                defaultDomainOwner,
+                                _worldGuidGrant,
+                                replacementGrant,
+                                handoffCredit
+                                    ?? throw new InvalidOperationException("The default-domain handoff omitted its credit."));
+                            handoffCredit = null;
+                        }
+
                         preparation = new WorldGuidReplacementPreparation(
                             _registry,
                             _worldGuidGrant,
                             replacementGrant,
-                            credits);
+                            credits,
+                            handoff);
+                        handoff = null;
                         bindingRefusal = default;
                         operationCreditRefusal = WorldAdmissionRefusal.None;
                         return true;
@@ -512,7 +597,9 @@ public sealed partial class World
                         }
                         catch (InvalidOperationException releaseException)
                         {
-                            cleanupFailure = releaseException;
+                            cleanupFailure = (cleanupFailure is null)
+                                ? releaseException
+                                : new AggregateException(cleanupFailure, releaseException);
                         }
 
                         if (!_registry.TryReleaseFresh(replacementGrant))
@@ -530,6 +617,17 @@ public sealed partial class World
                         }
 
                         throw;
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            handoff?.Dispose();
+                        }
+                        finally
+                        {
+                            handoffCredit?.Dispose();
+                        }
                     }
                 }
             }
@@ -709,7 +807,7 @@ public sealed partial class World
                 restoreIdentityState.ActiveBranchId,
                 _executionSessionId,
                 _admissionDomain,
-                ownsAdmissionDomain: false,
+                defaultDomainOwner: null,
                 ownsWorkerPool: false,
                 domainReservation,
                 lineageGrant,

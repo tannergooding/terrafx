@@ -173,12 +173,14 @@ internal sealed class WorldLoadPreparedState : IDisposable
 
     internal bool TryCaptureCommit(
         out WorldDomainOperationCreditBundle? operationCredits,
+        out WorldDefaultDomainHandoff? defaultDomainHandoff,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal)
     {
         lock (_gate)
         {
             operationCredits = null;
+            defaultDomainHandoff = null;
 
             if (_isAcquisitionClosed || _isDisposed || _isCaptured)
             {
@@ -192,6 +194,7 @@ internal sealed class WorldLoadPreparedState : IDisposable
 
             if (!preparedReplacement.TryCaptureCommit(
                     out operationCredits,
+                    out defaultDomainHandoff,
                     out bindingRefusal,
                     out admissionRefusal))
             {

@@ -10,6 +10,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
     private readonly Lock _gate = new();
     private WorldDomainOperationCreditBundle? _credits;
     private readonly WorldGuidGrant _currentGrant;
+    private WorldDefaultDomainHandoff? _defaultDomainHandoff;
     private readonly WorldAdmissionDomain? _domain;
     private bool _isCaptured;
     private bool _isCommitted;
@@ -22,12 +23,14 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         WorldGuidRegistry registry,
         WorldGuidGrant currentGrant,
         WorldGuidGrant replacementGrant,
-        WorldDomainOperationCreditBundle? credits = null)
+        WorldDomainOperationCreditBundle? credits = null,
+        WorldDefaultDomainHandoff? defaultDomainHandoff = null)
     {
         _registry = registry;
         _currentGrant = currentGrant;
         _replacementGrant = replacementGrant;
         _credits = credits;
+        _defaultDomainHandoff = defaultDomainHandoff;
         _domain = credits?.Domain;
     }
 
@@ -53,8 +56,16 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
                 }
                 finally
                 {
-                    _credits?.Dispose();
-                    _credits = null;
+                    try
+                    {
+                        _credits?.Dispose();
+                    }
+                    finally
+                    {
+                        _defaultDomainHandoff?.Dispose();
+                        _credits = null;
+                        _defaultDomainHandoff = null;
+                    }
                 }
             }
         }
@@ -132,6 +143,21 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
                 ?? throw new InvalidOperationException("The captured replacement has no remaining operation credits.");
             _credits = null;
             return credits;
+        }
+    }
+
+    internal WorldDefaultDomainHandoff? TransferCapturedDefaultDomainHandoff()
+    {
+        lock (_gate)
+        {
+            if (_isDisposed || _isCommitted || !_isCaptured)
+            {
+                throw new InvalidOperationException("Only a captured replacement can transfer its default-domain handoff.");
+            }
+
+            var handoff = _defaultDomainHandoff;
+            _defaultDomainHandoff = null;
+            return handoff;
         }
     }
 

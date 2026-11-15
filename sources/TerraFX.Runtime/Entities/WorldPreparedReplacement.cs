@@ -24,7 +24,12 @@ internal sealed class WorldPreparedReplacement
 
     internal bool TryCaptureCommit(
         out WorldDomainOperationCreditBundle? operationCredits,
+        out WorldDefaultDomainHandoff? defaultDomainHandoff,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal)
-        => _control.TryCaptureCommit(out operationCredits, out bindingRefusal, out admissionRefusal);
+        => _control.TryCaptureCommit(
+            out operationCredits,
+            out defaultDomainHandoff,
+            out bindingRefusal,
+            out admissionRefusal);
 }

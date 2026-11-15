@@ -7,13 +7,13 @@ namespace TerraFX.Entities;
 internal sealed class WorldConstructionPlan
 {
     private readonly WorldAdmissionDomain _admissionDomain;
+    private WorldDefaultDomainOwner? _defaultDomainOwner;
     private readonly WorldDiagnosticsCapability _diagnosticsCapability;
     private readonly WorldDomainReservation _domainReservation;
     private readonly Guid _executionSessionId;
     private readonly Guid _identityBranchId;
     private readonly StableIdentityLedger _identityLedger;
     private readonly WorldLineageGrant _lineageGrant;
-    private readonly bool _ownsAdmissionDomain;
     private readonly bool _ownsWorkerPool;
     private readonly WorldPreparedReplacement? _preparedReplacement;
     private readonly WorldGuidRegistry _registry;
@@ -47,7 +47,7 @@ internal sealed class WorldConstructionPlan
         Guid identityBranchId,
         Guid executionSessionId,
         WorldAdmissionDomain admissionDomain,
-        bool ownsAdmissionDomain,
+        WorldDefaultDomainOwner? defaultDomainOwner,
         bool ownsWorkerPool,
         WorldDomainReservation domainReservation,
         WorldLineageGrant lineageGrant,
@@ -117,7 +117,7 @@ internal sealed class WorldConstructionPlan
         _identityBranchId = identityBranchId;
         _executionSessionId = executionSessionId;
         _admissionDomain = admissionDomain;
-        _ownsAdmissionDomain = ownsAdmissionDomain;
+        _defaultDomainOwner = defaultDomainOwner;
         _ownsWorkerPool = ownsWorkerPool;
         _domainReservation = domainReservation;
         _lineageGrant = lineageGrant;
@@ -157,6 +157,8 @@ internal sealed class WorldConstructionPlan
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
 
+    internal WorldDefaultDomainOwner? DefaultDomainOwner => _defaultDomainOwner;
+
     internal WorldDiagnosticsCapability DiagnosticsCapability => _diagnosticsCapability;
 
     internal WorldDomainReservation DomainReservation => _domainReservation;
@@ -170,8 +172,6 @@ internal sealed class WorldConstructionPlan
     internal WorldLineageGrant LineageGrant => _lineageGrant;
 
     internal WorldOptions Options => _resolvedOptions.Options;
-
-    internal bool OwnsAdmissionDomain => _ownsAdmissionDomain;
 
     internal bool OwnsWorkerPool => _ownsWorkerPool;
 
@@ -252,6 +252,13 @@ internal sealed class WorldConstructionPlan
         }
     }
 
+    internal WorldDefaultDomainOwner? TransferDefaultDomainOwnerToWorld()
+    {
+        var owner = _defaultDomainOwner;
+        _defaultDomainOwner = null;
+        return owner;
+    }
+
     internal void TransferRestoreResourcesToWorld()
     {
         if (_restoreIdentityState is null)
@@ -283,6 +290,8 @@ internal sealed class WorldConstructionPlan
             || (_executionSessionId == Guid.Empty)
             || !_worldGuidGrant.IsOwnedBy(_registry)
             || (_worldGuidGrant.WorldGuid != _worldGuid)
+            || ((_defaultDomainOwner is not null)
+                && !_defaultDomainOwner.IsCurrentFor(_admissionDomain, _worldGuidGrant))
             || (_lineageGrant.WorldGuid != _worldGuid)
             || (_lineageGrant.LineageId != ReplayLineageId)
             || (_lineageGrant.IdentityBranchId != _identityBranchId)
@@ -322,7 +331,8 @@ internal sealed class WorldConstructionPlan
                     || hasRestoreEntityRows != (_restoreWorkPlanByteReservation > 0)
                     || hasRestoreArchetype != (_restoreEcsArchetypeMetadataByteReservation > 0)
                     || hasRestoreEcsWorkspace != (_restoreComponentWorkspaceByteReservation > 0)
-                    || (_replacementPreparation is null))))
+                    || (_replacementPreparation is null)
+                    || (_defaultDomainOwner is not null))))
         {
             throw new InvalidOperationException("The standalone World construction plan is incomplete or inconsistent.");
         }

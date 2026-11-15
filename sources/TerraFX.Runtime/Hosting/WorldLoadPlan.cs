@@ -138,12 +138,14 @@ public sealed class WorldLoadPlan : IDisposable
     internal bool TryCaptureCommit(
         out WorldLoadPreparedState? state,
         out WorldDomainOperationCreditBundle? operationCredits,
+        out WorldDefaultDomainHandoff? defaultDomainHandoff,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal)
     {
         lock (_gate)
         {
             operationCredits = null;
+            defaultDomainHandoff = null;
 
             if (_isDisposed || !_isInitialized)
             {
@@ -156,7 +158,11 @@ public sealed class WorldLoadPlan : IDisposable
             var preparedState = _state
                 ?? throw new InvalidOperationException("The initialized World load plan omitted its prepared state.");
 
-            if (!preparedState.TryCaptureCommit(out operationCredits, out bindingRefusal, out admissionRefusal))
+            if (!preparedState.TryCaptureCommit(
+                    out operationCredits,
+                    out defaultDomainHandoff,
+                    out bindingRefusal,
+                    out admissionRefusal))
             {
                 state = null;
                 preparedState.CloseAcquisition();

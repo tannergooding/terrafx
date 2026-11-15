@@ -12,6 +12,7 @@ internal sealed partial class WorldReplacementOperation
     {
         var state = Interlocked.Exchange(ref _preparedState, null);
         var operationCredits = Interlocked.Exchange(ref _operationCredits, null);
+        var defaultDomainHandoff = Interlocked.Exchange(ref _defaultDomainHandoff, null);
 
         try
         {
@@ -19,7 +20,14 @@ internal sealed partial class WorldReplacementOperation
         }
         finally
         {
-            operationCredits?.Dispose();
+            try
+            {
+                operationCredits?.Dispose();
+            }
+            finally
+            {
+                defaultDomainHandoff?.Dispose();
+            }
         }
     }
 
@@ -55,12 +63,14 @@ internal sealed partial class WorldReplacementOperation
 
         WorldLoadPreparedState? preparedState = null;
         WorldDomainOperationCreditBundle? operationCredits = null;
+        WorldDefaultDomainHandoff? defaultDomainHandoff = null;
 
         try
         {
             if (!_plan.TryCaptureCommit(
                     out preparedState,
                     out operationCredits,
+                    out defaultDomainHandoff,
                     out var bindingRefusal,
                     out var admissionRefusal))
             {
@@ -80,8 +90,10 @@ internal sealed partial class WorldReplacementOperation
 
             _preparedState = preparedState;
             _operationCredits = operationCredits;
+            _defaultDomainHandoff = defaultDomainHandoff;
             preparedState = null;
             operationCredits = null;
+            defaultDomainHandoff = null;
 
             if ((_preparedState is null) || (_operationCredits is null))
             {
@@ -94,8 +106,21 @@ internal sealed partial class WorldReplacementOperation
         }
         finally
         {
-            preparedState?.Dispose();
-            operationCredits?.Dispose();
+            try
+            {
+                preparedState?.Dispose();
+            }
+            finally
+            {
+                try
+                {
+                    operationCredits?.Dispose();
+                }
+                finally
+                {
+                    defaultDomainHandoff?.Dispose();
+                }
+            }
         }
     }
 }

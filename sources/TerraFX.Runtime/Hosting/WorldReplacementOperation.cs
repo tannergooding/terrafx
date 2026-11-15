@@ -11,6 +11,7 @@ namespace TerraFX.Hosting;
 internal sealed partial class WorldReplacementOperation : IWorldGuidRetentionOwner
 {
     private int _captureAttempted;
+    private WorldDefaultDomainHandoff? _defaultDomainHandoff;
     private int _isCaptured;
     private int _isExecuted;
     private int _isLoadEnded;
@@ -103,6 +104,7 @@ internal sealed partial class WorldReplacementOperation : IWorldGuidRetentionOwn
                     restoredPublication,
                     state.ReplacementPreparation,
                     operationCredits,
+                    _defaultDomainHandoff,
                     out var bindingRefusal))
             {
                 candidate.Dispose();
@@ -171,6 +173,21 @@ internal sealed partial class WorldReplacementOperation : IWorldGuidRetentionOwn
             finally
             {
                 _operationCredits = null;
+            }
+
+            try
+            {
+                _defaultDomainHandoff?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                retirementFailure = (retirementFailure is null)
+                    ? exception
+                    : new AggregateException(retirementFailure, exception);
+            }
+            finally
+            {
+                _defaultDomainHandoff = null;
             }
 
             _preparedState = null;

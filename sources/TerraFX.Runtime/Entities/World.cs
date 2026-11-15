@@ -45,6 +45,7 @@ public sealed partial class World : IDisposable
     private long _controlStorageByteReservation;
     private WorldFrameCohort _currentFrameCohort;
     private int _currentIdentityBranchIndex;
+    private WorldDefaultDomainOwner? _defaultDomainOwner;
     private readonly WorldDiagnosticsCapability _diagnosticsCapability;
     private int _disposed;
     private readonly WorldDomainReservation _domainReservation;
@@ -97,7 +98,6 @@ public sealed partial class World : IDisposable
     private readonly WorldOwnerControlRequest?[] _ownerControlRequests;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
-    private bool _ownsAdmissionDomain;
     private readonly bool _ownsWorkerPool;
     private readonly Lock _persistenceAdmissionGate = new();
     private long _publicationSequence;
@@ -266,7 +266,6 @@ public sealed partial class World : IDisposable
         _componentTagWorkPlanByteReservation = 0;
         _maximumRecordedControls = options.MaximumRecordedControls;
         _maximumSnapshotBytes = options.MaximumSnapshotBytes;
-        _ownsAdmissionDomain = constructionPlan.OwnsAdmissionDomain;
         _ownsWorkerPool = constructionPlan.OwnsWorkerPool;
         _registry = constructionPlan.Registry;
         _replayLineageId = constructionPlan.ReplayLineageId;
@@ -276,6 +275,7 @@ public sealed partial class World : IDisposable
         _tickRate = options.TickRate;
         _timeScale = options.InitialTimeScale;
         _worldGuidGrant = constructionPlan.WorldGuidGrant;
+        _defaultDomainOwner = constructionPlan.TransferDefaultDomainOwnerToWorld();
         _worldGuid = constructionPlan.WorldGuid;
         _systemCleanupPreparation = new WorldSystemCleanupPreparation(_worldGuid, systems.Length);
         _sceneSupportByteReservation = options.Registration.SceneSupport?.GetWorldStorageByteReservation(options) ?? 0;
@@ -519,6 +519,7 @@ public sealed partial class World : IDisposable
         WorldGuidGrant worldGuidGrant = default;
         WorldAdmissionDomain? admissionDomain = null;
         var ownsAdmissionDomain = false;
+        WorldDefaultDomainOwner? defaultDomainOwner = null;
         WorldDomainReservation? domainReservation = null;
         WorldSystemQuarantineReservation? systemQuarantineReservation = null;
         WorldWorkerPool? workerPool = null;
@@ -546,6 +547,9 @@ public sealed partial class World : IDisposable
                 ?? hostAdmissionDomain
                 ?? new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
             ownsAdmissionDomain = (options.AdmissionDomain is null) && (hostAdmissionDomain is null);
+            defaultDomainOwner = ownsAdmissionDomain
+                ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
+                : null;
 
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
             var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
@@ -635,7 +639,7 @@ public sealed partial class World : IDisposable
                 identityBranchId,
                 executionSessionId,
                 admissionDomain,
-                ownsAdmissionDomain,
+                defaultDomainOwner,
                 ownsWorkerPool,
                 domainReservation,
                 lineageGrant,
@@ -732,6 +736,8 @@ public sealed partial class World : IDisposable
                 {
                     _ = registry.TryReleaseFresh(worldGuidGrant);
                 }
+
+                defaultDomainOwner?.Close();
 
                 if (ownsAdmissionDomain)
                 {
@@ -1334,9 +1340,10 @@ public sealed partial class World : IDisposable
                     _domainReservation.Dispose();
                 }
 
-                if (_ownsAdmissionDomain && !attachmentQuarantineRetainsReservation)
+                if (!attachmentQuarantineRetainsReservation)
                 {
-                    _admissionDomain.Dispose();
+                    _defaultDomainOwner?.Close();
+                    _defaultDomainOwner = null;
                 }
             }
 
@@ -1711,7 +1718,7 @@ public sealed partial class World : IDisposable
         WorldWorkerPool workerPool,
         DiagnosticsService diagnostics,
         WorldAdmissionDomain admissionDomain)
-        => !_ownsAdmissionDomain
+        => (_defaultDomainOwner is null)
             && !_ownsWorkerPool
             && ReferenceEquals(_workerPool, workerPool)
             && ReferenceEquals(_diagnosticsCapability.Diagnostics, diagnostics)
