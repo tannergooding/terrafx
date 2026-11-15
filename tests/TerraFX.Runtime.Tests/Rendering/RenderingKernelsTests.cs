@@ -369,6 +369,34 @@ internal sealed class RenderingKernelsTests
     }
 
     [Test]
+    public void DirectionalShadowViewProjectionMapsFittedDepthToReversedZ()
+    {
+        Vector3[] corners =
+        [
+            new Vector3(-2.0f, -3.0f, -1.0f),
+            new Vector3(2.0f, -3.0f, -1.0f),
+            new Vector3(-2.0f, 3.0f, -1.0f),
+            new Vector3(2.0f, 3.0f, -1.0f),
+            new Vector3(-2.0f, -3.0f, 5.0f),
+            new Vector3(2.0f, -3.0f, 5.0f),
+            new Vector3(-2.0f, 3.0f, 5.0f),
+            new Vector3(2.0f, 3.0f, 5.0f),
+        ];
+        var (fitView, center, _, near, far) = RenderingKernels.FitDirectionalShadow(corners, Vector3.UnitZ);
+        var lightView = fitView
+            * Matrix4x4.CreateTranslation(new Vector3(-center.X, -center.Y, 0.0f));
+        Assert.That(Matrix4x4.TryInvert(lightView, out var inverseLightView), Is.True);
+        var viewProjection = RenderingKernels.CreateDirectionalShadowViewProjection(corners, Vector3.UnitZ);
+        var nearWorld = Vector3.TransformPoint(new Vector3(0.0f, 0.0f, near), inverseLightView);
+        var farWorld = Vector3.TransformPoint(new Vector3(0.0f, 0.0f, far), inverseLightView);
+        var nearClip = Vector4.Transform(new Vector4(nearWorld, 1.0f), viewProjection);
+        var farClip = Vector4.Transform(new Vector4(farWorld, 1.0f), viewProjection);
+
+        Assert.That(nearClip.Z, Is.EqualTo(1.0f).Within(1.0e-5f));
+        Assert.That(farClip.Z, Is.EqualTo(0.0f).Within(1.0e-5f));
+    }
+
+    [Test]
     public void NormalTransformsUseInverseTransposeAndReportMirroring()
     {
         var world = Matrix4x4.CreateScale(new Vector3(2.0f, 1.0f, 0.5f));

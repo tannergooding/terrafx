@@ -227,11 +227,19 @@ internal static class RenderingKernels
         var (fitView, center, extent, near, far) = FitDirectionalShadow(worldCorners, lightDirection);
         var lightView = fitView
             * Matrix4x4.CreateTranslation(new Vector3(-center.X, -center.Y, 0.0f));
-        var projection = Matrix4x4.CreateOrthographic(
-            extent,
-            extent,
-            near,
-            far);
+        var depthRange = far - near;
+
+        if (!float.IsFinite(depthRange) || (depthRange <= 0.0f))
+        {
+            throw new InvalidOperationException("The directional shadow depth range is not representable.");
+        }
+
+        var reciprocalDepthRange = 1.0f / (near - far);
+        var projection = new Matrix4x4(
+            new Vector4(2.0f / extent, 0.0f, 0.0f, 0.0f),
+            new Vector4(0.0f, 2.0f / extent, 0.0f, 0.0f),
+            new Vector4(0.0f, 0.0f, reciprocalDepthRange, 0.0f),
+            new Vector4(0.0f, 0.0f, -far * reciprocalDepthRange, 1.0f));
         var viewProjection = lightView * projection;
 
         if (!viewProjection.IsFinite().All()
