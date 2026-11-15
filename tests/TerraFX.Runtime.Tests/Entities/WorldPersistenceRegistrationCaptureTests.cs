@@ -698,9 +698,51 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
     }
 
     [Test]
-    public void RestoresRegisteredAttachmentStateIntoAnEmptyCandidate()
+    public void RestoresRegisteredAttachmentStateAndEntityReferencesIntoCandidate()
     {
-        var schemas = CreateWorldRootSchemas();
+        var attachmentReferenceAssignment = new ContentSchemaIdentityAssignment(
+            "application/world-root-test/attachment-reference/v1");
+        var attachmentReferenceSchema = new ContentSchemaReference(
+            attachmentReferenceAssignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var schemas = CreateWorldRootSchemas(
+            new DataSchema(
+                attachmentReferenceSchema,
+                attachmentReferenceAssignment,
+                ContentSchemaRole.AttachmentState,
+                ContentSchemaOwner.Application,
+                ContentSchemaStorage.NotComponent,
+                ContentTransientRestore.NotApplicable,
+                [
+                    new ContentFieldDescriptor(
+                        1,
+                        8,
+                        0,
+                        true,
+                        1,
+                        1,
+                        [],
+                        0,
+                        ContentUnit.None,
+                        ContentReferenceKind.None,
+                        ContentAuthoring.None,
+                        null),
+                    new ContentFieldDescriptor(
+                        2,
+                        11,
+                        0,
+                        false,
+                        1,
+                        1,
+                        [],
+                        0,
+                        ContentUnit.None,
+                        ContentReferenceKind.Entity,
+                        ContentAuthoring.None,
+                        null),
+                ]));
         var attachmentSchema = new ContentSchemaReference(
             new ContentSchemaIdentityAssignment("application/world-root-test/attachment-state/v1").SchemaId,
             1,
@@ -723,8 +765,38 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             attachmentSchema,
             [attachmentField],
             codec);
+        var entityCodec = new RestoreEntityAttachmentCodec(attachmentReferenceSchema);
+        var entityAttachmentFields = ImmutableArray.Create(
+            WorldAttachmentFieldBinding<RestoreEntityAttachmentValue, RestoreEntityAttachmentAuthor>.Value<
+                long,
+                RestoreEntityAttachmentValueReader,
+                RestoreEntityAttachmentAuthorReader>(
+                    schemas,
+                    attachmentReferenceSchema,
+                    new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)]),
+                    default,
+                    default),
+            WorldAttachmentFieldBinding<RestoreEntityAttachmentValue, RestoreEntityAttachmentAuthor>.OptionalEntityReference<
+                RestoreEntityAttachmentValueTargetReader,
+                RestoreEntityAttachmentAuthorTargetReader>(
+                    schemas,
+                    attachmentReferenceSchema,
+                    new ComponentFieldPath([ComponentPropertySegment.FieldTag(2)]),
+                    default,
+                    default));
+        var entityAttachmentFactory = WorldAttachmentFactoryBinding<
+            RestoreEntityAttachmentValue,
+            RestoreEntityAttachmentAuthor>.Create(
+                Guid.NewGuid(),
+                1,
+                schemas,
+                attachmentReferenceSchema,
+                entityAttachmentFields,
+                entityCodec);
+        entityCodec.TargetField = entityAttachmentFactory.Descriptor.Fields[1];
         var registrationBuilder = new WorldRegistrationBuilder(schemas);
         _ = registrationBuilder.RegisterAttachment(AttachmentScope.World, attachmentFactory);
+        _ = registrationBuilder.RegisterAttachment(AttachmentScope.Entity, entityAttachmentFactory);
         var registration = registrationBuilder.Build();
 
         using var admissionDomain = new WorldAdmissionDomain(512L * 1024 * 1024);
@@ -734,7 +806,18 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             InitialReplayLineageId = Guid.NewGuid(),
             WorldGuid = Guid.NewGuid(),
         });
+        var targetEntity = world.CreateEntity(new EntityDescription());
+        var ownerEntity = world.CreateEntity(new EntityDescription());
+        var targetEntityId = world.GetEntityId(targetEntity);
+        var ownerEntityId = world.GetEntityId(ownerEntity);
         world.SetAttachment(new RestoreAttachmentValue { Counter = 124 }, AttachmentOwnership.Transferred);
+        world.SetAttachment(
+            ownerEntity,
+            new RestoreEntityAttachmentValue {
+                Counter = 256,
+                Target = targetEntity,
+            },
+            AttachmentOwnership.Transferred);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
@@ -779,7 +862,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             savedWorld.ControlRecordCount,
             savedWorld.SceneControlPayloadBytes,
             savedWorld.Ecs.AttachmentCount);
-        Assert.That(savedWorld.Ecs.AttachmentCount, Is.EqualTo(1));
+        Assert.That(savedWorld.Ecs.AttachmentCount, Is.EqualTo(2));
         Assert.That(
             world.TryPrepareLoadReplacement(
                 world.WorldGuid,
@@ -833,10 +916,21 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
 
                 Assert.That(candidate.TryGetAttachment<RestoreAttachmentValue>(out var restoredAttachment), Is.True);
                 Assert.That(restoredAttachment?.Counter, Is.EqualTo(124));
+                Assert.That(candidate.TryGetEntity(ownerEntityId, out var restoredOwnerEntity), Is.True);
+                Assert.That(candidate.TryGetEntity(targetEntityId, out var restoredTargetEntity), Is.True);
+                Assert.That(
+                    candidate.TryGetAttachment<RestoreEntityAttachmentValue>(
+                        restoredOwnerEntity,
+                        out var restoredEntityAttachment),
+                    Is.True);
+                Assert.That(restoredEntityAttachment?.Counter, Is.EqualTo(256));
+                Assert.That(restoredEntityAttachment?.Target, Is.EqualTo(restoredTargetEntity));
             }
 
             Assert.That(codec.RestoreCount, Is.EqualTo(1));
             Assert.That(codec.ReleaseCount, Is.EqualTo(1));
+            Assert.That(entityCodec.RestoreCount, Is.EqualTo(1));
+            Assert.That(entityCodec.ReleaseCount, Is.EqualTo(1));
         }
         finally
         {
@@ -1415,6 +1509,260 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
     {
         public long Get(in RestoreAttachmentValue value)
             => value.Counter;
+    }
+
+    private readonly record struct RestoreEntityAttachmentAuthor(long Counter, Guid? Target);
+
+    private readonly struct RestoreEntityAttachmentAuthorReader : IComponentValueReader<RestoreEntityAttachmentAuthor, long>
+    {
+        public long Get(in RestoreEntityAttachmentAuthor value)
+            => value.Counter;
+    }
+
+    private readonly struct RestoreEntityAttachmentAuthorTargetReader : IComponentOptionalReader<RestoreEntityAttachmentAuthor, Guid>
+    {
+        public Guid GetPresent(in RestoreEntityAttachmentAuthor value)
+            => value.Target ?? throw new InvalidOperationException();
+
+        public bool IsPresent(in RestoreEntityAttachmentAuthor value)
+            => value.Target.HasValue;
+    }
+
+    private sealed class RestoreEntityAttachmentCodec : IWorldAttachmentStateProvider<
+        RestoreEntityAttachmentValue,
+        RestoreEntityAttachmentAuthor>
+    {
+        private int _releaseCount;
+        private int _restoreCount;
+        private readonly ContentSchemaReference _schema;
+        private WorldAttachmentFieldDescriptor? _targetField;
+
+        internal RestoreEntityAttachmentCodec(ContentSchemaReference schema)
+        {
+            _schema = schema;
+        }
+
+        internal int ReleaseCount => Volatile.Read(ref _releaseCount);
+
+        internal int RestoreCount => Volatile.Read(ref _restoreCount);
+
+        internal WorldAttachmentFieldDescriptor? TargetField
+        {
+            get
+            {
+                return _targetField;
+            }
+            set
+            {
+                _targetField = value;
+            }
+        }
+
+        private static void WritePayload(
+            long counter,
+            Guid? targetId,
+            scoped Span<byte> payload,
+            scoped Span<EbinFieldSource> fields,
+            out int payloadBytes,
+            out int fieldCount)
+        {
+            if (EbinPayloadWriter.Write(counter, payload, out var valueBytes, out var diagnostic)
+                is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException(diagnostic?.Category);
+            }
+
+            fields[0] = new EbinFieldSource(1, 8, 1, 1, new EbinPayloadSlice(0, valueBytes));
+            payloadBytes = valueBytes;
+            fieldCount = 1;
+
+            if (targetId is Guid entityId)
+            {
+                if (EbinPayloadWriter.Write(entityId, payload[payloadBytes..], out var targetBytes, out diagnostic)
+                    is not EbinWriteStatus.Complete)
+                {
+                    throw new InvalidOperationException(diagnostic?.Category);
+                }
+
+                fields[fieldCount++] = new EbinFieldSource(
+                    2,
+                    11,
+                    0,
+                    1,
+                    new EbinPayloadSlice(payloadBytes, targetBytes));
+                payloadBytes = checked(payloadBytes + targetBytes);
+            }
+        }
+
+        public nint Count(
+            RestoreEntityAttachmentValue value,
+            WorldAttachmentCaptureBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Guid? targetId = value.Target is { } target
+                ? binding.GetEntityId(
+                    TargetField ?? throw new InvalidOperationException("The Entity attachment target field was not captured."),
+                    target)
+                : null;
+            return MeasureRecord(value.Counter, targetId);
+        }
+
+        public WorldAttachmentReadResult<RestoreEntityAttachmentAuthor> Read(
+            scoped ReadOnlySpan<byte> source,
+            WorldAttachmentReadBinding<RestoreEntityAttachmentAuthor> binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var record = new EbinRecordReadView(source);
+            var header = record.Header;
+            var valueField = record.GetField(0);
+
+            if ((header.SchemaId != _schema.SchemaId)
+                || (header.Major != _schema.Major)
+                || (header.Minor != _schema.Minor)
+                || (record.FieldCount is not 1 and not 2)
+                || (valueField.Tag != 1)
+                || (valueField.Kind != 8)
+                || !valueField.IsRequired
+                || (valueField.Count != 1)
+                || (valueField.Payload.Length != sizeof(long)))
+            {
+                throw new InvalidOperationException("The restored Entity attachment record does not match its registered schema.");
+            }
+
+            Guid? targetId = null;
+
+            if (record.TryGetField(2, out var targetField))
+            {
+                if ((targetField.Kind != 11)
+                    || targetField.IsRequired
+                    || (targetField.Count != 1)
+                    || (targetField.Payload.Length != 16))
+                {
+                    throw new InvalidOperationException("The restored Entity attachment target has an invalid wire shape.");
+                }
+
+                targetId = new Guid(targetField.Payload, bigEndian: true);
+            }
+
+            var author = new RestoreEntityAttachmentAuthor(
+                BinaryPrimitives.ReadInt64LittleEndian(valueField.Payload),
+                targetId);
+            return binding.Complete(in author, source.Length);
+        }
+
+        public void Release(RestoreEntityAttachmentValue value, WorldAttachmentReleaseBinding binding)
+            => _ = Interlocked.Increment(ref _releaseCount);
+
+        public RestoreEntityAttachmentValue Restore(
+            in RestoreEntityAttachmentAuthor author,
+            WorldAttachmentRestoreBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = author.Target is Guid targetEntityId
+                ? binding.ResolveEntity(
+                    TargetField ?? throw new InvalidOperationException("The Entity attachment target field was not captured."),
+                    targetEntityId)
+                : (Entity?)null;
+            _ = Interlocked.Increment(ref _restoreCount);
+            return new RestoreEntityAttachmentValue {
+                Counter = author.Counter,
+                Target = target,
+            };
+        }
+
+        public ImmutableArray<Diagnostic> Validate(
+            RestoreEntityAttachmentValue value,
+            WorldAttachmentValidationBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return [];
+        }
+
+        public nint Write(
+            RestoreEntityAttachmentValue value,
+            scoped Span<byte> destination,
+            WorldAttachmentCaptureBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Guid? targetId = value.Target is { } target
+                ? binding.GetEntityId(
+                    TargetField ?? throw new InvalidOperationException("The Entity attachment target field was not captured."),
+                    target)
+                : null;
+            var recordBytes = MeasureRecord(value.Counter, targetId);
+            Span<byte> payload = stackalloc byte[sizeof(long) + 16];
+            Span<EbinFieldSource> fields = stackalloc EbinFieldSource[2];
+            WritePayload(value.Counter, targetId, payload, fields, out var payloadBytes, out var fieldCount);
+            var source = new EbinRecordWriteView(
+                _schema.SchemaId,
+                _schema.Major,
+                _schema.Minor,
+                fields[..fieldCount],
+                payload[..payloadBytes]);
+            Span<byte> candidate = stackalloc byte[recordBytes];
+            var status = EbinStructuralWriter.Write(
+                in source,
+                EbinReadLimits.Foundation,
+                candidate,
+                destination[..recordBytes],
+                out var bytesWritten,
+                out var diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException(diagnostic?.Category);
+            }
+
+            return bytesWritten;
+        }
+
+        private int MeasureRecord(long counter, Guid? targetId)
+        {
+            Span<byte> payload = stackalloc byte[sizeof(long) + 16];
+            Span<EbinFieldSource> fields = stackalloc EbinFieldSource[2];
+            WritePayload(counter, targetId, payload, fields, out var payloadBytes, out var fieldCount);
+            var source = new EbinRecordWriteView(
+                _schema.SchemaId,
+                _schema.Major,
+                _schema.Minor,
+                fields[..fieldCount],
+                payload[..payloadBytes]);
+            var status = EbinStructuralWriter.Measure(
+                in source,
+                EbinReadLimits.Foundation,
+                out var recordBytes,
+                out var diagnostic);
+            return (status is EbinWriteStatus.Complete)
+                ? recordBytes
+                : throw new InvalidOperationException(diagnostic?.Category);
+        }
+    }
+
+    private sealed class RestoreEntityAttachmentValue
+    {
+        internal long Counter { get; init; }
+
+        internal Entity? Target { get; init; }
+    }
+
+    private readonly struct RestoreEntityAttachmentValueReader : IComponentValueReader<RestoreEntityAttachmentValue, long>
+    {
+        public long Get(in RestoreEntityAttachmentValue value)
+            => value.Counter;
+    }
+
+    private readonly struct RestoreEntityAttachmentValueTargetReader : IComponentOptionalReader<RestoreEntityAttachmentValue, Entity>
+    {
+        public Entity GetPresent(in RestoreEntityAttachmentValue value)
+            => value.Target ?? throw new InvalidOperationException();
+
+        public bool IsPresent(in RestoreEntityAttachmentValue value)
+            => value.Target.HasValue;
     }
 
     private readonly record struct RestoreProbeAuthor(int Counter);

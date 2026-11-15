@@ -19,8 +19,9 @@ public sealed partial class World
             throw new ArgumentException("A restored Entity identity must be nonempty.", nameof(stableId));
         }
 
-        ThrowIfDisposed();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ThrowIfFaulted();
+        ThrowIfSystemInvocationActive();
         EnsureOwnerThread();
 
         if (!_isRestoreCandidate || !_isCandidateInitialized)
