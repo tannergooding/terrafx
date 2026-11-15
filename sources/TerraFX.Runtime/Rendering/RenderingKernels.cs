@@ -9,6 +9,8 @@ namespace TerraFX.Rendering;
 
 internal static class RenderingKernels
 {
+    private const float DefaultDirectionalShadowDistance = 100.0f;
+    private const int DirectionalCascadeCount = 4;
     private const float MinimumRoughness = 0.045f;
     private const int ShadowAtlasCellSize = 1024;
     private const int ShadowAtlasResolution = 4096;
@@ -170,6 +172,75 @@ internal static class RenderingKernels
                 corners[cornerOffset + cornerIndex] = worldCorner;
             }
         }
+    }
+
+    internal static void CreateDirectionalShadowCascades(
+        CameraSnapshot camera,
+        Vector3 lightDirection,
+        Span<float> splits,
+        Span<Matrix4x4> viewProjections)
+    {
+        if (splits.Length != DirectionalCascadeCount + 1)
+        {
+            throw new ArgumentException("A directional shadow requires five split boundaries.", nameof(splits));
+        }
+
+        if (viewProjections.Length != DirectionalCascadeCount)
+        {
+            throw new ArgumentException("A directional shadow requires four cascade view-projection matrices.", nameof(viewProjections));
+        }
+
+        var end = camera.Far.HasValue
+            ? MathF.Min(DefaultDirectionalShadowDistance, camera.Far.Value)
+            : DefaultDirectionalShadowDistance;
+
+        if (!float.IsFinite(end) || (end <= camera.Near))
+        {
+            throw new InvalidOperationException("The selected camera has no valid directional shadow range.");
+        }
+
+        Span<float> computedSplits = stackalloc float[DirectionalCascadeCount + 1];
+        Span<Matrix4x4> computedViewProjections = stackalloc Matrix4x4[DirectionalCascadeCount];
+        Span<Vector3> corners = stackalloc Vector3[8];
+        var perspective = camera.ProjectionKind is CameraProjectionKind.Perspective;
+
+        ComputeCascadeSplits(camera.Near, end, perspective, computedSplits);
+
+        for (var cascadeIndex = 0; cascadeIndex < DirectionalCascadeCount; cascadeIndex++)
+        {
+            CreateDirectionalCascadeCorners(
+                camera,
+                computedSplits[cascadeIndex],
+                computedSplits[cascadeIndex + 1],
+                corners);
+            computedViewProjections[cascadeIndex] = CreateDirectionalShadowViewProjection(corners, lightDirection);
+        }
+
+        computedSplits.CopyTo(splits);
+        computedViewProjections.CopyTo(viewProjections);
+    }
+
+    internal static Matrix4x4 CreateDirectionalShadowViewProjection(
+        ReadOnlySpan<Vector3> worldCorners,
+        Vector3 lightDirection)
+    {
+        var (fitView, center, extent, near, far) = FitDirectionalShadow(worldCorners, lightDirection);
+        var lightView = fitView
+            * Matrix4x4.CreateTranslation(new Vector3(-center.X, -center.Y, 0.0f));
+        var projection = Matrix4x4.CreateOrthographic(
+            extent,
+            extent,
+            near,
+            far);
+        var viewProjection = lightView * projection;
+
+        if (!viewProjection.IsFinite().All()
+            || !Matrix4x4.TryInvert(viewProjection, out _))
+        {
+            throw new InvalidOperationException("The directional shadow view-projection matrix is not representable.");
+        }
+
+        return viewProjection;
     }
 
     internal static Vector3 DecodeSrgb(Vector3 encoded)

@@ -38,7 +38,8 @@ internal sealed class RenderingKernelsTests
         float orthographicHeight,
         float aspectRatio,
         SpatialPosition3 position,
-        Quaternion? rotation = null)
+        Quaternion? rotation = null,
+        CameraFarMode farMode = CameraFarMode.Finite)
     {
         var origin = default(SpatialPosition3);
         var frame = new SpatialFrame3(
@@ -62,8 +63,8 @@ internal sealed class RenderingKernelsTests
             (float)Math.PI / 2.0f,
             orthographicHeight,
             near,
-            CameraFarMode.Finite,
-            far,
+            farMode,
+            farMode is CameraFarMode.Finite ? far : null,
             aspectRatio,
             new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
             CameraClearFlags.Color,
@@ -224,6 +225,91 @@ internal sealed class RenderingKernelsTests
             () => RenderingKernels.CreateDirectionalCascadeCorners(orthographicCamera, 2.0f, 2.0f, corners));
     }
 
+    [TestCase(CameraProjectionKind.Perspective, 0.5f, 200.0f, CameraFarMode.Finite, 100.0f)]
+    [TestCase(CameraProjectionKind.Perspective, 0.5f, 80.0f, CameraFarMode.Finite, 80.0f)]
+    [TestCase(CameraProjectionKind.Perspective, 0.5f, 100.0f, CameraFarMode.Infinite, 100.0f)]
+    [TestCase(CameraProjectionKind.Orthographic, -1.0f, 50.0f, CameraFarMode.Finite, 50.0f)]
+    public void DirectionalShadowCascadesClampDistanceAndBuildEveryProjection(
+        CameraProjectionKind projectionKind,
+        float near,
+        float far,
+        CameraFarMode farMode,
+        float expectedEnd)
+    {
+        var camera = CreateCascadeCamera(
+            projectionKind,
+            near,
+            far,
+            orthographicHeight: 8.0f,
+            aspectRatio: 1.5f,
+            position: new SpatialPosition3(default, new Vector3(0.0f, 0.0f, -5.0f)),
+            farMode: farMode);
+        Span<float> splits = stackalloc float[5];
+        Span<Matrix4x4> viewProjections = stackalloc Matrix4x4[4];
+
+        RenderingKernels.CreateDirectionalShadowCascades(
+            camera,
+            new Vector3(1.0f, -2.0f, 3.0f),
+            splits,
+            viewProjections);
+
+        Assert.That(splits[0], Is.EqualTo(near));
+        Assert.That(splits[^1], Is.EqualTo(expectedEnd));
+        Span<Vector3> corners = stackalloc Vector3[8];
+
+        for (var cascadeIndex = 0; cascadeIndex < viewProjections.Length; cascadeIndex++)
+        {
+            Assert.That(splits[cascadeIndex + 1], Is.GreaterThan(splits[cascadeIndex]));
+            Assert.That(viewProjections[cascadeIndex].IsFinite().All(), Is.True);
+
+            RenderingKernels.CreateDirectionalCascadeCorners(
+                camera,
+                splits[cascadeIndex],
+                splits[cascadeIndex + 1],
+                corners);
+
+            foreach (var corner in corners)
+            {
+                var clip = Vector4.Transform(new Vector4(corner, 1.0f), viewProjections[cascadeIndex]);
+
+                Assert.That(clip.X, Is.InRange(-1.00001f, 1.00001f));
+                Assert.That(clip.Y, Is.InRange(-1.00001f, 1.00001f));
+                Assert.That(clip.Z, Is.InRange(-0.00001f, 1.00001f));
+            }
+        }
+    }
+
+    [Test]
+    public void DirectionalShadowCascadesRejectInvalidRangeWithoutChangingOutputs()
+    {
+        var camera = CreateCascadeCamera(
+            CameraProjectionKind.Perspective,
+            near: 101.0f,
+            far: 150.0f,
+            orthographicHeight: 8.0f,
+            aspectRatio: 1.5f,
+            position: default);
+        var splits = new float[5];
+        Array.Fill(splits, -7.0f);
+        var viewProjections = new Matrix4x4[4];
+        var sentinel = Matrix4x4.CreateScale(2.0f);
+        Array.Fill(viewProjections, sentinel);
+
+        _ = Assert.Throws<InvalidOperationException>(
+            () => RenderingKernels.CreateDirectionalShadowCascades(
+                camera,
+                Vector3.UnitZ,
+                splits,
+                viewProjections));
+
+        Assert.That(splits, Is.EqualTo([-7.0f, -7.0f, -7.0f, -7.0f, -7.0f]));
+
+        foreach (var viewProjection in viewProjections)
+        {
+            Assert.That(viewProjection, Is.EqualTo(sentinel));
+        }
+    }
+
     [Test]
     public void DirectionalShadowFitSnapsCenterAndAddsCasterMargin()
     {
@@ -247,6 +333,39 @@ internal sealed class RenderingKernelsTests
         Assert.That(Center.Y / texelWorldSize, Is.EqualTo(MathF.Round(Center.Y / texelWorldSize)));
         Assert.That(Near, Is.EqualTo(-11.0f));
         Assert.That(Far, Is.EqualTo(5.0f));
+    }
+
+    [TestCase(CameraProjectionKind.Perspective, 0.5f, 100.0f, 3.0f)]
+    [TestCase(CameraProjectionKind.Orthographic, -1.0f, 50.0f, -1.0f)]
+    public void DirectionalShadowViewProjectionContainsCascadeCorners(
+        CameraProjectionKind projectionKind,
+        float near,
+        float far,
+        float cascadeStart)
+    {
+        var camera = CreateCascadeCamera(
+            projectionKind,
+            near,
+            far,
+            orthographicHeight: 8.0f,
+            aspectRatio: 1.5f,
+            position: new SpatialPosition3(default, new Vector3(0.0f, 0.0f, -5.0f)));
+        Span<Vector3> corners = stackalloc Vector3[8];
+        RenderingKernels.CreateDirectionalCascadeCorners(camera, cascadeStart, 12.0f, corners);
+        var viewProjection = RenderingKernels.CreateDirectionalShadowViewProjection(
+            corners,
+            new Vector3(1.0f, -2.0f, 3.0f));
+
+        foreach (var corner in corners)
+        {
+            var clip = Vector4.Transform(new Vector4(corner, 1.0f), viewProjection);
+
+            Assert.That(clip.IsFinite().All(), Is.True);
+            Assert.That(clip.W, Is.EqualTo(1.0f));
+            Assert.That(clip.X, Is.InRange(-1.0f, 1.0f));
+            Assert.That(clip.Y, Is.InRange(-1.0f, 1.0f));
+            Assert.That(clip.Z, Is.InRange(0.0f, 1.0f));
+        }
     }
 
     [Test]
