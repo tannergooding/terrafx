@@ -13,6 +13,16 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceEcsProviderTests
 {
+    internal static Func<int> RegisterResource(
+        WorldRegistrationBuilder builder,
+        CompiledContentSchemaRegistry registry,
+        ContentSchemaReference schemaReference,
+        Guid resourceId)
+    {
+        var codec = CreateResourceRegistration(builder, registry, schemaReference, resourceId);
+        return () => codec.RestoreCallCount;
+    }
+
     private static void AssertEmptyArray(EbinFieldReadView field, uint tag)
     {
         Assert.That(field.Tag, Is.EqualTo(tag));
@@ -83,6 +93,52 @@ internal sealed class WorldPersistenceEcsProviderTests
         });
     }
 
+    private static EcsResourceStateCodec CreateResourceRegistration(
+        WorldRegistrationBuilder builder,
+        CompiledContentSchemaRegistry registry,
+        ContentSchemaReference schemaReference,
+        Guid resourceId)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentOutOfRangeException.ThrowIfEqual(resourceId, Guid.Empty);
+        var schema = WorldResourceSchema<ulong>.FromRegistry(registry, schemaReference);
+        var fieldDescriptor = schema.GetField(new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)]));
+        var storagePath = new ComponentStoragePath([ComponentStorageSegment.Member("Value")]);
+        var fieldBinding = WorldResourceFieldBinding<ulong, ImmutableArray<ulong>>
+            .PartitionArray<ulong, EcsResourcePartitionReader, EcsResourceAuthorReader>(
+                fieldDescriptor,
+                [storagePath],
+                default,
+                default);
+        var partitionStorage = new ComponentStorageDeclaration(
+            sizeof(ulong),
+            [
+                new ComponentStorageLeaf(
+                    storagePath,
+                    ComponentStorageKind.Value,
+                    0,
+                    sizeof(ulong),
+                    0,
+                    0,
+                    ComponentStoragePurpose.SchemaValue),
+            ],
+            []);
+        var factory = WorldResourceFactoryBinding<ulong, ImmutableArray<ulong>>.Create(
+            Guid.Parse("40000000-0000-0000-0000-000000000002"),
+            1,
+            schema,
+            partitionStorage,
+            [fieldBinding],
+            new EcsResourceDefaults());
+        var codec = new EcsResourceStateCodec(factory, fieldDescriptor);
+        _ = builder.RegisterResource(
+            new SystemResourceDescription(resourceId, 1, allowParallelAccess: true),
+            new EcsResourceFactoryProvider(factory.RegistrationBinding),
+            codec);
+        return codec;
+    }
+
     private static World CreateResourceWorld(
         out Guid resourceId,
         out Guid stateSchemaId,
@@ -115,44 +171,15 @@ internal sealed class WorldPersistenceEcsProviderTests
             ContentSchemaStorage.NotComponent,
             ContentTransientRestore.NotApplicable,
             [field]);
-        var registry = new CompiledContentSchemaRegistry([metadata]);
-        var schema = WorldResourceSchema<ulong>.FromRegistry(registry, schemaReference);
-        var fieldDescriptor = schema.GetField(new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)]));
-        var storagePath = new ComponentStoragePath([ComponentStorageSegment.Member("Value")]);
-        var fieldBinding = WorldResourceFieldBinding<ulong, ImmutableArray<ulong>>
-            .PartitionArray<ulong, EcsResourcePartitionReader, EcsResourceAuthorReader>(
-                fieldDescriptor,
-                [storagePath],
-                default,
-                default);
-        var partitionStorage = new ComponentStorageDeclaration(
-            sizeof(ulong),
-            [
-                new ComponentStorageLeaf(
-                    storagePath,
-                    ComponentStorageKind.Value,
-                    0,
-                    sizeof(ulong),
-                    0,
-                    0,
-                    ComponentStoragePurpose.SchemaValue),
-            ],
-            []);
-        var factory = WorldResourceFactoryBinding<ulong, ImmutableArray<ulong>>.Create(
-            Guid.Parse("40000000-0000-0000-0000-000000000002"),
-            1,
-            schema,
-            partitionStorage,
-            [fieldBinding],
-            new EcsResourceDefaults());
-        codec = new EcsResourceStateCodec(factory, fieldDescriptor);
+        var registry = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            metadata,
+        ]);
         resourceId = Guid.Parse("20000000-0000-0000-0000-000000000002");
         stateSchemaId = schemaReference.SchemaId;
         var builder = new WorldRegistrationBuilder(registry);
-        _ = builder.RegisterResource(
-            new SystemResourceDescription(resourceId, 1, allowParallelAccess: true),
-            new EcsResourceFactoryProvider(factory.RegistrationBinding),
-            codec);
+        codec = CreateResourceRegistration(builder, registry, schemaReference, resourceId);
         var registration = builder.Build();
         return World.Create(new WorldOptions(registration) {
             CpuWorkerCount = 0,

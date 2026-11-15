@@ -12,6 +12,7 @@ internal sealed class WorldSystemFactoryStatefulFamily<TSystem, TAuthor, TCreate
     IWorldSystemCreateControl,
     IWorldSystemDefaultsControl,
     IWorldSystemReleaseControl,
+    IWorldSystemRestoreDispatch,
     IWorldSystemValidationControl
     where TSystem : class, IWorldSystem
     where TAuthor : notnull
@@ -90,6 +91,65 @@ internal sealed class WorldSystemFactoryStatefulFamily<TSystem, TAuthor, TCreate
 
     void IWorldSystemReleaseControl.Invoke(IWorldSystem system)
         => _release.Invoke(ValidateSystem(system));
+
+    object IWorldSystemRestoreDispatch.ReadStateRecord(
+        scoped ReadOnlySpan<byte> source,
+        Guid systemId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfEqual(systemId, Guid.Empty);
+        var schema = Descriptor.StateSchema
+            ?? throw new InvalidOperationException("A stateless system has no state-read schema.");
+        var binding = new WorldSystemReadBinding<TAuthor>(systemId, schema, source.Length);
+
+        try
+        {
+            var result = binding.ValidateComplete(_codec.Read(source, binding, cancellationToken));
+
+            if (binding.Failure is { } failure)
+            {
+                throw failure;
+            }
+
+            if (result.Status is WorldSystemReadStatus.Rejected)
+            {
+                var diagnostic = result.Diagnostics[0];
+                throw new System.IO.InvalidDataException($"{diagnostic.Code}: {diagnostic.Message}");
+            }
+
+            if ((result.Status is not WorldSystemReadStatus.Read)
+                || (result.ConsumedBytes != source.Length)
+                || !result.Diagnostics.IsEmpty
+                || !result.TryGetAuthorValue(out var author))
+            {
+                throw new InvalidOperationException("The successful system state read did not return its complete author value.");
+            }
+
+            return author;
+        }
+        finally
+        {
+            binding.Revoke();
+        }
+    }
+
+    void IWorldSystemRestoreDispatch.RestoreState(
+        IWorldSystem system,
+        object author,
+        WorldStateRestoreBinding binding,
+        CancellationToken cancellationToken)
+    {
+        var typedSystem = ValidateSystem(system);
+
+        if (author is not TAuthor typedAuthor)
+        {
+            throw new InvalidOperationException("The system state restore author has the wrong type.");
+        }
+
+        ArgumentNullException.ThrowIfNull(binding);
+        _codec.Restore(typedSystem, in typedAuthor, binding, cancellationToken);
+    }
 
     void IWorldSystemValidationControl.Validate(IWorldSystem system, Guid systemId)
     {

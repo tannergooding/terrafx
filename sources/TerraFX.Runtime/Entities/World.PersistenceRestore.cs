@@ -183,11 +183,9 @@ public sealed partial class World
             throw new ArgumentException("The validated ECS counts or identity do not match the restore candidate.", nameof(contents));
         }
 
-        if ((contents.LiveSceneInstanceCount != 0)
-            || (contents.SystemCount != 0)
-            || (contents.AttachmentCount != 0))
+        if ((contents.LiveSceneInstanceCount != 0) || (contents.AttachmentCount != 0))
         {
-            throw new NotSupportedException("This candidate restore slice does not support Scene identities, systems, or attachments.");
+            throw new NotSupportedException("This candidate restore slice does not support Scene identities or attachments.");
         }
 
         if (contents.EntityCount > _maximumLiveEntities)
@@ -242,20 +240,36 @@ public sealed partial class World
         for (var fieldIndex = 1; fieldIndex < 4; fieldIndex++)
         {
             var field = root.GetField(fieldIndex);
-            var expectedCount = (fieldIndex == 2) ? contents.ResourceCount : 0;
+            var expectedCount = fieldIndex switch {
+                1 => contents.SystemCount,
+                2 => contents.ResourceCount,
+                _ => 0,
+            };
 
             if ((field.Tag != (uint)fieldIndex + 1)
                 || (field.Kind != 24)
                 || !field.IsRequired
                 || (field.Count != (ulong)expectedCount))
             {
-                throw new NotSupportedException("This candidate restore slice does not support system or attachment state.");
+                throw new NotSupportedException("The candidate ECS owner-state arrays do not match their validated counts.");
             }
         }
 
         if (Registration.Resources.Length != contents.ResourceCount)
         {
             throw new InvalidOperationException("The validated resource rows do not match the candidate registration.");
+        }
+
+        var statefulSystemCount = 0;
+
+        foreach (var registration in Registration.Systems)
+        {
+            statefulSystemCount += registration.Factory.Descriptor.StateSchema.HasValue ? 1 : 0;
+        }
+
+        if (statefulSystemCount != contents.SystemCount)
+        {
+            throw new InvalidOperationException("The validated system rows do not match the candidate registration.");
         }
 
         var previousEntityId = Guid.Empty;
@@ -698,6 +712,7 @@ public sealed partial class World
         }
 
         RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
+        RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
         _isRestoreEcsRowsRestored = true;
         _restoreEcsPlan = null;
     }
@@ -740,6 +755,89 @@ public sealed partial class World
                 payload.EncodedBytes,
                 _resourceStorage[resourceIndex],
                 cancellationToken);
+        }
+    }
+
+    private void RestoreSystemStateRecords(
+        EbinRecordReadView ecsRecord,
+        int systemCount,
+        CancellationToken cancellationToken)
+    {
+        var systemRegistrationIndex = 0;
+
+        for (var systemRecordIndex = 0; systemRecordIndex < systemCount; systemRecordIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            while ((systemRegistrationIndex < Registration.Systems.Length)
+                && !Registration.Systems[systemRegistrationIndex].Factory.Descriptor.StateSchema.HasValue)
+            {
+                systemRegistrationIndex++;
+            }
+
+            if (systemRegistrationIndex >= Registration.Systems.Length)
+            {
+                throw new InvalidOperationException("The validated stateful system row has no target registration.");
+            }
+
+            var registration = Registration.Systems[systemRegistrationIndex];
+            var systemRecord = ecsRecord.GetRecordArrayElement(2, systemRecordIndex);
+            var systemIdField = systemRecord.GetField(0);
+
+            if ((systemIdField.Tag != 1)
+                || (systemIdField.Kind != 11)
+                || !systemIdField.IsRequired
+                || (systemIdField.Payload.Length != 16))
+            {
+                throw new ArgumentException("A candidate state/system-state row has an invalid SystemId.", nameof(ecsRecord));
+            }
+
+            var systemId = new Guid(systemIdField.Payload, bigEndian: true);
+            var payload = systemRecord.GetRecord(2);
+            var payloadHeader = payload.Header;
+            var schema = registration.Factory.Descriptor.StateSchema
+                ?? throw new InvalidOperationException("The target stateful system omitted its state schema.");
+
+            if ((systemId != registration.Description.SystemId)
+                || (payloadHeader.SchemaId != schema.SchemaId)
+                || (payloadHeader.Major != schema.Major)
+                || (payloadHeader.Minor != schema.Minor))
+            {
+                throw new ArgumentException("A candidate state/system-state row does not match its exact target registration.", nameof(ecsRecord));
+            }
+
+            var dispatch = registration.Factory.Dispatch as IWorldSystemRestoreDispatch
+                ?? throw new InvalidOperationException("The target stateful system omitted its Restore dispatch.");
+            var system = _systemInstances[systemRegistrationIndex]
+                ?? throw new InvalidOperationException("The candidate omitted its fresh registered system instance.");
+            var author = dispatch.ReadStateRecord(payload.EncodedBytes, systemId, cancellationToken);
+            var context = new WorldSystemRestoreContext(this, registration, systemId);
+            var binding = new WorldStateRestoreBinding(context);
+
+            try
+            {
+                dispatch.RestoreState(system, author, binding, cancellationToken);
+                context.ThrowIfFailed();
+            }
+            finally
+            {
+                binding.Revoke();
+                context.Revoke();
+            }
+
+            registration.Factory.ValidationControl.Validate(system, systemId);
+            systemRegistrationIndex++;
+        }
+
+        while ((systemRegistrationIndex < Registration.Systems.Length)
+            && !Registration.Systems[systemRegistrationIndex].Factory.Descriptor.StateSchema.HasValue)
+        {
+            systemRegistrationIndex++;
+        }
+
+        if (systemRegistrationIndex != Registration.Systems.Length)
+        {
+            throw new InvalidOperationException("The validated ECS state omitted a registered stateful system.");
         }
     }
 
@@ -936,6 +1034,132 @@ public sealed partial class World
         {
             ThrowActiveMisuse(exception);
             throw new InvalidOperationException("The restore callback continued after an active authority failure.");
+        }
+
+        [DoesNotReturn]
+        private void ThrowActiveMisuse(Exception exception)
+        {
+            RecordFailure(exception);
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
+    }
+
+    private sealed class WorldSystemRestoreContext : IComponentRestoreContext
+    {
+        private Exception? _failure;
+        private int _isActive = 1;
+        private readonly SystemRegistration _registration;
+        private readonly Guid _systemId;
+        private readonly World _world;
+
+        internal WorldSystemRestoreContext(World world, SystemRegistration registration, Guid systemId)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            ArgumentNullException.ThrowIfNull(registration);
+            ArgumentOutOfRangeException.ThrowIfEqual(systemId, Guid.Empty);
+            _world = world;
+            _registration = registration;
+            _systemId = systemId;
+            OwnerThreadId = Environment.CurrentManagedThreadId;
+        }
+
+        public Exception? Failure => Volatile.Read(ref _failure);
+
+        public bool IsActive => Volatile.Read(ref _isActive) == 1;
+
+        public int OwnerThreadId { get; }
+
+        public TDependency ReadSameEntity<TDependency>()
+            where TDependency : unmanaged
+        {
+            EnsureActive();
+            return Fail<TDependency>(new InvalidOperationException("System Restore cannot read component columns."));
+        }
+
+        public void RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            _ = Interlocked.CompareExchange(ref _failure, exception, null);
+        }
+
+        public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            _ = referenceField;
+            _ = targetEntityId;
+            EnsureActive();
+            return Fail<Entity>(new InvalidOperationException("System Restore cannot resolve component reference fields."));
+        }
+
+        public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            EnsureActive();
+
+            if (referenceField is null)
+            {
+                ThrowActiveMisuse(new ArgumentNullException(nameof(referenceField)));
+            }
+
+            var schema = _registration.Factory.Descriptor.StateSchema;
+            var isRegistered = false;
+
+            foreach (var candidate in _registration.Factory.Descriptor.Fields)
+            {
+                isRegistered |= ReferenceEquals(candidate, referenceField);
+            }
+
+            if (!schema.HasValue
+                || (referenceField.StateSchema != schema.Value)
+                || !isRegistered
+                || (referenceField.Field.WireKind != 11)
+                || (referenceField.Field.Reference != ContentReferenceKind.Entity))
+            {
+                ThrowActiveMisuse(new ArgumentException("The selected field is not an exact registered system Entity reference.", nameof(referenceField)));
+            }
+
+            if (targetEntityId == Guid.Empty)
+            {
+                ThrowActiveMisuse(new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId)));
+            }
+
+            return _world.ResolveRestoreEntity(targetEntityId);
+        }
+
+        public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            _ = referenceField;
+            _ = targetEntityId;
+            EnsureActive();
+            return Fail<Entity?>(new InvalidOperationException("System Restore cannot resolve component reference fields."));
+        }
+
+        public void ThrowIfFailed()
+        {
+            if (Failure is { } failure)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+        }
+
+        internal void Revoke()
+            => Volatile.Write(ref _isActive, 0);
+
+        private void EnsureActive()
+        {
+            if (!IsActive)
+            {
+                throw new InvalidOperationException("The system restore context has expired.");
+            }
+
+            if (Environment.CurrentManagedThreadId != OwnerThreadId)
+            {
+                ThrowActiveMisuse(new InvalidOperationException("The system restore context is restricted to its issuing thread."));
+            }
+        }
+
+        private T Fail<T>(Exception exception)
+        {
+            ThrowActiveMisuse(exception);
+            throw new InvalidOperationException("The system Restore callback continued after an active authority failure.");
         }
 
         [DoesNotReturn]

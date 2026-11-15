@@ -357,7 +357,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
     }
 
     [Test]
-    public void RestoresPersistentResetAndDerivedComponentsWithTagsThroughCandidateContext()
+    public void RestoresHeterogeneousEcsAndRegisteredOwnerStateThroughCandidateContext()
     {
         var derivedAssignment = new ContentSchemaIdentityAssignment("application/world-root-test/derived-light-flux/v1");
         var derivedSchemaReference = new ContentSchemaReference(
@@ -394,6 +394,60 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             new ContentSchemaIdentityAssignment("application/world-root-test/tag/v1").SchemaId,
             1);
         _ = registrationBuilder.RegisterTag(tagSchema);
+        var systemSchemaReference = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("application/world-root-test/system-state/v1").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var systemSchema = WorldSystemSchema<RestoreProbeSystem>.FromRegistry(schemas, systemSchemaReference);
+        var systemSourcePath = new WorldSystemSourcePath(["Counter"]);
+        var systemField = WorldSystemFieldBinding<RestoreProbeSystem, RestoreProbeAuthor>.Scalar<
+            int,
+            RestoreProbeSystemCounterReader,
+            RestoreProbeAuthorCounterReader>(
+                systemSchema.GetField(new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)])),
+                [systemSourcePath],
+                [systemSourcePath],
+                default,
+                default);
+        var systemCodec = new RestoreProbeCodec(systemSchemaReference);
+        var systemFactory = WorldSystemFactoryBinding.Stateful<
+            RestoreProbeSystem,
+            RestoreProbeAuthor,
+            RestoreProbeCreate,
+            RestoreProbeDefaults,
+            RestoreProbeRelease>(
+                Guid.NewGuid(),
+                1,
+                systemSchema,
+                new WorldSystemSourceStateDeclaration(
+                    typeof(RestoreProbeSystem),
+                    [new WorldSystemSourceLeaf(systemSourcePath, typeof(int), WorldSystemSourcePurpose.Authoritative)]),
+                [systemField],
+                default,
+                default,
+                systemCodec,
+                default);
+        _ = registrationBuilder.RegisterSystem(
+            new SystemDescription(
+                Guid.NewGuid(),
+                0,
+                SimulationStage.Input,
+                [],
+                [],
+                [],
+                SystemThreadMode.OwnerThread),
+            new RestoreProbeFactory(systemFactory));
+        var resourceSchemaReference = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("application/world-root-test/resource-state/v1").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var resourceRestoreCount = WorldPersistenceEcsProviderTests.RegisterResource(
+            registrationBuilder,
+            schemas,
+            resourceSchemaReference,
+            Guid.NewGuid());
         var pointLightSchemaReference = new ContentSchemaReference(
             new ContentSchemaIdentityAssignment("render/point-light").SchemaId,
             1,
@@ -629,6 +683,9 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                 Assert.That(restoredSecondPointLight.LuminousFlux, Is.EqualTo(secondPointLight.LuminousFlux));
                 Assert.That(restoredSecondPointLight.Range, Is.EqualTo(secondPointLight.Range));
                 Assert.That(restoredSecondPointLight.LayerMask, Is.EqualTo(secondPointLight.LayerMask));
+                Assert.That(systemCodec.RestoreCount, Is.EqualTo(1));
+                Assert.That(systemCodec.RestoredCounter, Is.EqualTo(124));
+                Assert.That(resourceRestoreCount(), Is.EqualTo(1));
             });
         }
         finally
@@ -868,5 +925,242 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
 
         public ResetMarker Restore(in byte author, WorldStateRestoreBinding binding, CancellationToken cancellationToken)
             => throw new NotSupportedException();
+    }
+
+    private readonly record struct RestoreProbeAuthor(int Counter);
+
+    private readonly struct RestoreProbeAuthorCounterReader : IWorldSystemValueReader<RestoreProbeAuthor, int>
+    {
+        public int Invoke(in RestoreProbeAuthor source)
+            => source.Counter;
+    }
+
+    private sealed class RestoreProbeCodec : IWorldSystemStateCodec<RestoreProbeSystem, RestoreProbeAuthor>
+    {
+        private int _restoreCount;
+        private int _restoredCounter;
+        private readonly ContentSchemaReference _schema;
+
+        internal RestoreProbeCodec(ContentSchemaReference schema)
+        {
+            _schema = schema;
+        }
+
+        internal int RestoreCount => Volatile.Read(ref _restoreCount);
+
+        internal int RestoredCounter => Volatile.Read(ref _restoredCounter);
+
+        private static void WritePayload(int counter, scoped Span<byte> payload, scoped Span<EbinFieldSource> fields)
+        {
+            if ((EbinPayloadWriter.Write(counter, payload, out var bytesWritten, out _) != EbinWriteStatus.Complete)
+                || (bytesWritten != sizeof(int)))
+            {
+                throw new InvalidOperationException("The restore-probe system payload could not be written.");
+            }
+
+            fields[0] = new EbinFieldSource(1, 7, 1, 1, new EbinPayloadSlice(0, bytesWritten));
+        }
+
+        public nint Count(RestoreProbeSystem system, WorldSystemCaptureBinding binding, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return MeasureRecord(system.Counter);
+        }
+
+        public WorldSystemReadResult<RestoreProbeAuthor> Read(
+            scoped ReadOnlySpan<byte> source,
+            WorldSystemReadBinding<RestoreProbeAuthor> binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var action = new ReadAction(_schema, binding);
+            var status = EbinStructuralReader.Read(
+                source,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out var diagnostic);
+
+            if (status is not EbinReadStatus.Complete)
+            {
+                return binding.Reject(status, diagnostic);
+            }
+
+            return action.Result
+                ?? throw new InvalidOperationException("The system codec read did not issue an author result.");
+        }
+
+        public void Restore(
+            RestoreProbeSystem system,
+            in RestoreProbeAuthor author,
+            WorldStateRestoreBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            system.Counter = author.Counter;
+            Volatile.Write(ref _restoredCounter, author.Counter);
+            _ = Interlocked.Increment(ref _restoreCount);
+        }
+
+        public ImmutableArray<Diagnostic> Validate(
+            RestoreProbeSystem system,
+            WorldSystemValidationBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return [];
+        }
+
+        public nint Write(
+            RestoreProbeSystem system,
+            scoped Span<byte> destination,
+            WorldSystemCaptureBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Span<byte> payload = stackalloc byte[sizeof(int)];
+            Span<byte> candidate = stackalloc byte[128];
+            Span<EbinFieldSource> fields = stackalloc EbinFieldSource[1];
+            WritePayload(system.Counter, payload, fields);
+            var source = new EbinRecordWriteView(
+                _schema.SchemaId,
+                _schema.Major,
+                _schema.Minor,
+                fields,
+                payload);
+            var status = EbinStructuralWriter.Write(
+                source,
+                EbinReadLimits.Foundation,
+                candidate,
+                destination,
+                out var bytesWritten,
+                out var diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException(diagnostic?.Category);
+            }
+
+            return bytesWritten;
+        }
+
+        private nint MeasureRecord(int counter)
+        {
+            Span<byte> payload = stackalloc byte[sizeof(int)];
+            Span<EbinFieldSource> fields = stackalloc EbinFieldSource[1];
+            WritePayload(counter, payload, fields);
+            var source = new EbinRecordWriteView(
+                _schema.SchemaId,
+                _schema.Major,
+                _schema.Minor,
+                fields,
+                payload);
+            var status = EbinStructuralWriter.Measure(
+                source,
+                EbinReadLimits.Foundation,
+                out var recordBytes,
+                out var diagnostic);
+            return (status is EbinWriteStatus.Complete)
+                ? recordBytes
+                : throw new InvalidOperationException(diagnostic?.Category);
+        }
+
+        private struct ReadAction : IAction<EbinRecordReadView>
+        {
+            private readonly WorldSystemReadBinding<RestoreProbeAuthor> _binding;
+            private WorldSystemReadResult<RestoreProbeAuthor>? _result;
+            private readonly ContentSchemaReference _schema;
+
+            internal ReadAction(
+                ContentSchemaReference schema,
+                WorldSystemReadBinding<RestoreProbeAuthor> binding)
+            {
+                _schema = schema;
+                _binding = binding;
+                _result = null;
+            }
+
+            internal readonly WorldSystemReadResult<RestoreProbeAuthor>? Result => _result;
+
+            public void Invoke(scoped EbinRecordReadView record)
+            {
+                var header = record.Header;
+
+                if ((header.SchemaId != _schema.SchemaId)
+                    || (header.Major != _schema.Major)
+                    || (header.Minor != _schema.Minor))
+                {
+                    _result = _binding.Reject(
+                        WorldSystemReadFailureKind.SchemaMismatch,
+                        16,
+                        null,
+                        "The restore-probe system record does not match the selected schema.");
+                    return;
+                }
+
+                if ((record.FieldCount != 1)
+                    || !record.TryGetField(1, out var field)
+                    || (field.Kind != 7)
+                    || !field.IsRequired
+                    || (field.Count != 1)
+                    || (field.Payload.Length != sizeof(int)))
+                {
+                    _result = _binding.Reject(
+                        WorldSystemReadFailureKind.InvalidField,
+                        64,
+                        null,
+                        "The restore-probe system record does not match its one-field schema.");
+                    return;
+                }
+
+                var author = new RestoreProbeAuthor(BinaryPrimitives.ReadInt32LittleEndian(field.Payload));
+                _result = _binding.Complete(in author, record.EncodedBytes.Length);
+            }
+        }
+    }
+
+    private readonly struct RestoreProbeCreate : IWorldSystemCreate<RestoreProbeSystem>
+    {
+        public RestoreProbeSystem Invoke()
+            => new();
+    }
+
+    private readonly struct RestoreProbeDefaults : IWorldSystemDefaults<RestoreProbeSystem>
+    {
+        public void Invoke(RestoreProbeSystem system)
+            => system.Counter = 123;
+    }
+
+    private sealed class RestoreProbeFactory : IWorldSystemFactory
+    {
+        internal RestoreProbeFactory(WorldSystemFactoryBinding binding)
+        {
+            ArgumentNullException.ThrowIfNull(binding);
+            Binding = binding;
+        }
+
+        public WorldSystemFactoryBinding Binding { get; }
+    }
+
+    private readonly struct RestoreProbeRelease : IWorldSystemRelease<RestoreProbeSystem>
+    {
+        public void Invoke(RestoreProbeSystem system)
+        {
+        }
+    }
+
+    private sealed class RestoreProbeSystem : IWorldSystem
+    {
+        internal int Counter { get; set; }
+
+        public void Execute(WorldSystemContext context)
+            => Counter++;
+    }
+
+    private readonly struct RestoreProbeSystemCounterReader : IWorldSystemValueReader<RestoreProbeSystem, int>
+    {
+        public int Invoke(in RestoreProbeSystem source)
+            => source.Counter;
     }
 }
