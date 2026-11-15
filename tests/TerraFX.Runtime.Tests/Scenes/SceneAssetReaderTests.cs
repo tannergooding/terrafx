@@ -776,14 +776,16 @@ internal sealed class SceneAssetReaderTests
             float localScaleX = 1.0f,
             bool includeRootPosition = true,
             int rootChunkX = 0,
-            float rootOffsetX = 0.0f)
+            float rootOffsetX = 0.0f,
+            float localPositionZ = 0.0f,
+            float rootOffsetZ = 0.0f)
         {
             var selector = CreateEntitySelector(entityId, scope, placementPath);
             var localTransform = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
                 1,
                 0,
-                SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, localPositionX, 0, 0),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, localPositionX, 0, localPositionZ),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, localScaleX, 1, 1));
             List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> fields = [
@@ -800,7 +802,7 @@ internal sealed class SceneAssetReaderTests
                     0,
                     rootOffsetX,
                     0,
-                    0,
+                    rootOffsetZ,
                     isRequired: false));
             }
 

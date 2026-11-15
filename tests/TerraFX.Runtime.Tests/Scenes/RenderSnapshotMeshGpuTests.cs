@@ -70,7 +70,9 @@ internal sealed partial class SceneAssetStoreTests
     private static async Task RunSnapshotBuiltInMeshC0GraphAsync(
         GraphicsBackend graphicsBackend,
         bool unsupportedCullMode = false,
-        bool unsupportedActiveLight = false,
+        bool useDirectionalLight = false,
+        bool useSecondDirectionalLight = false,
+        bool useShadowCaster = false,
         bool usePointLight = false,
         bool useMultiplePointLights = false,
         bool useAlphaMask = false,
@@ -88,7 +90,11 @@ internal sealed partial class SceneAssetStoreTests
         bool includeSecondCamera = false,
         byte baseColorTextureAlpha = byte.MaxValue,
         float baseColorAlpha = 1.0f,
-        float vertexColorAlpha = 1.0f)
+        float vertexColorAlpha = 1.0f,
+        float cameraNear = 0.1f,
+        float cameraFar = 1000.0f,
+        string? expectedBuildWarning = null,
+        Action<ReadOnlyMemory<byte>, PixelSize, long>? readbackObserver = null)
     {
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -106,9 +112,12 @@ internal sealed partial class SceneAssetStoreTests
         const uint SpriteTextureAssetId = 9;
         const uint SpriteAtlasAssetId = 10;
         const uint SpriteMaterialAssetId = 11;
+        const uint ShadowCasterPrefabAssetId = 12;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
         var spriteFrameId = new Guid("80000000-0000-4000-8000-000000000001");
+        var shadowCasterEntityId = new Guid("90000000-0000-4000-8000-000000000001");
+        var shadowCasterPlacementId = new Guid("90000000-0000-4000-8000-000000000002");
         var materialRecord = CreateRenderMaterialAssetRecord(
             isSprite: false,
             CreateRenderMaterialPbrParametersRecord(
@@ -135,9 +144,13 @@ internal sealed partial class SceneAssetStoreTests
                 | (useNormalMap ? 0x040UL : 0UL));
         byte[][] meshComponents = [CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue)];
 
-        if (unsupportedActiveLight)
+        if (useDirectionalLight)
         {
-            meshComponents = [.. meshComponents, CreateDirectionalLightRecord(ulong.MaxValue, enabled: true, priority: 0)];
+            meshComponents = [.. meshComponents, CreateDirectionalLightRecord(
+                ulong.MaxValue,
+                enabled: true,
+                priority: 0,
+                direction: new Vector3(1.0f, 0.0f, 1.0f))];
         }
 
         if (usePointLight)
@@ -156,9 +169,29 @@ internal sealed partial class SceneAssetStoreTests
                 pivot: new Vector2(0.5f, 0.5f))];
         }
 
-        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
-            sceneAssetId,
-            additionalEntityComponents: meshComponents);
+        var shadowCasterPrefabRecord = useShadowCaster
+            ? SceneAssetReaderTests.Fixtures.CreatePrefab(
+                new AssetId(checked((int)ShadowCasterPrefabAssetId)),
+                entityId: shadowCasterEntityId,
+                additionalEntityComponents: [
+                    CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue),
+                ])
+            : null;
+        var sceneRecord = useShadowCaster
+            ? SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
+                sceneAssetId,
+                SceneAssetReaderTests.Fixtures.RootEntityId,
+                shadowCasterPlacementId,
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    shadowCasterEntityId,
+                    includeRootPosition: false,
+                    localPositionX: -1.0f,
+                    localPositionZ: -1.0f),
+                additionalEntityComponents: meshComponents,
+                placementPrefabAssetId: new AssetId(checked((int)ShadowCasterPrefabAssetId)))
+            : SceneAssetReaderTests.Fixtures.CreateScene(
+                sceneAssetId,
+                additionalEntityComponents: meshComponents);
         Package.Entry[] packageEntries = [
             new Package.Entry(
                 MeshAssetId,
@@ -185,6 +218,16 @@ internal sealed partial class SceneAssetStoreTests
                 checked((uint)sceneAssetId.Value),
                 Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord)),
         ];
+
+        if (shadowCasterPrefabRecord is not null)
+        {
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    ShadowCasterPrefabAssetId,
+                    Package.CreateEnvelope(ShadowCasterPrefabAssetId, shadowCasterPrefabRecord)),
+            ];
+        }
 
         if (includeSprite)
         {
@@ -406,9 +449,9 @@ internal sealed partial class SceneAssetStoreTests
                     (byte)CameraProjectionKind.Perspective,
                     float.Pi / 3.0f,
                     10.0f,
-                    0.1f,
+                    cameraNear,
                     (byte)CameraFarMode.Finite,
-                    new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                    new SceneComponentDefinitions.OptionalSingle(cameraFar),
                     default,
                     new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
                     (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
@@ -419,6 +462,21 @@ internal sealed partial class SceneAssetStoreTests
                 world.Add(cameraEntity, in rootPosition);
                 world.Add(cameraEntity, in camera);
 
+                if (useSecondDirectionalLight)
+                {
+                    var secondDirectionalLightEntity = world.CreateEntity(new EntityDescription(Guid.NewGuid()));
+                    var secondDirectionalLight = new RenderComponentDefinitions.DirectionalLightComponent(
+                        Vector3.One,
+                        5000.0f,
+                        new Vector3(-1.0f, 0.0f, 1.0f),
+                        ulong.MaxValue,
+                        enabled: true,
+                        priority: 1);
+                    world.Add(secondDirectionalLightEntity, in localTransform);
+                    world.Add(secondDirectionalLightEntity, in rootPosition);
+                    world.Add(secondDirectionalLightEntity, in secondDirectionalLight);
+                }
+
                 if (includeSecondCamera)
                 {
                     var secondaryCameraEntity = world.CreateEntity(new EntityDescription(Guid.NewGuid()));
@@ -426,9 +484,9 @@ internal sealed partial class SceneAssetStoreTests
                         (byte)CameraProjectionKind.Perspective,
                         float.Pi / 3.0f,
                         10.0f,
-                        0.1f,
+                        cameraNear,
                         (byte)CameraFarMode.Finite,
-                        new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                        new SceneComponentDefinitions.OptionalSingle(cameraFar),
                         default,
                         new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
                         (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
@@ -477,7 +535,28 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("OffscreenNative startup omitted its GraphicsDevice.");
             var meshSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its Mesh snapshot.");
-            Assert.That(meshSnapshot.MeshDraws, Has.Length.EqualTo(2));
+            var meshDrawCount = useShadowCaster ? 4 : 2;
+            Assert.That(meshSnapshot.MeshDraws, Has.Length.EqualTo(meshDrawCount));
+
+            if (useShadowCaster)
+            {
+                var uniqueMeshPositions = new System.Collections.Generic.HashSet<Vector3>();
+
+                foreach (var draw in meshSnapshot.MeshDraws)
+                {
+                    if (!SpatialMath.TryToFrameRelative(draw.Position, draw.Frame3, out var relativePosition))
+                    {
+                        throw new InvalidOperationException("A shadow test Mesh position is outside its frame.");
+                    }
+
+                    _ = uniqueMeshPositions.Add(relativePosition);
+                }
+
+                Assert.That(uniqueMeshPositions, Has.Count.EqualTo(2));
+                Assert.That(uniqueMeshPositions, Does.Contain(Vector3.Zero));
+                Assert.That(uniqueMeshPositions, Does.Contain(new Vector3(-1.0f, 0.0f, -1.0f)));
+            }
+
             Assert.That(meshSnapshot.SpriteDraws, Has.Length.EqualTo(includeSprite ? 1 : 0));
 
             if (usePointLight)
@@ -498,7 +577,6 @@ internal sealed partial class SceneAssetStoreTests
                     "mesh-c0-readback-target")).ConfigureAwait(false);
 
             if (unsupportedCullMode
-                || unsupportedActiveLight
                 || unsupportedTextureSampler
                 || missingTextureUv0)
             {
@@ -511,8 +589,60 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The Mesh graph compile omitted its plan.");
+
+            if (expectedBuildWarning is not null)
+            {
+                Assert.That(
+                    compileResponse.Diagnostics.Select(static diagnostic => diagnostic.Code),
+                    Is.EqualTo([expectedBuildWarning]));
+                return;
+            }
+
             var cameraCount = includeSecondCamera ? 2 : 1;
-            Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2 * cameraCount));
+            Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(meshDrawCount * cameraCount));
+
+            if (useDirectionalLight)
+            {
+                var builtInState = plan.BuiltInSpriteState
+                    ?? throw new InvalidOperationException("The directional-light graph omitted its built-in state.");
+                var frameUpload = builtInState.BufferUploads.Single(
+                    static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-frame-data"));
+                var directionalLightUpload = builtInState.BufferUploads.Single(
+                    static upload => upload.Version.Description.DebugName.StartsWith("mesh-directional-lights-", StringComparison.Ordinal));
+                Assert.Multiple(() => {
+                    Assert.That(
+                        BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(frameUpload.Bytes.AsSpan(156))),
+                        Is.EqualTo(RenderingKernels.DefaultDirectionalShadowDistance));
+                    Assert.That(
+                        BinaryPrimitives.ReadUInt32LittleEndian(directionalLightUpload.Bytes),
+                        Is.EqualTo(1u));
+                    Assert.That(
+                        BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(
+                            directionalLightUpload.Bytes.AsSpan(RenderDirectionalLightBufferBuilder.DirectionOffset + 12))),
+                        Is.EqualTo(1.0f));
+                });
+            }
+
+            Assert.That(
+                plan.BuiltInSpriteState?.MeshShadowPasses,
+                useDirectionalLight ? Has.Count.GreaterThan(0) : Has.Count.Zero);
+
+            if (useShadowCaster)
+            {
+                var shadowedDrawIndices = plan.BuiltInSpriteState!.MeshShadowPasses.Values
+                    .Select(static pass => pass.DrawIndex)
+                    .Distinct()
+                    .ToArray();
+                Assert.That(shadowedDrawIndices, Has.Length.EqualTo(meshDrawCount));
+
+                var cascadeZeroDrawIndices = plan.BuiltInSpriteState.MeshShadowPasses
+                    .Where(pair => plan.Passes.Single(pass => pass.Id == pair.Key).Description.Name.Contains(".Shadow0.", StringComparison.Ordinal))
+                    .Select(static pair => pair.Value.DrawIndex)
+                    .Distinct()
+                    .ToArray();
+                Assert.That(cascadeZeroDrawIndices, Has.Length.EqualTo(meshDrawCount));
+            }
+
             Assert.That(plan.BuiltInSpriteState?.Passes, Has.Count.EqualTo(includeSprite ? cameraCount : 0));
             Assert.That(plan.BuiltInSpriteState?.ToneMapPasses, Has.Count.EqualTo(1));
 
@@ -644,6 +774,7 @@ internal sealed partial class SceneAssetStoreTests
                 readLease.CopyWindow(0, readbackBytes);
             }
 
+            readbackObserver?.Invoke(readbackBytes, targetExtent, readback.RowPitch);
             var coloredPixelCount = 0;
             var minimumX = targetExtent.Width;
             var minimumY = targetExtent.Height;
@@ -703,7 +834,13 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
 
-                if (usePointLight)
+                if (useDirectionalLight)
+                {
+                    Assert.That(readbackBytes[firstColoredPixelOffset], Is.GreaterThan(100));
+                    Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.GreaterThan(100));
+                    Assert.That(readbackBytes[firstColoredPixelOffset + 2], Is.GreaterThan(100));
+                }
+                else if (usePointLight)
                 {
                     Assert.That(readbackBytes[firstColoredPixelOffset], Is.GreaterThan(2));
                     Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.GreaterThan(readbackBytes[firstColoredPixelOffset]));
@@ -832,10 +969,6 @@ internal sealed partial class SceneAssetStoreTests
             vertexColorAlpha: 0.5f);
 
     [Test]
-    public Task SnapshotBuiltInMeshC0GraphRejectsActiveLightWithoutShadowPassAsync()
-        => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedActiveLight: true);
-
-    [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsBaseTextureWithoutUv0Async()
         => RunSnapshotBuiltInMeshC0GraphAsync(
             GraphicsBackend.Vulkan,
@@ -880,6 +1013,26 @@ internal sealed partial class SceneAssetStoreTests
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersBaseColorTextureAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useBaseColorTexture: true);
+
+    [TestCase(GraphicsBackend.D3D12, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, true, true)]
+    [TestCase(GraphicsBackend.Vulkan, false, true, true)]
+    [TestCase(GraphicsBackend.D3D12, true, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, true)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, true)]
+    public Task SnapshotBuiltInMeshC0GraphRendersDirectionalShadowsAsync(
+        GraphicsBackend graphicsBackend,
+        bool useSkinning,
+        bool useBaseColorTexture,
+        bool useAlphaMask)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useDirectionalLight: true,
+            useSkinning: useSkinning,
+            useBaseColorTexture: useBaseColorTexture,
+            useAlphaMask: useAlphaMask);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -926,6 +1079,55 @@ internal sealed partial class SceneAssetStoreTests
             useAlphaBlend: true,
             useSkinning: true,
             baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public async Task SnapshotBuiltInMeshC0GraphRendersShadowOcclusionAsync(GraphicsBackend graphicsBackend)
+    {
+        byte[] unoccludedReadback = [];
+        byte[] occludedReadback = [];
+        long rowPitch = 0;
+
+        await RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useDirectionalLight: true,
+            readbackObserver: (bytes, _, pitch) => {
+                unoccludedReadback = bytes.ToArray();
+                rowPitch = pitch;
+            }).ConfigureAwait(false);
+        await RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useDirectionalLight: true,
+            useShadowCaster: true,
+            readbackObserver: (bytes, _, pitch) => {
+                occludedReadback = bytes.ToArray();
+                rowPitch = pitch;
+            }).ConfigureAwait(false);
+
+        Assert.That(unoccludedReadback, Is.Not.Empty);
+        Assert.That(occludedReadback, Is.Not.Empty);
+        var darkenedPixels = 0;
+
+        for (var y = 0; y < 64; y++)
+        {
+            for (var x = 0; x < 64; x++)
+            {
+                var pixelOffset = checked((int)((rowPitch * y) + (x * 4)));
+                var darkening = unoccludedReadback[pixelOffset] - occludedReadback[pixelOffset];
+
+                if ((unoccludedReadback[pixelOffset] > 20)
+                    && (darkening > 10))
+                {
+                    darkenedPixels++;
+                }
+            }
+        }
+
+        Assert.That(
+            darkenedPixels,
+            Is.GreaterThan(0),
+            "No shadowed receiver pixels were observed.");
+    }
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -1006,4 +1208,23 @@ internal sealed partial class SceneAssetStoreTests
             useAlphaBlend: true,
             useVertexColor: true,
             vertexColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphWarnsForDirectionalLightBudgetAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useDirectionalLight: true,
+            useSecondDirectionalLight: true,
+            expectedBuildWarning: "ShadowBudgetExceeded");
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphWarnsForInvalidDirectionalShadowRangeAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useDirectionalLight: true,
+            cameraNear: 100.0f,
+            cameraFar: 101.0f,
+            expectedBuildWarning: "ShadowRangeInvalid");
 }

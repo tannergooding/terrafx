@@ -9,11 +9,11 @@ namespace TerraFX.Rendering;
 
 internal static class RenderingKernels
 {
-    private const float DefaultDirectionalShadowDistance = 100.0f;
+    internal const float DefaultDirectionalShadowDistance = 100.0f;
+    internal const int ShadowAtlasCellSize = 1024;
+    internal const int ShadowAtlasResolution = 4096;
     private const int DirectionalCascadeCount = 4;
     private const float MinimumRoughness = 0.045f;
-    private const int ShadowAtlasCellSize = 1024;
-    private const int ShadowAtlasResolution = 4096;
 
     internal static void ComputeCascadeSplits(float near, float end, bool perspective, Span<float> splits)
     {

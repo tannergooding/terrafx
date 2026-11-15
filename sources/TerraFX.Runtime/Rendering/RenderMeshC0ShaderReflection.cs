@@ -47,9 +47,12 @@ internal static class RenderMeshC0ShaderReflection
             ? new ShaderIoSignature("TEXCOORD", 4, 4, ShaderValueType.Float4, ShaderInterpolation.Smooth)
             : new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float4, ShaderInterpolation.Smooth));
 
-        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 11 : 3);
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 14 : 6);
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.UniformBuffer, 1));
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 2, ShaderResourceKind.UniformBuffer, 1));
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1));
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.UniformBuffer, 1));
 
         if (textured)
@@ -81,6 +84,15 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("CameraPosition", ShaderValueType.Float4, 80, 16, 1, 0),
                         new ShaderFieldLayout("AmbientIrradiance", ShaderValueType.Float4, 96, 16, 1, 0),
                         new ShaderFieldLayout("PointLightCount", ShaderValueType.UInt4, 112, 16, 1, 0),
+                        new ShaderFieldLayout("CameraForward", ShaderValueType.Float4, 128, 16, 1, 0),
+                        new ShaderFieldLayout("CascadeEnds", ShaderValueType.Float4, 144, 16, 1, 0),
+                        new ShaderFieldLayout(
+                            "ShadowViewProjectionRows",
+                            ShaderValueType.Float4,
+                            160,
+                            16,
+                            16,
+                            16),
                     ]),
                 new ShaderRecordLayout(
                     "MaterialData",
@@ -109,6 +121,26 @@ internal static class RenderMeshC0ShaderReflection
                             RenderMeshC0PointLightBufferBuilder.RadianceOffset,
                             16,
                             RenderMeshC0PointLightBufferBuilder.Capacity,
+                            16),
+                    ]),
+                new ShaderRecordLayout(
+                    "DirectionalLightData",
+                    RenderDirectionalLightBufferBuilder.SizeInBytes,
+                    [
+                        new ShaderFieldLayout("DirectionalLightCount", ShaderValueType.UInt4, 0, 16, 1, 0),
+                        new ShaderFieldLayout(
+                            "DirectionalLightDirectionAndShadow",
+                            ShaderValueType.Float4,
+                            RenderDirectionalLightBufferBuilder.DirectionOffset,
+                            16,
+                            RenderDirectionalLightBufferBuilder.Capacity,
+                            16),
+                        new ShaderFieldLayout(
+                            "DirectionalLightRadiance",
+                            ShaderValueType.Float4,
+                            RenderDirectionalLightBufferBuilder.RadianceOffset,
+                            16,
+                            RenderDirectionalLightBufferBuilder.Capacity,
                             16),
                     ]),
             ],
@@ -185,6 +217,15 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("CameraPosition", ShaderValueType.Float4, 80, 16, 1, 0),
                         new ShaderFieldLayout("AmbientIrradiance", ShaderValueType.Float4, 96, 16, 1, 0),
                         new ShaderFieldLayout("PointLightCount", ShaderValueType.UInt4, 112, 16, 1, 0),
+                        new ShaderFieldLayout("CameraForward", ShaderValueType.Float4, 128, 16, 1, 0),
+                        new ShaderFieldLayout("CascadeEnds", ShaderValueType.Float4, 144, 16, 1, 0),
+                        new ShaderFieldLayout(
+                            "ShadowViewProjectionRows",
+                            ShaderValueType.Float4,
+                            160,
+                            16,
+                            16,
+                            16),
                     ]),
                 new ShaderRecordLayout(
                     "ObjectData",

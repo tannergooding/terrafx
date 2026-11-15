@@ -52,8 +52,8 @@ internal sealed class VulkanGraphResourceStateMapperTests
     [TestCase(GraphResourceState.StorageWrite, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
     [TestCase(GraphResourceState.StorageReadWrite, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
     [TestCase(GraphResourceState.ColorAttachment, VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)]
-    [TestCase(GraphResourceState.DepthRead, VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL)]
-    [TestCase(GraphResourceState.DepthWrite, VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)]
+    [TestCase(GraphResourceState.DepthRead, VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)]
+    [TestCase(GraphResourceState.DepthWrite, VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)]
     [TestCase(GraphResourceState.Present, VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)]
     public void ImageStatesMapToLayouts(GraphResourceState state, VkImageLayout expectedLayout)
         => Assert.That(VulkanGraphResourceStateMapper.GetImageLayout(state), Is.EqualTo(expectedLayout));
@@ -66,6 +66,15 @@ internal sealed class VulkanGraphResourceStateMapperTests
         _ = Assert.Throws<InvalidOperationException>(
             () => VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.General));
     }
+
+    [Test]
+    public void SampledDepthUsesDepthStencilReadOnlyLayout()
+        => Assert.That(
+            VulkanGraphResourceStateMapper.GetTextureImageLayout(
+                GraphResourceState.ShaderSampledRead,
+                TextureFormat.D32Float,
+                TextureAspect.Depth),
+            Is.EqualTo(VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL));
 
     [Test]
     public void ShaderResourceStagesRejectMissingOrUnsupportedValues()

@@ -48,15 +48,18 @@ public sealed partial class RenderGraphPlan
                 var builtInSpriteState = BuiltInSpriteState;
                 RenderSpriteC0GraphPass? spritePass = null;
                 RenderMeshC0GraphPass? meshPass = null;
+                RenderMeshC0ShadowGraphPass? meshShadowPass = null;
                 RenderSpriteToneMapGraphPass? toneMapPass = null;
                 var hasSpritePass = (builtInSpriteState is not null)
                     && builtInSpriteState.Passes.TryGetValue(passId, out spritePass);
                 var hasMeshPass = (builtInSpriteState is not null)
                     && builtInSpriteState.MeshPasses.TryGetValue(passId, out meshPass);
+                var hasMeshShadowPass = (builtInSpriteState is not null)
+                    && builtInSpriteState.MeshShadowPasses.TryGetValue(passId, out meshShadowPass);
                 var hasToneMapPass = (builtInSpriteState is not null)
                     && builtInSpriteState.ToneMapPasses.TryGetValue(passId, out toneMapPass);
 
-                if ((callback is null) && !hasSpritePass && !hasMeshPass && !hasToneMapPass)
+                if ((callback is null) && !hasSpritePass && !hasMeshPass && !hasMeshShadowPass && !hasToneMapPass)
                 {
                     continue;
                 }
@@ -136,6 +139,20 @@ public sealed partial class RenderGraphPlan
                         }
 
                         selectedCallback = RecordMeshPass;
+                    }
+                    else if (hasMeshShadowPass)
+                    {
+                        var selectedMeshShadowPass = meshShadowPass
+                            ?? throw new InvalidOperationException("The built-in Mesh shadow pass state is missing.");
+                        var selectedResources = builtInResources
+                            ?? throw new InvalidOperationException("The built-in Mesh shadow pass has no submission resources.");
+
+                        void RecordMeshShadowPass(scoped ref CommandRecorder recorder)
+                        {
+                            selectedMeshShadowPass.Record(ref recorder, selectedResources);
+                        }
+
+                        selectedCallback = RecordMeshShadowPass;
                     }
                     else if (hasToneMapPass)
                     {

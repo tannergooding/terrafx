@@ -121,7 +121,9 @@ public sealed partial class Renderer
         GpuPipeline? spritePipeline = null;
         GpuPipeline? meshAlphaMaskPipeline = null;
         GpuPipeline? meshPipeline = null;
+        GpuPipeline? meshShadowPipeline = null;
         GpuPipeline? skinnedMeshPipeline = null;
+        GpuPipeline? skinnedMeshShadowPipeline = null;
         GpuPipeline? skinnedMeshAlphaMaskPipeline = null;
         GpuPipeline? skinnedMeshBlendPipeline = null;
         GpuPipeline? meshBlendPipeline = null;
@@ -130,11 +132,14 @@ public sealed partial class Renderer
         GpuPipeline? texturedMeshAlphaMaskPipeline = null;
         GpuPipeline? skinnedTexturedMeshAlphaMaskPipeline = null;
         GpuPipeline? texturedMeshPipeline = null;
+        GpuPipeline? texturedMeshShadowPipeline = null;
         GpuPipeline? skinnedTexturedMeshPipeline = null;
+        GpuPipeline? skinnedTexturedMeshShadowPipeline = null;
         GpuPipeline? texturedMeshBlendPipeline = null;
         GpuPipeline? skinnedTexturedMeshBlendPipeline = null;
         GpuPipeline? spriteToneMapPipeline = null;
         GpuSampler? spriteSampler = null;
+        GpuSampler? shadowSampler = null;
         RenderBuiltInSubmissionResources? builtInResources = null;
         GraphicsDevice.GraphResourceUseLeaseSet? graphResourceUseLeases = null;
         GraphicsDevice.GraphFrameSlotReservation? graphFrameSlotReservation = null;
@@ -320,6 +325,19 @@ public sealed partial class Renderer
                     }
                 }
 
+                var hasMeshShadowPass = false;
+                var hasTexturedMeshShadowPass = false;
+                var hasSkinnedMeshShadowPass = false;
+                var hasSkinnedTexturedMeshShadowPass = false;
+
+                foreach (var meshShadowPass in spriteState.MeshShadowPasses.Values)
+                {
+                    hasMeshShadowPass |= !meshShadowPass.Skinned && (meshShadowPass.BaseColorTexture is null);
+                    hasTexturedMeshShadowPass |= !meshShadowPass.Skinned && (meshShadowPass.BaseColorTexture is not null);
+                    hasSkinnedMeshShadowPass |= meshShadowPass.Skinned && (meshShadowPass.BaseColorTexture is null);
+                    hasSkinnedTexturedMeshShadowPass |= meshShadowPass.Skinned && (meshShadowPass.BaseColorTexture is not null);
+                }
+
                 if (hasUntexturedAlphaMaskPass)
                 {
                     meshAlphaMaskPipeline = await CreateMeshC0AlphaMaskPipelineAsync(
@@ -418,6 +436,38 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                if (hasMeshShadowPass)
+                {
+                    meshShadowPipeline = await CreateMeshC0ShadowPipelineAsync(
+                        textured: false,
+                        skinned: false,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasTexturedMeshShadowPass)
+                {
+                    texturedMeshShadowPipeline = await CreateMeshC0ShadowPipelineAsync(
+                        textured: true,
+                        skinned: false,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedMeshShadowPass)
+                {
+                    skinnedMeshShadowPipeline = await CreateMeshC0ShadowPipelineAsync(
+                        textured: false,
+                        skinned: true,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedTexturedMeshShadowPass)
+                {
+                    skinnedTexturedMeshShadowPipeline = await CreateMeshC0ShadowPipelineAsync(
+                        textured: true,
+                        skinned: true,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteToneMapPipeline = await CreateSpriteToneMapPipelineAsync(
@@ -440,6 +490,10 @@ public sealed partial class Renderer
                     || (hasTexturedAlphaMaskPass && (texturedMeshAlphaMaskPipeline is null))
                     || (hasTexturedMeshPass && (texturedMeshPipeline is null))
                     || (hasTexturedBlendPass && (texturedMeshBlendPipeline is null))
+                    || (hasMeshShadowPass && (meshShadowPipeline is null))
+                    || (hasTexturedMeshShadowPass && (texturedMeshShadowPipeline is null))
+                    || (hasSkinnedMeshShadowPass && (skinnedMeshShadowPipeline is null))
+                    || (hasSkinnedTexturedMeshShadowPass && (skinnedTexturedMeshShadowPipeline is null))
                     || ((spriteState.ToneMapPasses.Count != 0) && (spriteToneMapPipeline is null)))
                 {
                     throw new InvalidOperationException("The built-in render graph has an incomplete pipeline set.");
@@ -454,6 +508,8 @@ public sealed partial class Renderer
                     || hasSkinnedTexturedBlendPass
                     || hasSkinnedNormalMappedMeshPass
                     || hasNormalMappedMeshPass
+                    || hasTexturedMeshShadowPass
+                    || hasSkinnedTexturedMeshShadowPass
                     || spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteSampler = await device.CreateSamplerAsync(
@@ -468,15 +524,32 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                if (spriteState.MeshPasses.Count != 0)
+                {
+                    shadowSampler = await device.CreateSamplerAsync(
+                        new SamplerDescription(
+                            SamplerFilter.Nearest,
+                            SamplerFilter.Nearest,
+                            SamplerFilter.None,
+                            SamplerAddressMode.Clamp,
+                            SamplerAddressMode.Clamp,
+                            SamplerAddressMode.Clamp,
+                            maximumAnisotropy: 1.0f),
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (spriteState.Passes.Count != 0
                     || spriteState.MeshPasses.Count != 0
+                    || spriteState.MeshShadowPasses.Count != 0
                     || spriteState.ToneMapPasses.Count != 0)
                 {
                     builtInResources = new RenderBuiltInSubmissionResources(
                         meshAlphaMaskPipeline,
                         spritePipeline,
                         meshPipeline,
+                        meshShadowPipeline,
                         skinnedMeshPipeline,
+                        skinnedMeshShadowPipeline,
                         skinnedMeshAlphaMaskPipeline,
                         skinnedMeshBlendPipeline,
                         meshBlendPipeline,
@@ -485,11 +558,14 @@ public sealed partial class Renderer
                         texturedMeshAlphaMaskPipeline,
                         skinnedTexturedMeshAlphaMaskPipeline,
                         texturedMeshPipeline,
+                        texturedMeshShadowPipeline,
                         skinnedTexturedMeshPipeline,
+                        skinnedTexturedMeshShadowPipeline,
                         texturedMeshBlendPipeline,
                         skinnedTexturedMeshBlendPipeline,
                         spriteToneMapPipeline,
-                        spriteSampler);
+                        spriteSampler,
+                        shadowSampler);
                 }
             }
 
@@ -725,11 +801,14 @@ public sealed partial class Renderer
 
                 graphFrameSlotReservation?.Dispose();
                 spriteSampler?.Dispose();
+                shadowSampler?.Dispose();
                 spriteToneMapPipeline?.Dispose();
                 meshAlphaMaskPipeline?.Dispose();
                 meshBlendPipeline?.Dispose();
                 meshPipeline?.Dispose();
+                meshShadowPipeline?.Dispose();
                 skinnedMeshPipeline?.Dispose();
+                skinnedMeshShadowPipeline?.Dispose();
                 skinnedMeshAlphaMaskPipeline?.Dispose();
                 skinnedMeshBlendPipeline?.Dispose();
                 normalMappedMeshPipeline?.Dispose();
@@ -739,7 +818,9 @@ public sealed partial class Renderer
                 texturedMeshBlendPipeline?.Dispose();
                 skinnedTexturedMeshBlendPipeline?.Dispose();
                 texturedMeshPipeline?.Dispose();
+                texturedMeshShadowPipeline?.Dispose();
                 skinnedTexturedMeshPipeline?.Dispose();
+                skinnedTexturedMeshShadowPipeline?.Dispose();
                 spritePipeline?.Dispose();
 
                 foreach (var deferredTextureLease in deferredTextureLeases)

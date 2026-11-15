@@ -10,7 +10,9 @@ internal sealed class RenderBuiltInSubmissionResources
         GpuPipeline? meshAlphaMaskPipeline,
         GpuPipeline? spritePipeline,
         GpuPipeline? meshPipeline,
+        GpuPipeline? meshShadowPipeline,
         GpuPipeline? skinnedMeshPipeline,
+        GpuPipeline? skinnedMeshShadowPipeline,
         GpuPipeline? skinnedMeshAlphaMaskPipeline,
         GpuPipeline? skinnedMeshBlendPipeline,
         GpuPipeline? meshBlendPipeline,
@@ -19,15 +21,20 @@ internal sealed class RenderBuiltInSubmissionResources
         GpuPipeline? texturedMeshAlphaMaskPipeline,
         GpuPipeline? skinnedTexturedMeshAlphaMaskPipeline,
         GpuPipeline? texturedMeshPipeline,
+        GpuPipeline? texturedMeshShadowPipeline,
         GpuPipeline? skinnedTexturedMeshPipeline,
+        GpuPipeline? skinnedTexturedMeshShadowPipeline,
         GpuPipeline? texturedMeshBlendPipeline,
         GpuPipeline? skinnedTexturedMeshBlendPipeline,
         GpuPipeline? toneMapPipeline,
-        GpuSampler? sampler)
+        GpuSampler? sampler,
+        GpuSampler? shadowSampler)
     {
         MeshAlphaMaskPipeline = meshAlphaMaskPipeline;
         MeshPipeline = meshPipeline;
+        MeshShadowPipeline = meshShadowPipeline;
         SkinnedMeshPipeline = skinnedMeshPipeline;
+        SkinnedMeshShadowPipeline = skinnedMeshShadowPipeline;
         SkinnedMeshAlphaMaskPipeline = skinnedMeshAlphaMaskPipeline;
         SkinnedMeshBlendPipeline = skinnedMeshBlendPipeline;
         MeshBlendPipeline = meshBlendPipeline;
@@ -36,12 +43,15 @@ internal sealed class RenderBuiltInSubmissionResources
         TexturedMeshAlphaMaskPipeline = texturedMeshAlphaMaskPipeline;
         SkinnedTexturedMeshAlphaMaskPipeline = skinnedTexturedMeshAlphaMaskPipeline;
         TexturedMeshPipeline = texturedMeshPipeline;
+        TexturedMeshShadowPipeline = texturedMeshShadowPipeline;
         SkinnedTexturedMeshPipeline = skinnedTexturedMeshPipeline;
+        SkinnedTexturedMeshShadowPipeline = skinnedTexturedMeshShadowPipeline;
         TexturedMeshBlendPipeline = texturedMeshBlendPipeline;
         SkinnedTexturedMeshBlendPipeline = skinnedTexturedMeshBlendPipeline;
         Sampler = sampler;
         SpritePipeline = spritePipeline;
         ToneMapPipeline = toneMapPipeline;
+        ShadowSampler = shadowSampler;
     }
 
     internal GpuPipeline? MeshAlphaMaskPipeline { get; }
@@ -50,15 +60,21 @@ internal sealed class RenderBuiltInSubmissionResources
 
     internal GpuPipeline? MeshPipeline { get; }
 
+    internal GpuPipeline? MeshShadowPipeline { get; }
+
     internal GpuPipeline? NormalMappedMeshPipeline { get; }
 
     internal GpuSampler? Sampler { get; }
+
+    internal GpuSampler? ShadowSampler { get; }
 
     internal GpuPipeline? SkinnedMeshAlphaMaskPipeline { get; }
 
     internal GpuPipeline? SkinnedMeshBlendPipeline { get; }
 
     internal GpuPipeline? SkinnedMeshPipeline { get; }
+
+    internal GpuPipeline? SkinnedMeshShadowPipeline { get; }
 
     internal GpuPipeline? SkinnedNormalMappedMeshPipeline { get; }
 
@@ -68,6 +84,8 @@ internal sealed class RenderBuiltInSubmissionResources
 
     internal GpuPipeline? SkinnedTexturedMeshPipeline { get; }
 
+    internal GpuPipeline? SkinnedTexturedMeshShadowPipeline { get; }
+
     internal GpuPipeline? SpritePipeline { get; }
 
     internal GpuPipeline? TexturedMeshAlphaMaskPipeline { get; }
@@ -75,6 +93,8 @@ internal sealed class RenderBuiltInSubmissionResources
     internal GpuPipeline? TexturedMeshBlendPipeline { get; }
 
     internal GpuPipeline? TexturedMeshPipeline { get; }
+
+    internal GpuPipeline? TexturedMeshShadowPipeline { get; }
 
     internal GpuPipeline? ToneMapPipeline { get; }
 }

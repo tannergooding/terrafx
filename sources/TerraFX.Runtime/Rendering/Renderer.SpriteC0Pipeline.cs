@@ -67,6 +67,93 @@ public sealed partial class Renderer
             normalMapped: false,
             cancellationToken);
 
+    internal async Task<GpuPipeline> CreateMeshC0ShadowPipelineAsync(
+        bool textured,
+        bool skinned,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not create Mesh shadow pipelines.");
+        var binaryFormat = device.Capabilities.Backend switch {
+            GraphicsBackend.D3D12 => ShaderBinaryFormat.Dxil,
+            GraphicsBackend.Vulkan => ShaderBinaryFormat.SpirV,
+            _ => throw new NotSupportedException("The selected GraphicsDevice has no Mesh shadow shader artifact."),
+        };
+        using var vertexStorage = LoadShaderBytecode(
+            (skinned, textured) switch {
+                (false, false) => "TerraFX.Rendering.Shaders.MeshC0ShadowVertex.vertex.",
+                (false, true) => "TerraFX.Rendering.Shaders.MeshC0TexturedShadowVertex.vertex.",
+                (true, false) => "TerraFX.Rendering.Shaders.MeshC0SkinnedShadowVertex.vertex.",
+                (true, true) => "TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedShadowVertex.vertex.",
+            },
+            binaryFormat);
+        using var pixelStorage = LoadShaderBytecode(
+            textured
+                ? "TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel."
+                : "TerraFX.Rendering.Shaders.MeshC0ShadowPixel.pixel.",
+            binaryFormat);
+        using var vertexBytecode = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelBytecode = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        ImmutableArray<VertexElementDescription> vertexElements = (skinned, textured) switch {
+            (true, true) => [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float2, 6 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float4, 12 * sizeof(float)),
+                new VertexElementDescription(3, VertexElementFormat.Float4, 16 * sizeof(float)),
+                new VertexElementDescription(4, VertexElementFormat.Float4, 20 * sizeof(float)),
+            ],
+            (true, false) => [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float4, 12 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float4, 16 * sizeof(float)),
+                new VertexElementDescription(3, VertexElementFormat.Float4, 20 * sizeof(float)),
+            ],
+            (false, true) => [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float2, 6 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float4, 12 * sizeof(float)),
+            ],
+            _ => [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float4, 12 * sizeof(float)),
+            ],
+        };
+        var vertexReflection = (skinned, textured) switch {
+            (false, false) => RenderMeshC0ShadowShaderReflection.Vertex,
+            (false, true) => RenderMeshC0ShadowShaderReflection.TexturedVertex,
+            (true, false) => RenderMeshC0ShadowShaderReflection.SkinnedVertex,
+            (true, true) => RenderMeshC0ShadowShaderReflection.SkinnedTexturedVertex,
+        };
+        return await device.CreatePipelineAsync(
+            new GraphicsPipelineDescription(
+                [
+                    new ShaderBytecodeInput(
+                        ShaderStage.Vertex,
+                        binaryFormat,
+                        vertexBytecode,
+                        vertexReflection),
+                    new ShaderBytecodeInput(
+                        ShaderStage.Pixel,
+                        binaryFormat,
+                        pixelBytecode,
+                        textured
+                            ? RenderMeshC0ShadowShaderReflection.TexturedPixel
+                            : RenderMeshC0ShadowShaderReflection.Pixel),
+                ],
+                vertexElements,
+                vertexStride: RenderMeshC0VertexBufferBuilder.VertexStride,
+                [],
+                depthTargetFormat: TextureFormat.D32Float,
+                PrimitiveTopology.TriangleList,
+                PipelineBlendMode.Opaque,
+                PipelineDepthMode.ReversedGreaterEqualWrite,
+                PipelineCullMode.None,
+                frontFaceClockwise: false,
+                bindingLayoutVersion: 1),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     internal Task<GpuPipeline> CreateSkinnedMeshC0AlphaMaskPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)

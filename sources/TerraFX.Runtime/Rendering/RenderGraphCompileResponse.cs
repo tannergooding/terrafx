@@ -24,11 +24,19 @@ public sealed class RenderGraphCompileResponse
             throw new ArgumentException("Graph compilation diagnostics must be initialized.", nameof(diagnostics));
         }
 
+        var containsError = false;
+
+        foreach (var diagnostic in diagnostics)
+        {
+            ArgumentNullException.ThrowIfNull(diagnostic);
+            containsError |= diagnostic.Severity >= DiagnosticSeverity.Error;
+        }
+
         if ((status == RenderGraphCompileStatus.Compiled)
-            ? (plan is null) || !diagnostics.IsEmpty
+            ? (plan is null) || containsError
             : (plan is not null) || diagnostics.IsEmpty)
         {
-            throw new ArgumentException("Compiled results require only a plan; rejected results require only diagnostics.");
+            throw new ArgumentException("Compiled results require a plan without error diagnostics; rejected results require only diagnostics.");
         }
 
         Diagnostics = [.. diagnostics];
@@ -36,7 +44,7 @@ public sealed class RenderGraphCompileResponse
         Status = status;
     }
 
-    /// <summary>Gets immutable diagnostics for a rejected compilation.</summary>
+    /// <summary>Gets immutable build warnings or diagnostics for a rejected compilation.</summary>
     public ImmutableArray<Diagnostic> Diagnostics { get; }
 
     /// <summary>Gets the immutable plan when compilation succeeds.</summary>

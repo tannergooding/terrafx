@@ -1404,7 +1404,10 @@ internal sealed unsafe partial class VulkanBackendDevice
                                             (resource.Kind == ShaderResourceKind.SampledImage)
                                             && (resource.Group == binding.Group)
                                             && (resource.Binding == binding.Binding)).ImageArrayed,
-                                        VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+                                        VulkanGraphResourceStateMapper.GetTextureImageLayout(
+                                            GraphResourceState.ShaderSampledRead,
+                                            texture.Description.Format,
+                                            binding.Range.Aspect)));
                                 }
                                 else
                                 {
@@ -2065,6 +2068,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             or GraphResourceState.General
             or GraphResourceState.ShaderSampledRead
             or GraphResourceState.ColorAttachment
+            or GraphResourceState.DepthRead
+            or GraphResourceState.DepthWrite
             or GraphResourceState.OffscreenOutput
             or GraphResourceState.CopySource
             or GraphResourceState.CopyDestination
@@ -2075,14 +2080,20 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new NotSupportedException($"Vulkan graph submission does not support a transition from {transition.BeforeState}.");
         }
 
-        var expectedBeforeLayout = VulkanGraphResourceStateMapper.GetImageLayout(transition.BeforeState);
+        var expectedBeforeLayout = VulkanGraphResourceStateMapper.GetTextureImageLayout(
+            transition.BeforeState,
+            texture.Description.Format,
+            transition.TextureRange.Aspect);
 
         if (currentLayout != expectedBeforeLayout)
         {
             throw new InvalidOperationException("The graph transition does not match the Vulkan texture's tracked image layout.");
         }
 
-        var afterLayout = VulkanGraphResourceStateMapper.GetImageLayout(transition.AfterState);
+        var afterLayout = VulkanGraphResourceStateMapper.GetTextureImageLayout(
+            transition.AfterState,
+            texture.Description.Format,
+            transition.TextureRange.Aspect);
         var barrier = default(VkImageMemoryBarrier2);
         barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         barrier.srcQueueFamilyIndex = uint.MaxValue;

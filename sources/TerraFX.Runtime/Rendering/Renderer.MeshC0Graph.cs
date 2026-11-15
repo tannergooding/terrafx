@@ -20,15 +20,30 @@ public sealed partial class Renderer
     private static readonly Guid s_meshC0ProfileId = new ContentSchemaIdentityAssignment("material/profile/pbr-metallic-roughness/v1").SchemaId;
     private static readonly Guid s_meshC0ShaderId = new ContentSchemaIdentityAssignment("material/shader/pbr-metallic-roughness/v1").SchemaId;
 
+    private static byte[] CreateMeshDirectionalLightBuffer(
+        ImmutableArray<RenderDirectionalLightSnapshot> directionalLights,
+        Guid shadowedLightId,
+        int uniformBufferOffsetAlignment)
+        => RenderDirectionalLightBufferBuilder.Create(
+            directionalLights.AsSpan(),
+            shadowedLightId,
+            uniformBufferOffsetAlignment);
+
     private static byte[] CreateMeshFrameBuffer(
         RenderSnapshot3D snapshot,
         ImmutableArray<RenderPointLightSnapshot>[] pointLightsByCamera,
+        RenderDirectionalShadowCameraData?[] shadowDataByCamera,
         int uniformStride,
         out int frameStride)
     {
         if (pointLightsByCamera.Length != snapshot.Cameras.Length)
         {
             throw new ArgumentException("Point-light data must be captured for every selected Mesh camera.", nameof(pointLightsByCamera));
+        }
+
+        if (shadowDataByCamera.Length != snapshot.Cameras.Length)
+        {
+            throw new ArgumentException("Shadow data must be captured for every selected Mesh camera.", nameof(shadowDataByCamera));
         }
 
         frameStride = uniformStride;
@@ -48,7 +63,8 @@ public sealed partial class Renderer
             RenderMeshC0FrameData.Create(
                 camera,
                 area,
-                pointLights.Length).WriteTo(
+                pointLights.Length,
+                shadowDataByCamera[cameraIndex]).WriteTo(
                     buffer.AsSpan(checked(cameraIndex * frameStride), RenderMeshC0FrameData.SizeInBytes));
         }
 
@@ -172,6 +188,62 @@ public sealed partial class Renderer
         SpatialFrame3 frame3)
         => RenderMeshC0PointLightBufferBuilder.Create(pointLights.AsSpan(), frame3);
 
+    private static byte[] CreateMeshShadowFrameBuffer(
+        int cameraCount,
+        RenderDirectionalShadowCameraData?[] shadowDataByCamera,
+        int uniformStride,
+        out int frameStride)
+    {
+        if (shadowDataByCamera.Length != cameraCount)
+        {
+            throw new ArgumentException("Shadow data must be captured for every selected Mesh camera.", nameof(shadowDataByCamera));
+        }
+
+        frameStride = uniformStride;
+        var buffer = new byte[checked(cameraCount * RenderDirectionalShadowCameraData.CascadeCount * frameStride)];
+
+        for (var cameraIndex = 0; cameraIndex < cameraCount; cameraIndex++)
+        {
+            var shadowData = shadowDataByCamera[cameraIndex].GetValueOrDefault();
+
+            for (var cascadeIndex = 0; cascadeIndex < RenderDirectionalShadowCameraData.CascadeCount; cascadeIndex++)
+            {
+                var frameOffset = checked(
+                    ((cameraIndex * RenderDirectionalShadowCameraData.CascadeCount) + cascadeIndex)
+                    * frameStride);
+                shadowData.WriteViewProjectionTo(
+                    buffer.AsSpan(frameOffset, 16 * sizeof(float)),
+                    destinationOffset: 0,
+                    cascadeIndex);
+            }
+        }
+
+        return buffer;
+    }
+
+    private static ImmutableArray<RenderDirectionalLightSnapshot> GetMeshC0DirectionalLights(
+        RenderSnapshot3D snapshot,
+        CameraSnapshot camera)
+    {
+        var selectedLights = new List<RenderDirectionalLightSnapshot>(snapshot.DirectionalLights.Length);
+
+        foreach (var light in snapshot.DirectionalLights)
+        {
+            if ((light.LayerMask & camera.LayerMask) != 0)
+            {
+                selectedLights.Add(light);
+            }
+        }
+
+        selectedLights.Sort(static (left, right) => {
+            var priorityComparison = right.Priority.CompareTo(left.Priority);
+            return priorityComparison != 0
+                ? priorityComparison
+                : FoundationCatalogue.CompareRfc(left.LightId, right.LightId);
+        });
+        return [.. selectedLights];
+    }
+
     private static ImmutableArray<RenderPointLightSnapshot> GetMeshC0PointLights(
         RenderSnapshot3D snapshot,
         CameraSnapshot camera)
@@ -259,6 +331,67 @@ public sealed partial class Renderer
             && (material.RequiredCapabilities == requiredCapabilities);
     }
 
+    private static bool IsMeshC0ShadowCaster(
+        RenderMeshSnapshot draw,
+        RenderMeshAsset mesh,
+        Vector3 lightDirection,
+        Matrix4x4 viewProjection)
+    {
+        if (!SpatialMath.TryToFrameRelative(draw.Position, draw.Frame3, out var position))
+        {
+            throw new InvalidOperationException("The shadow caster position is outside its captured spatial frame.");
+        }
+
+        var world = draw.LinearTransform * Matrix4x4.CreateTranslation(position);
+        var bounds = mesh.Bounds;
+        var minimumX = float.PositiveInfinity;
+        var minimumY = float.PositiveInfinity;
+        var minimumZ = float.PositiveInfinity;
+        var maximumX = float.NegativeInfinity;
+        var maximumY = float.NegativeInfinity;
+        var maximumZ = float.NegativeInfinity;
+
+        for (var cornerIndex = 0; cornerIndex < 8; cornerIndex++)
+        {
+            var corner = new Vector3(
+                (cornerIndex & 1) == 0 ? bounds.Minimum.X : bounds.Maximum.X,
+                (cornerIndex & 2) == 0 ? bounds.Minimum.Y : bounds.Maximum.Y,
+                (cornerIndex & 4) == 0 ? bounds.Minimum.Z : bounds.Maximum.Z);
+            var worldCorner = Vector3.TransformPoint(corner, world);
+
+            for (var extensionIndex = 0; extensionIndex < 2; extensionIndex++)
+            {
+                var casterCorner = extensionIndex == 0
+                    ? worldCorner
+                    : worldCorner + (lightDirection * 10.0f);
+                var clip = Vector4.Transform(new Vector4(casterCorner, 1.0f), viewProjection);
+
+                if (!clip.IsFinite().All() || (clip.W <= 0.0f))
+                {
+                    throw new InvalidOperationException("A directional shadow caster bound is not representable.");
+                }
+
+                var inverseW = 1.0f / clip.W;
+                var x = clip.X * inverseW;
+                var y = clip.Y * inverseW;
+                var z = clip.Z * inverseW;
+                minimumX = MathF.Min(minimumX, x);
+                minimumY = MathF.Min(minimumY, y);
+                minimumZ = MathF.Min(minimumZ, z);
+                maximumX = MathF.Max(maximumX, x);
+                maximumY = MathF.Max(maximumY, y);
+                maximumZ = MathF.Max(maximumZ, z);
+            }
+        }
+
+        return (minimumX <= 1.0f)
+            && (maximumX >= -1.0f)
+            && (minimumY <= 1.0f)
+            && (maximumY >= -1.0f)
+            && (minimumZ <= 1.0f)
+            && (maximumZ >= 0.0f);
+    }
+
     private static bool IsMirroredTransform(Matrix4x4 transform)
     {
         var determinant =
@@ -276,16 +409,8 @@ public sealed partial class Renderer
         && (binding.Sampler.AddressU == 0)
         && (binding.Sampler.AddressV == 0);
 
-    private static void ValidateNoDirectionalOrSpotMeshC0Lights(RenderSnapshot3D snapshot, CameraSnapshot camera)
+    private static void ValidateNoSpotMeshC0Lights(RenderSnapshot3D snapshot, CameraSnapshot camera)
     {
-        foreach (var light in snapshot.DirectionalLights)
-        {
-            if ((light.LayerMask & camera.LayerMask) != 0)
-            {
-                throw new NotSupportedException("Mesh C0 refuses directional lights until the contracted cascade-shadow pass is available.");
-            }
-        }
-
         foreach (var light in snapshot.SpotLights)
         {
             if ((light.LayerMask & camera.LayerMask) != 0)
@@ -314,6 +439,8 @@ public sealed partial class Renderer
         var selectedIndices = new int[meshSnapshot.MeshDraws.Length];
         Array.Fill(selectedIndices, -1);
         var selectedDrawCount = 0;
+        var directionalLightsByCamera = new ImmutableArray<RenderDirectionalLightSnapshot>[meshSnapshot.Cameras.Length];
+        var shadowDataByCamera = new RenderDirectionalShadowCameraData?[meshSnapshot.Cameras.Length];
 
         for (var cameraIndex = 0; cameraIndex < meshSnapshot.MeshCameraOrders.Length; cameraIndex++)
         {
@@ -333,7 +460,7 @@ public sealed partial class Renderer
         }
 
         var alignment = checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment);
-        var uniformStride = ObjectGpuData.GetUniformAllocationStride(alignment);
+        var uniformStride = RenderMeshC0FrameData.GetUniformAllocationStride(alignment);
         var pointLightsByCamera = new ImmutableArray<RenderPointLightSnapshot>[meshSnapshot.Cameras.Length];
 
         for (var cameraIndex = 0; cameraIndex < meshSnapshot.Cameras.Length; cameraIndex++)
@@ -343,19 +470,119 @@ public sealed partial class Renderer
             if (meshSnapshot.MeshCameraOrders[cameraIndex].DrawIndices.IsEmpty)
             {
                 pointLightsByCamera[cameraIndex] = [];
+                directionalLightsByCamera[cameraIndex] = [];
             }
             else
             {
-                ValidateNoDirectionalOrSpotMeshC0Lights(meshSnapshot, camera);
+                ValidateNoSpotMeshC0Lights(meshSnapshot, camera);
                 pointLightsByCamera[cameraIndex] = GetMeshC0PointLights(meshSnapshot, camera);
+                directionalLightsByCamera[cameraIndex] = GetMeshC0DirectionalLights(meshSnapshot, camera);
+
+                if (!directionalLightsByCamera[cameraIndex].IsEmpty)
+                {
+                    if (directionalLightsByCamera[cameraIndex].Length > 1)
+                    {
+                        graph.AddBuildWarning(
+                            "ShadowBudgetExceeded",
+                            $"Camera {camera.CameraId} has {directionalLightsByCamera[cameraIndex].Length} selected directional lights; only the highest-priority light receives the directional shadow atlas.");
+                    }
+
+                    var end = camera.Far.HasValue
+                        ? MathF.Min(RenderingKernels.DefaultDirectionalShadowDistance, camera.Far.Value)
+                        : RenderingKernels.DefaultDirectionalShadowDistance;
+
+                    if (end > camera.Near)
+                    {
+                        shadowDataByCamera[cameraIndex] = RenderDirectionalShadowCameraData.Create(
+                            camera,
+                            directionalLightsByCamera[cameraIndex][0].Direction);
+                    }
+                    else
+                    {
+                        graph.AddBuildWarning(
+                            "ShadowRangeInvalid",
+                            $"Camera {camera.CameraId} has no positive directional shadow range; selected directional lights remain unshadowed.");
+                    }
+                }
             }
+        }
+
+        var shadowDrawIndicesByCameraCascade = new ImmutableArray<int>[
+            checked(meshSnapshot.Cameras.Length * RenderDirectionalShadowCameraData.CascadeCount)];
+
+        for (var cameraIndex = 0; cameraIndex < meshSnapshot.Cameras.Length; cameraIndex++)
+        {
+            if (shadowDataByCamera[cameraIndex] is not RenderDirectionalShadowCameraData shadowData)
+            {
+                continue;
+            }
+
+            var shadowLight = directionalLightsByCamera[cameraIndex][0];
+
+            for (var cascadeIndex = 0; cascadeIndex < RenderDirectionalShadowCameraData.CascadeCount; cascadeIndex++)
+            {
+                var cascadeDrawIndices = ImmutableArray.CreateBuilder<int>();
+                var viewProjection = shadowData.GetViewProjection(cascadeIndex);
+
+                for (var drawIndex = 0; drawIndex < meshSnapshot.MeshDraws.Length; drawIndex++)
+                {
+                    var draw = meshSnapshot.MeshDraws[drawIndex];
+
+                    if ((draw.LayerMask & shadowLight.LayerMask) == 0)
+                    {
+                        continue;
+                    }
+
+                    var sceneAssets = assetPins.GetSceneAssets(draw.SceneInstanceId);
+                    var mesh = sceneAssets.GetMesh(draw.MeshAssetId);
+                    var material = sceneAssets.GetMaterial(draw.MaterialAssetId);
+
+                    if (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend)
+                    {
+                        continue;
+                    }
+
+                    if (!IsMeshC0ShadowCaster(draw, mesh, shadowLight.Direction, viewProjection))
+                    {
+                        continue;
+                    }
+
+                    cascadeDrawIndices.Add(drawIndex);
+
+                    if (!selectedDraws[drawIndex])
+                    {
+                        selectedDraws[drawIndex] = true;
+                        selectedDrawCount++;
+                    }
+                }
+
+                shadowDrawIndicesByCameraCascade[
+                    (cameraIndex * RenderDirectionalShadowCameraData.CascadeCount) + cascadeIndex] =
+                    cascadeDrawIndices.ToImmutable();
+            }
+        }
+
+        var hasShadowData = false;
+
+        for (var cameraIndex = 0; cameraIndex < shadowDataByCamera.Length; cameraIndex++)
+        {
+            hasShadowData |= shadowDataByCamera[cameraIndex].HasValue;
         }
 
         var frameBytes = CreateMeshFrameBuffer(
             meshSnapshot,
             pointLightsByCamera,
+            shadowDataByCamera,
             uniformStride,
             out var frameStride);
+        var shadowFrameStride = uniformStride;
+        var shadowFrameBytes = hasShadowData
+            ? CreateMeshShadowFrameBuffer(
+                meshSnapshot.Cameras.Length,
+                shadowDataByCamera,
+                uniformStride,
+                out shadowFrameStride)
+            : [];
         var selectedDrawsInOrder = new List<RenderMeshSnapshot>(selectedDrawCount);
         var meshAssets = new List<RenderMeshAsset>(selectedDrawCount);
         var materialAssets = new List<RenderMaterialAsset>(selectedDrawCount);
@@ -534,7 +761,22 @@ public sealed partial class Renderer
                 structuredStride: null,
                 "mesh-frame-data"),
             frameBytes);
+        GraphBufferVersion? shadowFrameBuffer = null;
+
+        if (hasShadowData)
+        {
+            shadowFrameBuffer = graph.CreateInitializedTransientBuffer(
+                new BufferDescription(
+                    shadowFrameBytes.Length,
+                    BufferUsage.Uniform | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    "mesh-shadow-frame-data"),
+                shadowFrameBytes);
+        }
+
         var pointLightBuffers = new GraphBufferVersion[pointLightsByCamera.Length];
+        var directionalLightBuffers = new GraphBufferVersion[directionalLightsByCamera.Length];
 
         for (var cameraIndex = 0; cameraIndex < pointLightsByCamera.Length; cameraIndex++)
         {
@@ -549,6 +791,22 @@ public sealed partial class Renderer
                     structuredStride: null,
                     $"mesh-point-lights-{cameraIndex}"),
                 pointLightBytes);
+            var directionalLights = directionalLightsByCamera[cameraIndex];
+            var shadowedLightId = shadowDataByCamera[cameraIndex].HasValue
+                ? directionalLights[0].LightId
+                : Guid.Empty;
+            var directionalLightBytes = CreateMeshDirectionalLightBuffer(
+                directionalLights,
+                shadowedLightId,
+                alignment);
+            directionalLightBuffers[cameraIndex] = graph.CreateInitializedTransientBuffer(
+                new BufferDescription(
+                    directionalLightBytes.Length,
+                    BufferUsage.Uniform | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    $"mesh-directional-lights-{cameraIndex}"),
+                directionalLightBytes);
         }
 
         var objectBuffer = graph.CreateInitializedTransientBuffer(
@@ -653,6 +911,34 @@ public sealed partial class Renderer
             passIndex = builtInColorState.NextPassIndex;
         }
 
+        var shadowAtlasResolution = hasShadowData ? RenderingKernels.ShadowAtlasResolution : 1;
+        var shadowAtlasVersion = graph.CreateTransientTexture(new TextureDescription(
+            TextureDimension.Dimension2D,
+            shadowAtlasResolution,
+            shadowAtlasResolution,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.D32Float,
+            TextureUsage.DepthAttachment | TextureUsage.Sampled,
+            hasShadowData ? "mesh-shadow-atlas" : "mesh-unshadowed-depth"));
+        var shadowAtlasClearArea = new RenderArea(0, 0, shadowAtlasResolution, shadowAtlasResolution);
+        var shadowAtlasClearPass = graph.AddRasterPass(new RenderPassDescription(
+            "TerraFX.MeshC0.ShadowAtlas.Clear",
+            passIndex++,
+            hasPreviousPass ? [previousPass] : [],
+            hasExternalSideEffects: false,
+            renderArea: shadowAtlasClearArea));
+        shadowAtlasVersion = graph.WriteDepthAttachment(
+            shadowAtlasClearPass,
+            shadowAtlasVersion,
+            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth),
+            AttachmentLoadAction.Clear,
+            AttachmentStoreAction.Store,
+            0.0f);
+        previousPass = shadowAtlasClearPass;
+        hasPreviousPass = true;
+
         for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
         {
             var camera = snapshot.Cameras[cameraIndex];
@@ -728,6 +1014,133 @@ public sealed partial class Renderer
                 continue;
             }
 
+            if (shadowDataByCamera[cameraIndex] is not null)
+            {
+                var shadowFrameBufferVersion = shadowFrameBuffer
+                    ?? throw new InvalidOperationException("The graph has shadow cascades without a shadow frame buffer.");
+
+                for (var cascadeIndex = 0; cascadeIndex < RenderDirectionalShadowCameraData.CascadeCount; cascadeIndex++)
+                {
+                    var casterIndices = shadowDrawIndicesByCameraCascade[
+                        (cameraIndex * RenderDirectionalShadowCameraData.CascadeCount) + cascadeIndex];
+                    RenderingKernels.GetShadowAtlasCellOrigin(cascadeIndex, out var cellX, out var cellY);
+                    var shadowArea = new RenderArea(
+                        cellX,
+                        cellY,
+                        RenderingKernels.ShadowAtlasCellSize,
+                        RenderingKernels.ShadowAtlasCellSize);
+
+                    foreach (var drawIndex in casterIndices)
+                    {
+                        var selectedIndex = selectedIndices[drawIndex];
+
+                        if (selectedIndex < 0)
+                        {
+                            throw new InvalidOperationException("A shadow-selected Mesh draw was not prepared for graph submission.");
+                        }
+
+                        var draw = selectedDrawsInOrder[selectedIndex];
+                        var meshIndex = meshGeometryIndices[drawIndex];
+                        var mesh = meshAssets[meshIndex];
+                        var group = mesh.Groups[draw.GroupIndex];
+                        var vertexBuffer = vertexBuffers[meshIndex];
+                        var indexBuffer = indexBuffers[meshIndex];
+                        var shadowPass = new RenderMeshC0ShadowGraphPass(
+                            selectedIndex,
+                            group,
+                            mesh.IndexFormat,
+                            shadowFrameBufferVersion,
+                            checked(
+                                (((long)cameraIndex * RenderDirectionalShadowCameraData.CascadeCount) + cascadeIndex)
+                                * shadowFrameStride),
+                            objectBuffer,
+                            uniformStride,
+                            materialBuffer,
+                            uniformStride,
+                            vertexBuffer,
+                            indexBuffer,
+                            draw.PaletteIndex >= 0
+                                ? currentBonePaletteBuffer
+                                    ?? throw new InvalidOperationException("The graph has a skinned shadow pass without a bone-palette buffer.")
+                                : null,
+                            draw.PaletteIndex >= 0,
+                            baseColorTextureVersions[drawIndex]);
+                        var shadowPassId = graph.AddBuiltInMeshShadowRasterPass(
+                            new RenderPassDescription(
+                                $"TerraFX.MeshC0.Camera{cameraIndex}.Shadow{cascadeIndex}.Draw{drawIndex}",
+                                passIndex++,
+                                hasPreviousPass ? [previousPass] : [],
+                                hasExternalSideEffects: false,
+                                renderArea: shadowArea),
+                            shadowPass);
+                        var shadowFrameOffset = checked(
+                            (((long)cameraIndex * RenderDirectionalShadowCameraData.CascadeCount) + cascadeIndex)
+                            * shadowFrameStride);
+                        var sourceShadowAtlas = shadowAtlasVersion;
+                        shadowAtlasVersion = graph.WriteDepthAttachment(
+                            shadowPassId,
+                            sourceShadowAtlas,
+                            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth),
+                            AttachmentLoadAction.Load,
+                            AttachmentStoreAction.Store,
+                            0.0f);
+
+                        if (shadowPass.Skinned)
+                        {
+                            var sourceBonePaletteBuffer = currentBonePaletteBuffer
+                                ?? throw new InvalidOperationException("The graph has a skinned shadow pass without a bone-palette buffer.");
+                            currentBonePaletteBuffer = graph.ReadWriteBuffer(
+                                shadowPassId,
+                                sourceBonePaletteBuffer,
+                                new GraphBufferRange(0, sourceBonePaletteBuffer.Description.ByteLength));
+                            shadowPass.SetBonePaletteWriteVersion(currentBonePaletteBuffer);
+                        }
+
+                        graph.ReadBuffer(
+                            shadowPassId,
+                            shadowFrameBufferVersion,
+                            GraphBufferUsage.UniformRead,
+                            new GraphBufferRange(shadowFrameOffset, 16 * sizeof(float)));
+                        graph.ReadBuffer(
+                            shadowPassId,
+                            objectBuffer,
+                            GraphBufferUsage.UniformRead,
+                            new GraphBufferRange(
+                                checked((long)selectedIndex * uniformStride),
+                                ObjectGpuData.SizeInBytes));
+                        graph.ReadBuffer(
+                            shadowPassId,
+                            materialBuffer,
+                            GraphBufferUsage.UniformRead,
+                            new GraphBufferRange(
+                                checked((long)selectedIndex * uniformStride),
+                                RenderMeshC0MaterialData.SizeInBytes));
+                        graph.ReadBuffer(
+                            shadowPassId,
+                            vertexBuffer,
+                            GraphBufferUsage.VertexRead,
+                            new GraphBufferRange(0, vertexBuffer.Description.ByteLength));
+                        graph.ReadBuffer(
+                            shadowPassId,
+                            indexBuffer,
+                            GraphBufferUsage.IndexRead,
+                            new GraphBufferRange(0, indexBuffer.Description.ByteLength));
+
+                        if (baseColorTextureVersions[drawIndex] is GraphTextureVersion baseTexture)
+                        {
+                            graph.ReadTexture(
+                                shadowPassId,
+                                baseTexture,
+                                GraphTextureUsage.SampledRead,
+                                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+                        }
+
+                        previousPass = shadowPassId;
+                        hasPreviousPass = true;
+                    }
+                }
+            }
+
             for (var orderIndex = 0; orderIndex < cameraDrawIndices.Length; orderIndex++)
             {
                 var drawIndex = cameraDrawIndices[orderIndex];
@@ -750,6 +1163,8 @@ public sealed partial class Renderer
                     mesh.IndexFormat,
                     frameBuffer,
                     pointLightBuffers[cameraIndex],
+                    directionalLightBuffers[cameraIndex],
+                    shadowAtlasVersion,
                     frameStride,
                     cameraIndex,
                     objectBuffer,
@@ -801,6 +1216,11 @@ public sealed partial class Renderer
                     new GraphBufferRange(0, pointLightBuffers[cameraIndex].Description.ByteLength));
                 graph.ReadBuffer(
                     pass,
+                    directionalLightBuffers[cameraIndex],
+                    GraphBufferUsage.UniformRead,
+                    new GraphBufferRange(0, directionalLightBuffers[cameraIndex].Description.ByteLength));
+                graph.ReadBuffer(
+                    pass,
                     objectBuffer,
                     GraphBufferUsage.UniformRead,
                     new GraphBufferRange(0, objectBuffer.Description.ByteLength));
@@ -819,6 +1239,11 @@ public sealed partial class Renderer
                     indexBuffer,
                     GraphBufferUsage.IndexRead,
                     new GraphBufferRange(0, indexBuffer.Description.ByteLength));
+                graph.ReadTexture(
+                    pass,
+                    shadowAtlasVersion,
+                    GraphTextureUsage.SampledRead,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth));
 
                 if (baseColorTextureVersions[drawIndex] is GraphTextureVersion baseTexture)
                 {

@@ -16,6 +16,7 @@ internal sealed class RenderSpriteGraphState
         ImmutableArray<RenderMeshGraphDeferredTexture> meshDeferredTextures,
         ImmutableDictionary<RenderPassId, RenderSpriteC0GraphPass> passes,
         ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> meshPasses,
+        ImmutableDictionary<RenderPassId, RenderMeshC0ShadowGraphPass> meshShadowPasses,
         ImmutableDictionary<RenderPassId, RenderSpriteToneMapGraphPass> toneMapPasses)
     {
         if (!Enum.IsDefined(spriteColorTargetFormat) || !Enum.IsDefined(toneMapColorTargetFormat))
@@ -28,6 +29,7 @@ internal sealed class RenderSpriteGraphState
             || meshDeferredTextures.IsDefault
             || passes is null
             || meshPasses is null
+            || meshShadowPasses is null
             || toneMapPasses is null)
         {
             throw new ArgumentException("Built-in Sprite graph state must be initialized.");
@@ -40,6 +42,7 @@ internal sealed class RenderSpriteGraphState
         MeshDeferredTextures = meshDeferredTextures;
         Passes = passes;
         MeshPasses = meshPasses;
+        MeshShadowPasses = meshShadowPasses;
         ToneMapPasses = toneMapPasses;
     }
 
@@ -50,6 +53,8 @@ internal sealed class RenderSpriteGraphState
     internal ImmutableArray<RenderMeshGraphDeferredTexture> MeshDeferredTextures { get; }
 
     internal ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> MeshPasses { get; }
+
+    internal ImmutableDictionary<RenderPassId, RenderMeshC0ShadowGraphPass> MeshShadowPasses { get; }
 
     internal ImmutableDictionary<RenderPassId, RenderSpriteC0GraphPass> Passes { get; }
 

@@ -14,6 +14,10 @@ cbuffer FrameData : register(b0, space0)
     float4 CameraPosition;
     float4 AmbientIrradiance;
     uint4 PointLightCount;
+    float4 CameraForward;
+    float4 CascadeEnds;
+    // Keep FrameData identical to the pixel-stage CPU layout.
+    float4 ShadowViewProjectionRows[16];
 };
 
 #if defined(TERRAFX_SPIRV)

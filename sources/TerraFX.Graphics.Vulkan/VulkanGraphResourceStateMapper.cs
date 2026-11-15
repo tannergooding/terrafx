@@ -63,8 +63,9 @@ internal static class VulkanGraphResourceStateMapper
                 => VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
             GraphResourceState.OffscreenOutput => VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
             GraphResourceState.ColorAttachment => VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            GraphResourceState.DepthRead => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
-            GraphResourceState.DepthWrite => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            // Device startup does not enable separateDepthStencilLayouts.
+            GraphResourceState.DepthRead => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            GraphResourceState.DepthWrite => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             GraphResourceState.Present => VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             GraphResourceState.VertexRead or GraphResourceState.IndexRead or GraphResourceState.UniformRead
                 => throw new ArgumentException("The selected graph state is buffer-only.", nameof(state)),
@@ -118,4 +119,14 @@ internal static class VulkanGraphResourceStateMapper
             _ => throw new ArgumentOutOfRangeException(nameof(state)),
         };
     }
+
+    internal static VkImageLayout GetTextureImageLayout(
+        GraphResourceState state,
+        TextureFormat format,
+        TextureAspect aspect)
+        => (state == GraphResourceState.ShaderSampledRead)
+            && (format == TextureFormat.D32Float)
+            && (aspect == TextureAspect.Depth)
+                ? VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                : GetImageLayout(state);
 }

@@ -667,6 +667,20 @@ internal sealed class GraphicsGraphSubmission
                     throw new NotSupportedException("Native graph depth attachments require D32Float mip/layer selections in a supported state.");
                 }
 
+                if (hasSampledImportAccess)
+                {
+                    if (!hasSampledUsage
+                        || hasStorageUsage
+                        || !isDepthSampledImage
+                        || !import.IsTransient
+                        || import.InitialContentsValid
+                        || (import.InitialState != GraphResourceState.Undefined)
+                        || !sampledTextureImports.TryAdd(import.Version.ResourceId, import))
+                    {
+                        throw new NotSupportedException("Native graph depth attachments may be sampled later only as graph transients written before sampling.");
+                    }
+                }
+
                 continue;
             }
 
@@ -2370,6 +2384,16 @@ internal sealed class GraphicsGraphSubmission
                 && sampledTextureImport.IsTransient
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState == GraphResourceState.ColorAttachment)
+                && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+            {
+                continue;
+            }
+
+            if (transition.IsTexture
+                && sampledTextureImports.TryGetValue(transition.ResourceId, out sampledTextureImport)
+                && sampledTextureImport.IsTransient
+                && (transition.AfterState == GraphResourceState.ShaderSampledRead)
+                && (transition.BeforeState is GraphResourceState.DepthRead or GraphResourceState.DepthWrite)
                 && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
             {
                 continue;

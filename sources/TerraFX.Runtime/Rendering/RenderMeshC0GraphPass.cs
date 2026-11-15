@@ -16,6 +16,8 @@ internal sealed class RenderMeshC0GraphPass
         RenderMeshIndexFormat indexFormat,
         GraphBufferVersion frameBuffer,
         GraphBufferVersion pointLightBuffer,
+        GraphBufferVersion directionalLightBuffer,
+        GraphTextureVersion shadowAtlas,
         int frameStride,
         int cameraIndex,
         GraphBufferVersion objectBuffer,
@@ -42,6 +44,8 @@ internal sealed class RenderMeshC0GraphPass
 
         ArgumentNullException.ThrowIfNull(frameBuffer);
         ArgumentNullException.ThrowIfNull(pointLightBuffer);
+        ArgumentNullException.ThrowIfNull(directionalLightBuffer);
+        ArgumentNullException.ThrowIfNull(shadowAtlas);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(frameStride);
         ArgumentOutOfRangeException.ThrowIfNegative(cameraIndex);
         ArgumentNullException.ThrowIfNull(objectBuffer);
@@ -63,6 +67,8 @@ internal sealed class RenderMeshC0GraphPass
         MeshIndexFormat = indexFormat;
         FrameBuffer = frameBuffer;
         PointLightBuffer = pointLightBuffer;
+        DirectionalLightBuffer = directionalLightBuffer;
+        ShadowAtlas = shadowAtlas;
         FrameStride = frameStride;
         CameraIndex = cameraIndex;
         ObjectBuffer = objectBuffer;
@@ -91,6 +97,8 @@ internal sealed class RenderMeshC0GraphPass
 
     internal int CameraIndex { get; }
 
+    internal GraphBufferVersion DirectionalLightBuffer { get; }
+
     internal int DrawIndex { get; }
 
     internal GraphTextureVersion? EmissiveTexture { get; }
@@ -118,6 +126,8 @@ internal sealed class RenderMeshC0GraphPass
     internal GraphTextureVersion? PackedMetalRoughOcclusionTexture { get; }
 
     internal GraphBufferVersion PointLightBuffer { get; }
+
+    internal GraphTextureVersion ShadowAtlas { get; }
 
     internal bool Skinned { get; }
 
@@ -162,63 +172,80 @@ internal sealed class RenderMeshC0GraphPass
             new GraphBufferRange(0, IndexBuffer.Description.ByteLength),
             MeshIndexFormat == RenderMeshIndexFormat.UInt16 ? TerraFX.Graphics.IndexFormat.UInt16 : TerraFX.Graphics.IndexFormat.UInt32));
         var sharedTexture = BaseColorTexture ?? EmissiveTexture ?? PackedMetalRoughOcclusionTexture ?? NormalTexture;
-        ImmutableArray<TextureBinding> textures = hasTexture
-            ? [
-                new TextureBinding(
-                    ShaderBindingGroup.Material,
-                    0,
-                    ShaderResourceKind.SampledImage,
-                    BaseColorTexture ?? sharedTexture
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no base-color binding."),
-                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
-                new TextureBinding(
-                    ShaderBindingGroup.Material,
-                    1,
-                    ShaderResourceKind.SampledImage,
-                    EmissiveTexture ?? sharedTexture
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no emissive binding."),
-                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
-                new TextureBinding(
-                    ShaderBindingGroup.Material,
-                    2,
-                    ShaderResourceKind.SampledImage,
-                    PackedMetalRoughOcclusionTexture ?? sharedTexture
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no packed data binding."),
-                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
-                new TextureBinding(
-                    ShaderBindingGroup.Material,
-                    3,
-                    ShaderResourceKind.SampledImage,
-                    NormalTexture ?? sharedTexture
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no normal binding."),
-                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
-            ]
-            : [];
-        ImmutableArray<SamplerBinding> samplers = hasTexture
-            ? [
-                new SamplerBinding(
-                    ShaderBindingGroup.Material,
-                    0,
-                    resources.Sampler
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
-                new SamplerBinding(
-                    ShaderBindingGroup.Material,
-                    1,
-                    resources.Sampler
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
-                new SamplerBinding(
-                    ShaderBindingGroup.Material,
-                    2,
-                    resources.Sampler
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
-                new SamplerBinding(
-                    ShaderBindingGroup.Material,
-                    3,
-                    resources.Sampler
-                        ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
-            ]
-            : [];
-        var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(Skinned ? 5 : 4);
+        var texturesBuilder = ImmutableArray.CreateBuilder<TextureBinding>(hasTexture ? 5 : 1);
+        texturesBuilder.Add(new TextureBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.SampledImage,
+            ShadowAtlas,
+            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth)));
+
+        if (hasTexture)
+        {
+            texturesBuilder.Add(new TextureBinding(
+                ShaderBindingGroup.Material,
+                0,
+                ShaderResourceKind.SampledImage,
+                BaseColorTexture ?? sharedTexture
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no base-color binding."),
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
+            texturesBuilder.Add(new TextureBinding(
+                ShaderBindingGroup.Material,
+                1,
+                ShaderResourceKind.SampledImage,
+                EmissiveTexture ?? sharedTexture
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no emissive binding."),
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
+            texturesBuilder.Add(new TextureBinding(
+                ShaderBindingGroup.Material,
+                2,
+                ShaderResourceKind.SampledImage,
+                PackedMetalRoughOcclusionTexture ?? sharedTexture
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no packed data binding."),
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
+            texturesBuilder.Add(new TextureBinding(
+                ShaderBindingGroup.Material,
+                3,
+                ShaderResourceKind.SampledImage,
+                NormalTexture ?? sharedTexture
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no normal binding."),
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
+        }
+
+        var textures = texturesBuilder.MoveToImmutable();
+        var samplersBuilder = ImmutableArray.CreateBuilder<SamplerBinding>(hasTexture ? 5 : 1);
+        samplersBuilder.Add(new SamplerBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            resources.ShadowSampler
+                ?? throw new InvalidOperationException("The Mesh pass has no directional shadow sampler.")));
+
+        if (hasTexture)
+        {
+            samplersBuilder.Add(new SamplerBinding(
+                ShaderBindingGroup.Material,
+                0,
+                resources.Sampler
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")));
+            samplersBuilder.Add(new SamplerBinding(
+                ShaderBindingGroup.Material,
+                1,
+                resources.Sampler
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")));
+            samplersBuilder.Add(new SamplerBinding(
+                ShaderBindingGroup.Material,
+                2,
+                resources.Sampler
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")));
+            samplersBuilder.Add(new SamplerBinding(
+                ShaderBindingGroup.Material,
+                3,
+                resources.Sampler
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")));
+        }
+
+        var samplers = samplersBuilder.MoveToImmutable();
+        var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(Skinned ? 6 : 5);
         bufferBindings.Add(new BufferBinding(
             ShaderBindingGroup.Frame,
             0,
@@ -233,6 +260,12 @@ internal sealed class RenderMeshC0GraphPass
             ShaderResourceKind.UniformBuffer,
             PointLightBuffer,
             new GraphBufferRange(0, PointLightBuffer.Description.ByteLength)));
+        bufferBindings.Add(new BufferBinding(
+            ShaderBindingGroup.Frame,
+            2,
+            ShaderResourceKind.UniformBuffer,
+            DirectionalLightBuffer,
+            new GraphBufferRange(0, DirectionalLightBuffer.Description.ByteLength)));
         bufferBindings.Add(new BufferBinding(
             ShaderBindingGroup.ObjectData,
             0,

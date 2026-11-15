@@ -29,12 +29,19 @@
     <TerraFXShaderSource Include="Shaders\MeshC0MaskPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0TexturedPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0TexturedMaskPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
+    <TerraFXShaderSource Include="Shaders\MeshC0ShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\MeshC0TexturedShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\MeshC0SkinnedShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\MeshC0SkinnedTexturedShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\MeshC0ShadowPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
+    <TerraFXShaderSource Include="Shaders\MeshC0TexturedShadowPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
     <TerraFXShaderInclude Include="Shaders\MeshC0Vertex.hlsl" />
     <TerraFXShaderInclude Include="Shaders\MeshC0Pixel.hlsl" />
     <TerraFXShaderInclude Include="Shaders\MeshC0TexturedPixel.hlsl" />
+    <TerraFXShaderInclude Include="Shaders\MeshC0ShadowVertex.hlsl" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
@@ -60,6 +67,18 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedPixel.pixel.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0TexturedMaskPixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedMaskPixel.pixel.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0ShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0TexturedShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0SkinnedShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0SkinnedTexturedShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0ShadowPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowPixel.pixel.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0TexturedShadowPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel.spv" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
@@ -107,6 +126,30 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedMaskPixel.pixel.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedMaskPixel\MeshC0TexturedMaskPixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedMaskPixel.pixel.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0ShadowVertex\MeshC0ShadowVertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowVertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0ShadowVertex\MeshC0ShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedShadowVertex\MeshC0TexturedShadowVertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowVertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedShadowVertex\MeshC0TexturedShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedShadowVertex\MeshC0SkinnedShadowVertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedShadowVertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedShadowVertex\MeshC0SkinnedShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedTexturedShadowVertex\MeshC0SkinnedTexturedShadowVertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedShadowVertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedTexturedShadowVertex\MeshC0SkinnedTexturedShadowVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedShadowVertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0ShadowPixel\MeshC0ShadowPixel.pixel.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowPixel.pixel.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0ShadowPixel\MeshC0ShadowPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowPixel.pixel.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedShadowPixel\MeshC0TexturedShadowPixel.pixel.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedShadowPixel\MeshC0TexturedShadowPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel.spv" />
   </ItemGroup>
 
   <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />

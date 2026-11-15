@@ -63,7 +63,10 @@ internal sealed unsafe partial class VulkanBackendDevice
     {
         var layout = descriptorLayout ?? VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
 
-        if (layout is not (VkImageLayout.VK_IMAGE_LAYOUT_GENERAL or VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+        if (layout is not (
+            VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
+            or VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            or VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL))
         {
             throw new ArgumentOutOfRangeException(nameof(descriptorLayout));
         }

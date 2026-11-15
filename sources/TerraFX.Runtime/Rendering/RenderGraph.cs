@@ -21,8 +21,10 @@ public sealed class RenderGraph
     private const string UninitializedReadCode = "render-graph.uninitialized-read";
     private static long s_nextGraphOwnerId;
     private readonly List<RenderGraphAttachmentWrite> _attachmentWrites = [];
+    private readonly List<Diagnostic> _buildWarnings = [];
     private readonly List<RenderMeshGraphDeferredTexture> _builtInMeshDeferredTextures = [];
     private readonly Dictionary<RenderPassId, RenderMeshC0GraphPass> _builtInMeshPasses = [];
+    private readonly Dictionary<RenderPassId, RenderMeshC0ShadowGraphPass> _builtInMeshShadowPasses = [];
     private readonly List<RenderSpriteGraphBufferUpload> _builtInSpriteBufferUploads = [];
     private readonly List<RenderSpriteGraphDeferredTexture> _builtInSpriteDeferredTextures = [];
     private readonly Dictionary<RenderPassId, RenderSpriteC0GraphPass> _builtInSpritePasses = [];
@@ -266,7 +268,10 @@ public sealed class RenderGraph
             NonAliasableTransientBufferIds,
             NonAliasableTransientTextureIds,
             CreateBuiltInSpriteState());
-        _compiledResponse = new RenderGraphCompileResponse(RenderGraphCompileStatus.Compiled, plan, []);
+        _compiledResponse = new RenderGraphCompileResponse(
+            RenderGraphCompileStatus.Compiled,
+            plan,
+            [.. _buildWarnings]);
         _isSealed = true;
         return _compiledResponse;
     }
@@ -547,11 +552,33 @@ public sealed class RenderGraph
         return _resources.WriteTexture(pass, previousVersion, range, usage);
     }
 
+    internal void AddBuildWarning(string code, string message)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(code);
+        ArgumentNullException.ThrowIfNull(message);
+        _buildWarnings.Add(CreateDiagnostic(
+            code,
+            message,
+            DiagnosticSeverity.Warning,
+            "Renderer.BuildGraph"));
+    }
+
     internal RenderPassId AddBuiltInMeshRasterPass(RenderPassDescription description, RenderMeshC0GraphPass meshPass)
     {
         ArgumentNullException.ThrowIfNull(meshPass);
         var pass = AddPass(description, RenderGraphPassKind.Raster, callback: null);
         _builtInMeshPasses.Add(pass, meshPass);
+        return pass;
+    }
+
+    internal RenderPassId AddBuiltInMeshShadowRasterPass(
+        RenderPassDescription description,
+        RenderMeshC0ShadowGraphPass meshPass)
+    {
+        ArgumentNullException.ThrowIfNull(meshPass);
+        var pass = AddPass(description, RenderGraphPassKind.Raster, callback: null);
+        _builtInMeshShadowPasses.Add(pass, meshPass);
         return pass;
     }
 
@@ -721,6 +748,7 @@ public sealed class RenderGraph
     {
         if (_builtInSpritePasses.Count == 0
             && _builtInMeshPasses.Count == 0
+            && _builtInMeshShadowPasses.Count == 0
             && _builtInSpriteToneMapPasses.Count == 0
             && _builtInSpriteBufferUploads.Count == 0
             && _builtInSpriteDeferredTextures.Count == 0
@@ -740,13 +768,18 @@ public sealed class RenderGraph
             [.. _builtInMeshDeferredTextures],
             _builtInSpritePasses.ToImmutableDictionary(),
             _builtInMeshPasses.ToImmutableDictionary(),
+            _builtInMeshShadowPasses.ToImmutableDictionary(),
             _builtInSpriteToneMapPasses.ToImmutableDictionary());
     }
 
-    private Diagnostic CreateDiagnostic(string code, string message)
+    private Diagnostic CreateDiagnostic(
+        string code,
+        string message,
+        DiagnosticSeverity severity = DiagnosticSeverity.Error,
+        string operation = "RenderGraph.Compile")
         => new(
             code,
-            DiagnosticSeverity.Error,
+            severity,
             Stopwatch.GetTimestamp(),
             hostId: null,
             worldGuid: _options.WorldGuid,
@@ -760,14 +793,15 @@ public sealed class RenderGraph
             passId: null,
             assetId: null,
             commandIdentity: null,
-            operation: "RenderGraph.Compile",
+            operation,
             nativeResult: null,
             message: message,
             context: []);
 
     private ImmutableArray<Diagnostic> CreateDiagnostics(GraphResourceValidationResult validation, bool presentationSourceValid)
     {
-        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(5);
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(5 + _buildWarnings.Count);
+        diagnostics.AddRange(_buildWarnings);
 
         if (!validation.ImportsValid)
         {
