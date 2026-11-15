@@ -147,11 +147,12 @@ internal sealed class WorldConstructionPlan
         _preparedReplacement = (restoreIdentityState is null)
             ? null
             : new WorldPreparedReplacement(
-                targetWorld
-                    ?? throw new InvalidOperationException("The restore plan omitted its target World."),
-                this,
-                replacementPreparation
-                    ?? throw new InvalidOperationException("The restore plan omitted its replacement preparation."));
+                new WorldConstructionPlanControl(
+                    this,
+                    targetWorld
+                        ?? throw new InvalidOperationException("The restore plan omitted its target World."),
+                    replacementPreparation
+                        ?? throw new InvalidOperationException("The restore plan omitted its replacement preparation.")));
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;

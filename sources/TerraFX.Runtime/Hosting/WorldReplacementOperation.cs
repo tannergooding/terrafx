@@ -8,7 +8,7 @@ using TerraFX.Entities;
 
 namespace TerraFX.Hosting;
 
-internal sealed partial class WorldReplacementOperation
+internal sealed partial class WorldReplacementOperation : IWorldGuidRetentionOwner
 {
     private int _captureAttempted;
     private int _isCaptured;

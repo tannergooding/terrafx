@@ -190,12 +190,14 @@ internal sealed class WorldLoadPreparedState : IDisposable
             var preparedReplacement = ConstructionPlan.PreparedReplacement
                 ?? throw new InvalidOperationException("The prepared World replacement omitted its Entities-owned capability.");
 
-            if (!preparedReplacement.TryCaptureCommit(out bindingRefusal, out admissionRefusal))
+            if (!preparedReplacement.TryCaptureCommit(
+                    out operationCredits,
+                    out bindingRefusal,
+                    out admissionRefusal))
             {
                 return false;
             }
 
-            operationCredits = ReplacementPreparation.TransferCapturedCredits();
             _isCaptured = true;
             return true;
         }

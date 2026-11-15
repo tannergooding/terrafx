@@ -53,36 +53,49 @@ internal sealed partial class WorldReplacementOperation
             return false;
         }
 
-        if (!_plan.TryCaptureCommit(
-                out var preparedState,
-                out var operationCredits,
-                out var bindingRefusal,
-                out var admissionRefusal))
+        WorldLoadPreparedState? preparedState = null;
+        WorldDomainOperationCreditBundle? operationCredits = null;
+
+        try
         {
-            rejection = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)
-                ? WorldPersistence.CreateLoadRejectedReceipt(
-                    "load-target-binding-stale",
-                    "The prepared plan or its exact target binding is disposed, already captured, stale, or unavailable.",
-                    _plan.TargetWorldGuid)
-                : WorldPersistence.CreateLoadRejectedReceipt(
-                    admissionRefusal == WorldAdmissionRefusal.DomainClosed
-                        ? "load-domain-closed"
-                        : "load-commit-capture-rejected",
-                    $"The target World refused commit capture with admission code {admissionRefusal}.",
-                    _plan.TargetWorldGuid);
-            return false;
+            if (!_plan.TryCaptureCommit(
+                    out preparedState,
+                    out operationCredits,
+                    out var bindingRefusal,
+                    out var admissionRefusal))
+            {
+                rejection = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)
+                    ? WorldPersistence.CreateLoadRejectedReceipt(
+                        "load-target-binding-stale",
+                        "The prepared plan or its exact target binding is disposed, already captured, stale, or unavailable.",
+                        _plan.TargetWorldGuid)
+                    : WorldPersistence.CreateLoadRejectedReceipt(
+                        admissionRefusal == WorldAdmissionRefusal.DomainClosed
+                            ? "load-domain-closed"
+                            : "load-commit-capture-rejected",
+                        $"The target World refused commit capture with admission code {admissionRefusal}.",
+                        _plan.TargetWorldGuid);
+                return false;
+            }
+
+            _preparedState = preparedState;
+            _operationCredits = operationCredits;
+            preparedState = null;
+            operationCredits = null;
+
+            if ((_preparedState is null) || (_operationCredits is null))
+            {
+                AbandonCapturedState();
+                throw new InvalidOperationException("The captured World replacement omitted its state or operation credits.");
+            }
+
+            Volatile.Write(ref _isCaptured, 1);
+            return true;
         }
-
-        _preparedState = preparedState;
-        _operationCredits = operationCredits;
-
-        if ((_preparedState is null) || (_operationCredits is null))
+        finally
         {
-            AbandonCapturedState();
-            throw new InvalidOperationException("The captured World replacement omitted its state or operation credits.");
+            preparedState?.Dispose();
+            operationCredits?.Dispose();
         }
-
-        Volatile.Write(ref _isCaptured, 1);
-        return true;
     }
 }

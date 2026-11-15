@@ -61,10 +61,12 @@ public sealed partial class World
 
     internal bool TryCaptureLoadReplacement(
         WorldGuidReplacementPreparation preparation,
+        out WorldDomainOperationCreditBundle? operationCredits,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal)
     {
         ArgumentNullException.ThrowIfNull(preparation);
+        operationCredits = null;
 
         lock (_sceneStorageGate)
         {
@@ -80,7 +82,13 @@ public sealed partial class World
                         return false;
                     }
 
-                    return preparation.TryCaptureCommit(out bindingRefusal, out admissionRefusal);
+                    if (!preparation.TryCaptureCommit(out bindingRefusal, out admissionRefusal))
+                    {
+                        return false;
+                    }
+
+                    operationCredits = preparation.TransferCapturedCredits();
+                    return true;
                 }
             }
         }
