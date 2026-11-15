@@ -49,6 +49,39 @@ internal static class ScenePrefabExpansionPlanner
         return checked(encodedRecordLength * recordMultiplier);
     }
 
+    internal static async Task<long> MeasureRequiredByteReservationAsync(
+        AssetPackageLease packageLease,
+        AssetId sceneId,
+        SceneExpansionLimits limits,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+
+        if (!sceneId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sceneId));
+        }
+
+        var sceneLease = await packageLease.LoadFromPackageAsync<SceneAsset>(sceneId, cancellationToken)
+            .ConfigureAwait(false);
+        SceneExpansionBuilder? builder = null;
+
+        try
+        {
+            builder = new SceneExpansionBuilder(limits, cancellationToken);
+            return await builder.MeasureRequiredByteReservationAsync(sceneLease).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (builder is null)
+            {
+                sceneLease.Dispose();
+            }
+
+            builder?.Dispose();
+        }
+    }
+
     internal static async Task<SceneExpansionPlan> PrepareAsync(
         AssetPackageLease packageLease,
         AssetId sceneId,
@@ -619,31 +652,7 @@ internal static class ScenePrefabExpansionPlanner
 
         internal async Task<SceneExpansionPlan> BuildAsync(AssetLease<SceneAsset> sceneLease)
         {
-            ArgumentNullException.ThrowIfNull(sceneLease);
-            _sceneLease = sceneLease;
-            _cancellationToken.ThrowIfCancellationRequested();
-            _assetPath.Add(sceneLease.AssetId);
-            var sceneSource = new SceneExpansionSource(sceneLease.Value);
-            var rootCount = await CountOccurrenceAsync(
-                sceneSource,
-                prefabDepth: 0,
-                baseHierarchyDepth: 0).ConfigureAwait(false);
-            await CountOverrideLayerAsync(
-                sceneSource,
-                sceneLease.Value.Overrides,
-                allowInstanceAbsoluteSources: true).ConfigureAwait(false);
-
-            if (_placementOccurrenceCount != (_occurrenceCount - 1))
-            {
-                throw new InvalidDataException("Prefab placement membership does not match the expanded occurrence count.");
-            }
-
-            var requiredBytes = GetRequiredByteReservation();
-
-            if (requiredBytes > _limits.MaximumExpandedBytes)
-            {
-                throw new InvalidOperationException("The Scene expansion exceeds its selected byte budget.");
-            }
+            var (sceneSource, rootCount, requiredBytes) = await CountAndMeasureAsync(sceneLease).ConfigureAwait(false);
 
             if (_limits.ReserveStorage is { } reserveStorage)
             {
@@ -777,6 +786,9 @@ internal static class ScenePrefabExpansionPlanner
             _rootCounts = [];
             return plan;
         }
+
+        internal async Task<long> MeasureRequiredByteReservationAsync(AssetLease<SceneAsset> sceneLease)
+            => (await CountAndMeasureAsync(sceneLease).ConfigureAwait(false)).RequiredByteReservation;
 
         private void ApplyOverrideLayer(
             ImmutableArray<ScenePrefabOverride> overrides,
@@ -1160,6 +1172,38 @@ internal static class ScenePrefabExpansionPlanner
             {
                 throw new InvalidOperationException("Expanded ExternalSlot binding count did not match its preflight.");
             }
+        }
+
+        private async Task<(SceneExpansionSource SceneSource, int RootCount, long RequiredByteReservation)> CountAndMeasureAsync(
+            AssetLease<SceneAsset> sceneLease)
+        {
+            ArgumentNullException.ThrowIfNull(sceneLease);
+            _sceneLease = sceneLease;
+            _cancellationToken.ThrowIfCancellationRequested();
+            _assetPath.Add(sceneLease.AssetId);
+            var sceneSource = new SceneExpansionSource(sceneLease.Value);
+            var rootCount = await CountOccurrenceAsync(
+                sceneSource,
+                prefabDepth: 0,
+                baseHierarchyDepth: 0).ConfigureAwait(false);
+            await CountOverrideLayerAsync(
+                sceneSource,
+                sceneLease.Value.Overrides,
+                allowInstanceAbsoluteSources: true).ConfigureAwait(false);
+
+            if (_placementOccurrenceCount != (_occurrenceCount - 1))
+            {
+                throw new InvalidDataException("Prefab placement membership does not match the expanded occurrence count.");
+            }
+
+            var requiredBytes = GetRequiredByteReservation();
+
+            if (requiredBytes > _limits.MaximumExpandedBytes)
+            {
+                throw new InvalidOperationException("The Scene expansion exceeds its selected byte budget.");
+            }
+
+            return (sceneSource, rootCount, requiredBytes);
         }
 
         private async ValueTask CountEntitySubtreeAsync(

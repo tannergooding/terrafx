@@ -108,7 +108,12 @@ public sealed class SceneLoader
             throw new ArgumentOutOfRangeException(nameof(sceneId));
         }
 
-        return PreparePlanCoreAsync(sceneId, options, packageLease, cancellationToken);
+        return PreparePlanCoreAsync(
+            sceneId,
+            options,
+            packageLease,
+            useRestoredStorage: true,
+            cancellationToken: cancellationToken);
     }
 
     private async Task<PreparedScene> PrepareCoreAsync(
@@ -120,7 +125,8 @@ public sealed class SceneLoader
             sceneId,
             options,
             packageLease: null,
-            cancellationToken).ConfigureAwait(false);
+            useRestoredStorage: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         return new PreparedScene(_world, _assets, options, plan);
     }
 
@@ -128,8 +134,12 @@ public sealed class SceneLoader
         AssetId sceneId,
         SceneLoadOptionsSnapshot options,
         AssetPackageLease? packageLease,
+        bool useRestoredStorage,
         CancellationToken cancellationToken)
     {
+        Func<long, WorldSceneStorageReservation?> reserveStorage = useRestoredStorage
+            ? bytes => _world.TryReserveRestoredSceneStorage(_registry, bytes)
+            : bytes => _world.TryReserveSceneStorage(_registry, bytes);
         var limits = new SceneExpansionLimits(
             options.MaximumExpandedEntities,
             options.MaximumPrefabEntities,
@@ -137,7 +147,7 @@ public sealed class SceneLoader
             options.MaximumPrefabDepth,
             options.MaximumHierarchyDepth,
             _world.MaximumOwnedStateBytes,
-            bytes => _world.TryReserveSceneStorage(_registry, bytes),
+            reserveStorage,
             rootExternalBindingCount: options.ExternalBindings.Length);
         var plan = (packageLease is null)
             ? await ScenePrefabExpansionPlanner.PrepareAsync(
@@ -171,7 +181,7 @@ public sealed class SceneLoader
             {
                 var preparedAssets = await resourcePreparer.PrepareAsync(
                     plan,
-                    bytes => _world.TryReserveSceneStorage(_registry, bytes),
+                    reserveStorage,
                     cancellationToken).ConfigureAwait(false);
 
                 if (preparedAssets is not null)

@@ -453,15 +453,24 @@ internal sealed class WorldPersistenceCommitTests
         }
     }
 
-    [Test]
+    [TestCase(false)]
+    [TestCase(true)]
     [SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "The standalone owner-thread test synchronously joins every persistence and retirement task before disposing its Worlds.")]
-    public void CompletesCapturedLoadAfterExternalDomainClosure()
+    public void CompletesCapturedLoadAfterExternalDomainClosure(bool includeActiveScene)
     {
         var schemas = CreateCommitSchemas();
-        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var sceneAssetId = new AssetId(1);
+        var packageBytes = includeActiveScene
+            ? SceneAssetStoreTests.Package.CreatePackage(
+                new SceneAssetStoreTests.Package.Entry(
+                    checked((uint)sceneAssetId.Value),
+                    SceneAssetStoreTests.Package.CreateEnvelope(
+                        checked((uint)sceneAssetId.Value),
+                        SceneAssetReaderTests.Fixtures.CreateScene(sceneAssetId))))
+            : SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
         var savePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.captured-closed-domain.state");
         using var domain = new WorldAdmissionDomain(8_589_934_592L);
@@ -470,10 +479,18 @@ internal sealed class WorldPersistenceCommitTests
         WorldPersistence? persistence = null;
         World? world = null;
         World? replacementWorld = null;
+        Guid? sourceInstanceId = null;
 
         try
         {
-            var assetRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
+            var assetRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+
+            if (includeActiveScene)
+            {
+                _ = SceneSupport.RegisterAssetCodecs(assetRegistrationBuilder);
+            }
+
+            var assetRegistration = assetRegistrationBuilder.Build();
             assets = AssetStore.CreateAsync(new AssetStoreOptions(
                 packagePath,
                 SHA256.HashData(packageBytes),
@@ -487,7 +504,27 @@ internal sealed class WorldPersistenceCommitTests
                 WorldGuid = Guid.NewGuid(),
             });
             persistence = new WorldPersistence(assets, CreateCommitPersistenceMetadata());
-            _ = world.CreateEntity(new EntityDescription());
+
+            if (includeActiveScene)
+            {
+                var sceneLoader = new SceneLoader(world, assets);
+                using var preparedScene = sceneLoader
+                    .PrepareAsync(sceneAssetId, new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                var activationTask = sceneLoader.ActivateAsync(preparedScene);
+                world.PumpControlBoundary();
+                var activation = activationTask.GetAwaiter().GetResult();
+                Assert.That(activation.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                sourceInstanceId = activation.Instance
+                    ?.SceneInstanceId
+                    ?? throw new InvalidOperationException("The activated Scene omitted its instance.");
+            }
+            else
+            {
+                _ = world.CreateEntity(new EntityDescription());
+            }
+
             _ = world.Step();
             var save = persistence.SaveAsync(
                 world,
@@ -511,6 +548,15 @@ internal sealed class WorldPersistenceCommitTests
             Assert.That(receipt.Status, Is.EqualTo(WorldLoadStatus.Loaded), receipt.Rejection?.Message);
             replacementWorld = receipt.ReplacementWorld
                 ?? throw new InvalidOperationException("The captured Load omitted its replacement World.");
+
+            if (sourceInstanceId is Guid expectedInstanceId)
+            {
+                Assert.That(
+                    receipt.IdentityRemap!.TryMapSceneInstance(expectedInstanceId, out var mappedInstanceId),
+                    Is.True);
+                Assert.That(mappedInstanceId, Is.EqualTo(expectedInstanceId));
+            }
+
             (receipt.OldWorldRetirement
                 ?? throw new InvalidOperationException("The captured Load omitted old-World retirement."))
                 .WaitAsync(TimeSpan.FromSeconds(5))

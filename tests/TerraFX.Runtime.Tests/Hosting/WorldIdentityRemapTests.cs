@@ -118,11 +118,18 @@ internal sealed class WorldIdentityRemapTests
     public void IdentityRemapHistoryMapsOnlyLiveSourceAssignmentsByOrdinal()
     {
         WorldPersistenceIdentityScratchEntry[] sourceHistory = [
+            new(Identity(3), 1, 1, 0, Identity(101), 2),
             new(Identity(1), 1, 2, 0, Identity(101), 2, isLive: true),
             new(Identity(2), 2, 3, 0, Identity(101), 2, isLive: true),
-            new(Identity(3), 1, 1, 0, Identity(101), 2),
         ];
         WorldPersistenceIdentityScratchEntry[] targetHistory = [
+            new(
+                StableIdentityLedger.CreateAutomaticIdentity(Identity(104), IdentityKind.Entity, 1),
+                1,
+                1,
+                0,
+                Identity(104),
+                3),
             new(
                 StableIdentityLedger.CreateAutomaticIdentity(Identity(104), IdentityKind.Entity, 2),
                 1,
@@ -139,15 +146,7 @@ internal sealed class WorldIdentityRemapTests
                 Identity(104),
                 3,
                 isLive: true),
-            new(
-                StableIdentityLedger.CreateAutomaticIdentity(Identity(104), IdentityKind.Entity, 1),
-                1,
-                1,
-                0,
-                Identity(104),
-                3),
         ];
-        Array.Sort(targetHistory);
         var expectedEntityTargetId = StableIdentityLedger.CreateAutomaticIdentity(Identity(104), IdentityKind.Entity, 2);
         var expectedSceneInstanceTargetId = StableIdentityLedger.CreateAutomaticIdentity(Identity(104), IdentityKind.SceneInstance, 3);
         var entityMappings = new WorldIdentityRemapEntry[

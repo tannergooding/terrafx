@@ -1362,9 +1362,18 @@ public sealed class WorldPersistence : IAsyncDisposable
                 return CreateLoadRejected("load-state-not-supported", exception.Message, targetWorldGuid);
             }
 
-            var restoreSceneHierarchyWorkspaceByteReservation =
+            var restoreScenePlanStorageByteReservation =
+                await ScenePersistenceRestorer.MeasureRestoredScenePlanStorageBytesAsync(
+                    packageLease
+                        ?? throw new InvalidOperationException("The selected package lease was not retained."),
+                    checkpointContents.WorldContents.ScenesRecord,
+                    checkpointContents.WorldContents.Scenes,
+                    checkpointContents.WorldContents.Configuration.SchedulingLimits.MaximumOwnedStateBytes,
+                    cancellationToken).ConfigureAwait(false);
+            var restoreSceneHierarchyWorkspaceByteReservation = checked(
                 ScenePersistenceRestorer.MeasureHierarchyRestoreWorkspaceBytes(
-                    checkpointContents.WorldContents.Scenes.HierarchyNodeCount);
+                    checkpointContents.WorldContents.Scenes.HierarchyNodeCount)
+                + restoreScenePlanStorageByteReservation);
             long targetBytes;
 
             try

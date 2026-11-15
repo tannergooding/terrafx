@@ -37,6 +37,67 @@ internal static class ScenePersistenceRestorer
             : checked(128L + (2 * ArrayBytes(nodeCount, Unsafe.SizeOf<Entity>())));
     }
 
+    internal static async Task<long> MeasureRestoredScenePlanStorageBytesAsync(
+        AssetPackageLease packageLease,
+        ReadOnlyMemory<byte> scenesRecord,
+        WorldPersistenceScenesContents contents,
+        long maximumExpandedBytes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+        ArgumentNullException.ThrowIfNull(contents);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumExpandedBytes);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var scenes = new EbinRecordReadView(scenesRecord.Span);
+
+        if ((scenes.Header.SchemaId != s_scenesSchemaId)
+            || (scenes.Header.Major != 1)
+            || (scenes.Header.Minor != 0)
+            || (scenes.FieldCount != 2)
+            || (ReadArrayCount(scenes, 1) != contents.InstanceCount))
+        {
+            throw new ArgumentException("The candidate state/scenes record does not match its validated shape.", nameof(scenesRecord));
+        }
+
+        var defaultLimits = SceneExpansionLimits.Default;
+        var requiredBytes = 0L;
+
+        for (var instanceIndex = 0; instanceIndex < contents.InstanceCount; instanceIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var instanceRecord = GetRecordArrayElementMemory(scenesRecord, 1, instanceIndex);
+            var instance = new EbinRecordReadView(instanceRecord.Span);
+
+            if ((instance.Header.SchemaId != s_sceneInstanceSchemaId)
+                || (instance.Header.Major != 1)
+                || (instance.Header.Minor != 0)
+                || (instance.FieldCount != 7))
+            {
+                throw new ArgumentException("A candidate SceneInstance record does not match its validated shape.", nameof(scenesRecord));
+            }
+
+            var sceneId = ReadSceneAssetId(instance);
+            var limits = new SceneExpansionLimits(
+                defaultLimits.MaximumExpandedEntities,
+                defaultLimits.MaximumPrefabEntities,
+                defaultLimits.MaximumExpandedOccurrences,
+                defaultLimits.MaximumPrefabDepth,
+                defaultLimits.MaximumHierarchyDepth,
+                maximumExpandedBytes,
+                rootExternalBindingCount: ReadArrayCount(instance, 5));
+            requiredBytes = checked(
+                requiredBytes
+                + await ScenePrefabExpansionPlanner.MeasureRequiredByteReservationAsync(
+                    packageLease,
+                    sceneId,
+                    limits,
+                    cancellationToken).ConfigureAwait(false));
+        }
+
+        return requiredBytes;
+    }
+
     internal static async Task<PreparedRestore> PrepareAsync(
         World world,
         AssetStore assets,

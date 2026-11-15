@@ -27,7 +27,7 @@ internal static class WorldIdentityRemapHelpers
         byte identityKind)
     {
         ValidateIdentityKind(identityKind);
-        ValidateHistoryOrder(sourceHistory, nameof(sourceHistory));
+        ValidateHistoryOrdinalOrder(sourceHistory, nameof(sourceHistory));
         var mappingCount = 0;
 
         foreach (var entry in sourceHistory)
@@ -172,8 +172,8 @@ internal static class WorldIdentityRemapHelpers
         ArgumentOutOfRangeException.ThrowIfEqual(sourceWorldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(targetWorldGuid, Guid.Empty);
         ValidateIdentityKind(identityKind);
-        ValidateHistoryOrder(sourceHistory, nameof(sourceHistory));
-        ValidateHistoryOrder(targetHistory, nameof(targetHistory));
+        ValidateHistoryOrdinalOrder(sourceHistory, nameof(sourceHistory));
+        ValidateHistoryOrdinalOrder(targetHistory, nameof(targetHistory));
 
         if (sourceHistory.Length != targetHistory.Length)
         {
@@ -189,20 +189,21 @@ internal static class WorldIdentityRemapHelpers
 
         var written = 0;
 
-        foreach (var source in sourceHistory)
+        for (var index = 0; index < sourceHistory.Length; index++)
         {
+            var source = sourceHistory[index];
+            var target = targetHistory[index];
             var targetIdentity = (sourceWorldGuid == targetWorldGuid)
                 ? source.StableId
                 : StableIdentityLedger.CreateAutomaticIdentity(
                     targetWorldGuid,
                     (IdentityKind)source.Kind,
                     source.AssignmentOrdinal);
-            var targetIndex = WorldPersistenceIdentityScratchEntry.FindIndex(targetHistory, targetIdentity);
 
-            if ((targetIndex < 0)
-                || (targetHistory[targetIndex].AssignmentOrdinal != source.AssignmentOrdinal)
-                || (targetHistory[targetIndex].Kind != source.Kind)
-                || (targetHistory[targetIndex].IsLive != source.IsLive))
+            if ((target.AssignmentOrdinal != source.AssignmentOrdinal)
+                || (target.Kind != source.Kind)
+                || (target.IsLive != source.IsLive)
+                || (target.StableId != targetIdentity))
             {
                 throw new ArgumentException("The target identity history does not preserve the validated source assignment transformation.", nameof(targetHistory));
             }
@@ -231,7 +232,7 @@ internal static class WorldIdentityRemapHelpers
         return checked(64L + roundedBytes);
     }
 
-    private static void ValidateHistoryOrder(
+    private static void ValidateHistoryOrdinalOrder(
         scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> history,
         string parameterName)
     {
@@ -240,16 +241,11 @@ internal static class WorldIdentityRemapHelpers
             var entry = history[index];
 
             if ((entry.AssignmentOrdinal == 0)
-                || (entry.AssignmentOrdinal > (uint)history.Length)
+                || (entry.AssignmentOrdinal != checked((uint)(index + 1)))
                 || (entry.StableId == Guid.Empty)
                 || (entry.Kind is not 1 and not 2))
             {
-                throw new ArgumentException("The identity history contains an invalid assignment row.", parameterName);
-            }
-
-            if ((index > 0) && (history[index - 1].StableId.CompareTo(entry.StableId) >= 0))
-            {
-                throw new ArgumentException("Identity history must be strictly sorted by stable identity.", parameterName);
+                throw new ArgumentException("The identity history is not in complete assignment-ordinal order.", parameterName);
             }
         }
     }
