@@ -8,6 +8,24 @@ namespace TerraFX.Rendering;
 /// <summary>Creates snapshot-bound render graphs for the selected renderer profile.</summary>
 public sealed partial class Renderer
 {
+    private static bool HasMeshCameraDraws(RenderSnapshot snapshot)
+    {
+        if (snapshot is not RenderSnapshot3D meshSnapshot)
+        {
+            return false;
+        }
+
+        foreach (var cameraOrder in meshSnapshot.MeshCameraOrders)
+        {
+            if (!cameraOrder.DrawIndices.IsEmpty)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Builds an offscreen graph for one exact committed render snapshot and target.</summary>
     /// <param name="snapshot">The immutable World-produced render snapshot.</param>
     /// <param name="offscreenColorTarget">The current same-device offscreen color target.</param>
@@ -15,7 +33,7 @@ public sealed partial class Renderer
     /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> or <paramref name="offscreenColorTarget"/> is null.</exception>
     /// <exception cref="ArgumentException">The target belongs to another device or has another extent.</exception>
     /// <exception cref="InvalidOperationException">The selected GraphicsDevice is not ready.</exception>
-    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice.</exception>
+    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice, or a combined Sprite/Mesh C0 snapshot has multiple cameras.</exception>
     /// <exception cref="ObjectDisposedException">The snapshot or target has been disposed.</exception>
     public RenderGraph BuildGraph(RenderSnapshot snapshot, GpuTexture offscreenColorTarget)
     {
@@ -49,8 +67,23 @@ public sealed partial class Renderer
             snapshot.CameraIds,
             snapshot.TargetExtent,
             offscreenColorTarget));
-        BuildSpriteC0Graph(snapshot, graph);
-        BuildMeshC0Graph(snapshot, graph);
+        RenderGraphBuiltInColorState? colorState = null;
+
+        if (!snapshot.SpriteDraws.IsEmpty
+            && HasMeshCameraDraws(snapshot)
+            && (snapshot.Cameras.Length > 1))
+        {
+            throw new NotSupportedException("Combined Sprite/Mesh C0 currently requires one camera until secondary-camera composition is admitted.");
+        }
+
+        BuildMeshC0Graph(snapshot, graph, ref colorState);
+        BuildSpriteC0Graph(snapshot, graph, ref colorState);
+
+        if (colorState is not null)
+        {
+            BuildToneMapGraph(snapshot, graph, colorState);
+        }
+
         return graph;
     }
 
@@ -61,7 +94,7 @@ public sealed partial class Renderer
     /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> or <paramref name="surface"/> is null.</exception>
     /// <exception cref="ArgumentException">The Surface belongs to another device or has another extent.</exception>
     /// <exception cref="InvalidOperationException">The selected GraphicsDevice or Surface is not ready.</exception>
-    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice.</exception>
+    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice, or a combined Sprite/Mesh C0 snapshot has multiple cameras.</exception>
     /// <exception cref="ObjectDisposedException">The snapshot or Surface has been disposed or retired.</exception>
     public RenderGraph BuildGraph(RenderSnapshot snapshot, Surface surface)
     {
@@ -91,8 +124,23 @@ public sealed partial class Renderer
             snapshot.CameraIds,
             snapshot.TargetExtent,
             surface));
-        BuildSpriteC0Graph(snapshot, graph);
-        BuildMeshC0Graph(snapshot, graph);
+        RenderGraphBuiltInColorState? colorState = null;
+
+        if (!snapshot.SpriteDraws.IsEmpty
+            && HasMeshCameraDraws(snapshot)
+            && (snapshot.Cameras.Length > 1))
+        {
+            throw new NotSupportedException("Combined Sprite/Mesh C0 currently requires one camera until secondary-camera composition is admitted.");
+        }
+
+        BuildMeshC0Graph(snapshot, graph, ref colorState);
+        BuildSpriteC0Graph(snapshot, graph, ref colorState);
+
+        if (colorState is not null)
+        {
+            BuildToneMapGraph(snapshot, graph, colorState);
+        }
+
         return graph;
     }
 }

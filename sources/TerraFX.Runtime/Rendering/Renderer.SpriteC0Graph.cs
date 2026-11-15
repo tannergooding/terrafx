@@ -15,7 +15,10 @@ public sealed partial class Renderer
     private static Vector4 Multiply(Vector4 left, Vector4 right)
         => new(left.X * right.X, left.Y * right.Y, left.Z * right.Z, left.W * right.W);
 
-    private void BuildSpriteC0Graph(RenderSnapshot snapshot, RenderGraph graph)
+    private void BuildSpriteC0Graph(
+        RenderSnapshot snapshot,
+        RenderGraph graph,
+        ref RenderGraphBuiltInColorState? colorState)
     {
         if (snapshot.SpriteDraws.IsEmpty)
         {
@@ -66,37 +69,28 @@ public sealed partial class Renderer
             gpuSprites[index] = sprite with { Tint = tint };
         }
 
-        var outputColorVersion = graph.GetBuiltInOutputColorVersion();
-        var hdrColorVersion = graph.CreateTransientTexture(
-            new TextureDescription(
-                TextureDimension.Dimension2D,
-                snapshot.TargetExtent.Width,
-                snapshot.TargetExtent.Height,
-                depth: 1,
-                arrayLayers: 1,
-                mipLevels: 1,
-                TextureFormat.Rgba16Float,
-                TextureUsage.ColorAttachment | TextureUsage.Sampled,
-                "sprite-hdr-working-target"));
+        colorState ??= new RenderGraphBuiltInColorState(
+            graph.CreateTransientTexture(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    snapshot.TargetExtent.Width,
+                    snapshot.TargetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    TextureFormat.Rgba16Float,
+                    TextureUsage.ColorAttachment | TextureUsage.Sampled,
+                    "builtin-hdr-working-target")));
         var alignment = checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment);
         var frameBytes = RenderCameraGpuDataBufferBuilder.CreateFrameBuffer(
             snapshot.Cameras.AsSpan(),
             alignment,
             out var frameStride);
-        var toneMapArea = new RenderArea(0, 0, snapshot.TargetExtent.Width, snapshot.TargetExtent.Height);
-        var toneMapFrameBytes = RenderCameraGpuDataBufferBuilder.CreateToneMapFrameBuffer(
-            toneMapArea,
-            alignment,
-            out _);
         var objectBytes = RenderSpriteGpuDataBufferBuilder.CreateObjectBuffer(
             gpuSprites,
             alignment,
             out var objectStride);
-        var toneMapObjectBytes = RenderSpriteGpuDataBufferBuilder.CreateToneMapObjectBuffer(
-            alignment,
-            out _);
         var vertexBytes = RenderSpriteVertexBufferBuilder.Create(snapshot.SpriteDraws.AsSpan());
-        var toneMapVertexBytes = RenderSpriteVertexBufferBuilder.CreateFullScreenQuad();
         var indexBytes = MemoryMarshal.AsBytes(RenderSpriteGeometry.Indices.AsSpan()).ToArray();
         var frameBuffer = graph.CreateInitializedTransientBuffer(
             new BufferDescription(
@@ -130,31 +124,6 @@ public sealed partial class Renderer
                 structuredStride: null,
                 "sprite-index-data"),
             indexBytes);
-        var toneMapFrameBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapFrameBytes.Length,
-                BufferUsage.Uniform | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "sprite-tonemap-frame-data"),
-            toneMapFrameBytes);
-        var toneMapObjectBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapObjectBytes.Length,
-                BufferUsage.Uniform | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "sprite-tonemap-object-data"),
-            toneMapObjectBytes);
-        var toneMapVertexBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapVertexBytes.Length,
-                BufferUsage.Vertex | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "sprite-tonemap-vertices"),
-            toneMapVertexBytes);
-
         var pageVersions = new Dictionary<(AssetPackageBackingToken BackingToken, int TextureAssetId), GraphTextureVersion>();
         var batchPageVersions = new Dictionary<(Guid SceneInstanceId, int TextureAssetId), GraphTextureVersion>();
 
@@ -188,11 +157,11 @@ public sealed partial class Renderer
             batchPageVersions.Add(batchKey, version);
         }
 
-        var hdrTargetInitialized = false;
-        var currentColorVersion = hdrColorVersion;
-        var previousPass = default(RenderPassId);
-        var hasPreviousPass = false;
-        var passIndex = 0;
+        var hdrTargetInitialized = colorState.HasColorContents;
+        var currentColorVersion = colorState.CurrentColorVersion;
+        var previousPass = colorState.PreviousPass;
+        var hasPreviousPass = colorState.HasPreviousPass;
+        var passIndex = colorState.NextPassIndex;
         var batchesByCamera = new Dictionary<Guid, List<RenderSpriteBatch>>();
 
         foreach (var batch in batches)
@@ -226,10 +195,11 @@ public sealed partial class Renderer
 
             _ = batchesByCamera.TryGetValue(camera.CameraId, out var cameraBatches);
             var batchCount = cameraBatches?.Count ?? 0;
+            var cameraAlreadyWroteColor = colorState.HasColorWrite(camera.CameraId);
 
             if (batchCount == 0)
             {
-                if (!clearColor)
+                if (!clearColor || cameraAlreadyWroteColor)
                 {
                     continue;
                 }
@@ -255,6 +225,7 @@ public sealed partial class Renderer
                     AttachmentStoreAction.Store,
                     camera.ClearColor);
                 hdrTargetInitialized = true;
+                colorState.MarkColorWrite(camera.CameraId);
                 continue;
             }
 
@@ -267,6 +238,8 @@ public sealed partial class Renderer
 
                 hdrTargetInitialized = true;
             }
+
+            var clearCamera = clearColor && !cameraAlreadyWroteColor;
 
             for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
             {
@@ -319,28 +292,95 @@ public sealed partial class Renderer
                     pass,
                     currentColorVersion,
                     new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
-                    (batchIndex == 0 && clearColor) ? AttachmentLoadAction.Clear : AttachmentLoadAction.Load,
+                    (batchIndex == 0 && clearCamera) ? AttachmentLoadAction.Clear : AttachmentLoadAction.Load,
                     AttachmentStoreAction.Store,
                     camera.ClearColor);
                 previousPass = pass;
                 hasPreviousPass = true;
+                colorState.MarkColorWrite(camera.CameraId);
             }
         }
 
+        colorState.CurrentColorVersion = currentColorVersion;
+        colorState.HasColorContents = hdrTargetInitialized;
+        colorState.HasPreviousPass = hasPreviousPass;
+        colorState.NextPassIndex = passIndex;
+        colorState.PreviousPass = previousPass;
+    }
+
+    private void BuildToneMapGraph(
+        RenderSnapshot snapshot,
+        RenderGraph graph,
+        RenderGraphBuiltInColorState colorState)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(graph);
+        ArgumentNullException.ThrowIfNull(colorState);
+
+        if (!colorState.HasColorContents)
+        {
+            return;
+        }
+
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not construct built-in tone-map passes.");
+        var alignment = checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment);
+        var toneMapArea = new RenderArea(0, 0, snapshot.TargetExtent.Width, snapshot.TargetExtent.Height);
+        var toneMapFrameBytes = RenderCameraGpuDataBufferBuilder.CreateToneMapFrameBuffer(
+            toneMapArea,
+            alignment,
+            out _);
+        var toneMapObjectBytes = RenderSpriteGpuDataBufferBuilder.CreateToneMapObjectBuffer(
+            alignment,
+            out _);
+        var toneMapVertexBytes = RenderSpriteVertexBufferBuilder.CreateFullScreenQuad();
+        var toneMapIndexBytes = MemoryMarshal.AsBytes(RenderSpriteGeometry.Indices.AsSpan()).ToArray();
+        var toneMapFrameBuffer = graph.CreateInitializedTransientBuffer(
+            new BufferDescription(
+                toneMapFrameBytes.Length,
+                BufferUsage.Uniform | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                "builtin-tonemap-frame-data"),
+            toneMapFrameBytes);
+        var toneMapObjectBuffer = graph.CreateInitializedTransientBuffer(
+            new BufferDescription(
+                toneMapObjectBytes.Length,
+                BufferUsage.Uniform | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                "builtin-tonemap-object-data"),
+            toneMapObjectBytes);
+        var toneMapVertexBuffer = graph.CreateInitializedTransientBuffer(
+            new BufferDescription(
+                toneMapVertexBytes.Length,
+                BufferUsage.Vertex | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                "builtin-tonemap-vertices"),
+            toneMapVertexBytes);
+        var toneMapIndexBuffer = graph.CreateInitializedTransientBuffer(
+            new BufferDescription(
+                toneMapIndexBytes.Length,
+                BufferUsage.Index | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                "builtin-tonemap-indices"),
+            toneMapIndexBytes);
         var toneMapRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
         var toneMapPass = graph.AddBuiltInSpriteToneMapRasterPass(
             new RenderPassDescription(
-                "TerraFX.SpriteC0.ToneMap",
-                passIndex,
-                hasPreviousPass ? [previousPass] : [],
+                "TerraFX.BuiltIn.ToneMap",
+                colorState.NextPassIndex,
+                colorState.HasPreviousPass ? [colorState.PreviousPass] : [],
                 hasExternalSideEffects: false,
                 renderArea: toneMapArea),
             new RenderSpriteToneMapGraphPass(
-                currentColorVersion,
+                colorState.CurrentColorVersion,
                 toneMapFrameBuffer,
                 toneMapObjectBuffer,
                 toneMapVertexBuffer,
-                indexBuffer));
+                toneMapIndexBuffer));
         graph.ReadBuffer(
             toneMapPass,
             toneMapFrameBuffer,
@@ -358,18 +398,18 @@ public sealed partial class Renderer
             new GraphBufferRange(0, toneMapVertexBuffer.Description.ByteLength));
         graph.ReadBuffer(
             toneMapPass,
-            indexBuffer,
+            toneMapIndexBuffer,
             GraphBufferUsage.IndexRead,
-            new GraphBufferRange(0, indexBuffer.Description.ByteLength));
+            new GraphBufferRange(0, toneMapIndexBuffer.Description.ByteLength));
         graph.ReadTexture(
             toneMapPass,
-            currentColorVersion,
+            colorState.CurrentColorVersion,
             GraphTextureUsage.SampledRead,
             toneMapRange);
         var toneMappedVersion = graph.WriteColorAttachment(
             toneMapPass,
-            outputColorVersion,
-            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+            graph.GetBuiltInOutputColorVersion(),
+            toneMapRange,
             AttachmentLoadAction.Clear,
             AttachmentStoreAction.Store,
             Vector4.Zero);

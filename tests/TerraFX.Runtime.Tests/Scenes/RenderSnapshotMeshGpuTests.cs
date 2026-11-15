@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -83,6 +84,9 @@ internal sealed partial class SceneAssetStoreTests
         bool unsupportedTextureSampler = false,
         bool missingTextureUv0 = false,
         bool missingTangents = false,
+        bool includeSprite = false,
+        bool includeSecondCamera = false,
+        bool expectMixedSecondaryCameraRejection = false,
         byte baseColorTextureAlpha = byte.MaxValue,
         float baseColorAlpha = 1.0f,
         float vertexColorAlpha = 1.0f)
@@ -100,8 +104,12 @@ internal sealed partial class SceneAssetStoreTests
         const uint PackedTextureAssetId = 6;
         const uint NormalTextureAssetId = 7;
         const uint SkeletonAssetId = 8;
+        const uint SpriteTextureAssetId = 9;
+        const uint SpriteAtlasAssetId = 10;
+        const uint SpriteMaterialAssetId = 11;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
+        var spriteFrameId = new Guid("80000000-0000-4000-8000-000000000001");
         var materialRecord = CreateRenderMaterialAssetRecord(
             isSprite: false,
             CreateRenderMaterialPbrParametersRecord(
@@ -138,6 +146,17 @@ internal sealed partial class SceneAssetStoreTests
             meshComponents = [.. meshComponents, CreatePointLightRecord(ulong.MaxValue)];
         }
 
+        if (includeSprite)
+        {
+            meshComponents = [.. meshComponents, CreateRenderSpriteRecord(
+                checked((int)SpriteAtlasAssetId),
+                spriteFrameId,
+                checked((int)SpriteMaterialAssetId),
+                pixelSnap: false,
+                tint: Vector4.One,
+                pivot: new Vector2(0.5f, 0.5f))];
+        }
+
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
             sceneAssetId,
             additionalEntityComponents: meshComponents);
@@ -167,6 +186,37 @@ internal sealed partial class SceneAssetStoreTests
                 checked((uint)sceneAssetId.Value),
                 Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord)),
         ];
+
+        if (includeSprite)
+        {
+            var spriteMaterial = CreateRenderMaterialAssetRecord(
+                isSprite: true,
+                CreateRenderMaterialSpriteParametersRecord(color: Vector4.One),
+                alphaMode: 2,
+                doubleSided: false,
+                depthTest: false,
+                depthWrite: false,
+                cullMode: 0,
+                outputAlpha: 1,
+                requiredCapabilities: 0x009);
+            var spriteAtlas = CreateRenderAtlasRecord(
+                checked((int)SpriteTextureAssetId),
+                CreateRenderAtlasFrameRecord(spriteFrameId, page: 0, x: 4, y: 4, width: 4, height: 4));
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    SpriteTextureAssetId,
+                    Package.CreateEnvelope(
+                        SpriteTextureAssetId,
+                        CreateRenderAtlasPageTextureRecord(17))),
+                new Package.Entry(
+                    SpriteAtlasAssetId,
+                    Package.CreateEnvelope(SpriteAtlasAssetId, spriteAtlas)),
+                new Package.Entry(
+                    SpriteMaterialAssetId,
+                    Package.CreateEnvelope(SpriteMaterialAssetId, spriteMaterial)),
+            ];
+        }
 
         if (useBaseColorTexture)
         {
@@ -343,6 +393,7 @@ internal sealed partial class SceneAssetStoreTests
 
             var targetExtent = new PixelSize(64, 64);
             var cameraId = Guid.Empty;
+            var secondaryCameraId = Guid.Empty;
             SpatialFrame3 frame3 = default;
             await engineHost.InvokeAsync(_ => {
                 var cameraEntity = world!.CreateEntity(new EntityDescription(Guid.NewGuid()));
@@ -369,6 +420,28 @@ internal sealed partial class SceneAssetStoreTests
                 world.Add(cameraEntity, in rootPosition);
                 world.Add(cameraEntity, in camera);
 
+                if (includeSecondCamera)
+                {
+                    var secondaryCameraEntity = world.CreateEntity(new EntityDescription(Guid.NewGuid()));
+                    var secondaryCamera = new SceneComponentDefinitions.CameraComponent(
+                        (byte)CameraProjectionKind.Perspective,
+                        float.Pi / 3.0f,
+                        10.0f,
+                        0.1f,
+                        (byte)CameraFarMode.Finite,
+                        new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                        default,
+                        new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+                        (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                        new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                        ulong.MaxValue,
+                        1);
+                    world.Add(secondaryCameraEntity, in localTransform);
+                    world.Add(secondaryCameraEntity, in rootPosition);
+                    world.Add(secondaryCameraEntity, in secondaryCamera);
+                    secondaryCameraId = world.GetEntityId(secondaryCameraEntity);
+                }
+
                 if (useMultiplePointLights)
                 {
                     var secondPointLight = new RenderComponentDefinitions.PointLightComponent(
@@ -384,9 +457,12 @@ internal sealed partial class SceneAssetStoreTests
             }).ConfigureAwait(false);
 
             await engineHost.InvokeAsync(_ => {
+                ImmutableArray<Guid> cameraIds = includeSecondCamera
+                    ? [cameraId, secondaryCameraId]
+                    : [cameraId];
                 var extraction = engineHost.Renderer.Extract(
                     world!,
-                    new RenderExtractionOptions3D(frame3, targetExtent, [cameraId]));
+                    new RenderExtractionOptions3D(frame3, targetExtent, cameraIds));
 
                 if (extraction.Status != RenderExtractionStatus.Extracted)
                 {
@@ -403,7 +479,7 @@ internal sealed partial class SceneAssetStoreTests
             var meshSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its Mesh snapshot.");
             Assert.That(meshSnapshot.MeshDraws, Has.Length.EqualTo(2));
-            Assert.That(meshSnapshot.SpriteDraws, Is.Empty);
+            Assert.That(meshSnapshot.SpriteDraws, Has.Length.EqualTo(includeSprite ? 1 : 0));
 
             if (usePointLight)
             {
@@ -431,12 +507,50 @@ internal sealed partial class SceneAssetStoreTests
                 return;
             }
 
+            if (expectMixedSecondaryCameraRejection)
+            {
+                Assert.That(includeSprite && includeSecondCamera, Is.True);
+                _ = Assert.Throws<NotSupportedException>(() => engineHost.Renderer.BuildGraph(meshSnapshot, targetTexture));
+                return;
+            }
+
             var graph = engineHost.Renderer.BuildGraph(meshSnapshot, targetTexture);
             var compileResponse = graph.Compile();
             Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The Mesh graph compile omitted its plan.");
             Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2));
+            Assert.That(plan.BuiltInSpriteState?.Passes, Has.Count.EqualTo(includeSprite ? 1 : 0));
+            Assert.That(plan.BuiltInSpriteState?.ToneMapPasses, Has.Count.EqualTo(1));
+
+            if (includeSprite)
+            {
+                var builtInState = plan.BuiltInSpriteState
+                    ?? throw new InvalidOperationException("The mixed graph omitted its built-in submission state.");
+                var lastMeshPassIndex = -1;
+
+                foreach (var meshPassId in builtInState.MeshPasses.Keys)
+                {
+                    lastMeshPassIndex = Math.Max(lastMeshPassIndex, plan.OrderedPasses.IndexOf(meshPassId));
+                }
+
+                var spritePassId = builtInState.Passes.Keys.Single();
+                var toneMapPassId = builtInState.ToneMapPasses.Keys.Single();
+                var spritePassIndex = plan.OrderedPasses.IndexOf(spritePassId);
+                var toneMapPassIndex = plan.OrderedPasses.IndexOf(toneMapPassId);
+                var meshColorResourceId = plan.AttachmentWrites
+                    .First(write => !write.IsDepth && builtInState.MeshPasses.ContainsKey(write.PassId))
+                    .Version.ResourceId;
+                var spriteColorResourceId = plan.AttachmentWrites
+                    .First(write => !write.IsDepth && builtInState.Passes.ContainsKey(write.PassId))
+                    .Version.ResourceId;
+                Assert.Multiple(() => {
+                    Assert.That(lastMeshPassIndex, Is.LessThan(spritePassIndex));
+                    Assert.That(spritePassIndex, Is.LessThan(toneMapPassIndex));
+                    Assert.That(spriteColorResourceId, Is.EqualTo(meshColorResourceId));
+                });
+            }
+
             Assert.That(
                 plan.BuiltInSpriteState?.MeshDeferredTextures,
                 Has.Length.EqualTo(
@@ -560,6 +674,21 @@ internal sealed partial class SceneAssetStoreTests
                 return;
             }
 
+            if (includeSprite)
+            {
+                var centerPixelOffset = checked(
+                    (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+                Assert.Multiple(() => {
+                    Assert.That(coloredPixelCount, Is.GreaterThan(0));
+                    Assert.That(readbackBytes[centerPixelOffset], Is.GreaterThan(8));
+                    Assert.That(readbackBytes[centerPixelOffset + 1], Is.GreaterThan(4));
+                    Assert.That(readbackBytes[centerPixelOffset + 2], Is.GreaterThan(2));
+                    Assert.That(readbackBytes[centerPixelOffset + 3], Is.EqualTo(byte.MaxValue));
+                    Assert.That(readbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
+                });
+                return;
+            }
+
             Assert.Multiple(() => {
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
@@ -637,6 +766,11 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphComposesSpritesBeforeToneMapAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, includeSprite: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphDiscardsBaseColorBelowAlphaCutoffAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
@@ -697,6 +831,14 @@ internal sealed partial class SceneAssetStoreTests
             GraphicsBackend.Vulkan,
             useBaseColorTexture: true,
             missingTextureUv0: true);
+
+    [Test]
+    public Task SnapshotBuiltInMeshC0GraphRejectsMixedSecondaryCamerasAsync()
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            GraphicsBackend.Vulkan,
+            includeSprite: true,
+            includeSecondCamera: true,
+            expectMixedSecondaryCameraRejection: true);
 
     [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsNormalMapWithoutTangentsAsync()

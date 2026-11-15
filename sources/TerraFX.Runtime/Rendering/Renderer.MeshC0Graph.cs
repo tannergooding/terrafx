@@ -295,16 +295,14 @@ public sealed partial class Renderer
         }
     }
 
-    private void BuildMeshC0Graph(RenderSnapshot snapshot, RenderGraph graph)
+    private void BuildMeshC0Graph(
+        RenderSnapshot snapshot,
+        RenderGraph graph,
+        ref RenderGraphBuiltInColorState? colorState)
     {
         if (snapshot is not RenderSnapshot3D meshSnapshot || meshSnapshot.MeshDraws.IsEmpty)
         {
             return;
-        }
-
-        if (!snapshot.SpriteDraws.IsEmpty)
-        {
-            throw new NotSupportedException("Mesh C0 and Sprite C0 cannot share a graph until their camera/pass ordering is admitted together.");
         }
 
         var device = _graphicsDevice
@@ -606,16 +604,17 @@ public sealed partial class Renderer
         }
 
         var meshPassCount = 0;
-        var hdrVersion = graph.CreateTransientTexture(new TextureDescription(
-            TextureDimension.Dimension2D,
-            snapshot.TargetExtent.Width,
-            snapshot.TargetExtent.Height,
-            depth: 1,
-            arrayLayers: 1,
-            mipLevels: 1,
-            TextureFormat.Rgba16Float,
-            TextureUsage.ColorAttachment | TextureUsage.Sampled,
-            "mesh-hdr-working-target"));
+        colorState ??= new RenderGraphBuiltInColorState(
+            graph.CreateTransientTexture(new TextureDescription(
+                TextureDimension.Dimension2D,
+                snapshot.TargetExtent.Width,
+                snapshot.TargetExtent.Height,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba16Float,
+                TextureUsage.ColorAttachment | TextureUsage.Sampled,
+                "builtin-hdr-working-target")));
         var depthVersion = graph.CreateTransientTexture(new TextureDescription(
             TextureDimension.Dimension2D,
             snapshot.TargetExtent.Width,
@@ -626,13 +625,13 @@ public sealed partial class Renderer
             TextureFormat.D32Float,
             TextureUsage.DepthAttachment,
             "mesh-depth-target"));
-        var currentColorVersion = hdrVersion;
+        var currentColorVersion = colorState.CurrentColorVersion;
         var currentDepthVersion = depthVersion;
-        var hasColorContents = false;
+        var hasColorContents = colorState.HasColorContents;
         var hasDepthContents = false;
-        var previousPass = default(RenderPassId);
-        var hasPreviousPass = false;
-        var passIndex = 0;
+        var previousPass = colorState.PreviousPass;
+        var hasPreviousPass = colorState.HasPreviousPass;
+        var passIndex = colorState.NextPassIndex;
 
         for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
         {
@@ -686,6 +685,7 @@ public sealed partial class Renderer
                         AttachmentStoreAction.Store,
                         camera.ClearColor);
                     hasColorContents = true;
+                    colorState.MarkColorWrite(camera.CameraId);
                 }
 
                 if (clearDepth)
@@ -875,6 +875,7 @@ public sealed partial class Renderer
                     colorLoadAction,
                     AttachmentStoreAction.Store,
                     camera.ClearColor);
+                colorState.MarkColorWrite(camera.CameraId);
                 currentDepthVersion = graph.WriteDepthAttachment(
                     pass,
                     currentDepthVersion,
@@ -890,78 +891,15 @@ public sealed partial class Renderer
             }
         }
 
+        colorState.CurrentColorVersion = currentColorVersion;
+        colorState.HasColorContents = hasColorContents;
+        colorState.HasPreviousPass = hasPreviousPass;
+        colorState.NextPassIndex = passIndex;
+        colorState.PreviousPass = previousPass;
+
         if (meshPassCount == 0)
         {
             return;
         }
-
-        var toneMapFrameBytes = RenderCameraGpuDataBufferBuilder.CreateToneMapFrameBuffer(
-            new RenderArea(0, 0, snapshot.TargetExtent.Width, snapshot.TargetExtent.Height),
-            alignment,
-            out _);
-        var toneMapObjectBytes = RenderSpriteGpuDataBufferBuilder.CreateToneMapObjectBuffer(alignment, out _);
-        var toneMapVertexBytes = RenderSpriteVertexBufferBuilder.CreateFullScreenQuad();
-        var toneMapIndexBytes = MemoryMarshal.AsBytes(RenderSpriteGeometry.Indices.AsSpan()).ToArray();
-        var toneMapFrameBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapFrameBytes.Length,
-                BufferUsage.Uniform | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "mesh-tonemap-frame-data"),
-            toneMapFrameBytes);
-        var toneMapObjectBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapObjectBytes.Length,
-                BufferUsage.Uniform | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "mesh-tonemap-object-data"),
-            toneMapObjectBytes);
-        var toneMapVertexBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapVertexBytes.Length,
-                BufferUsage.Vertex | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "mesh-tonemap-vertices"),
-            toneMapVertexBytes);
-        var toneMapIndexBuffer = graph.CreateInitializedTransientBuffer(
-            new BufferDescription(
-                toneMapIndexBytes.Length,
-                BufferUsage.Index | BufferUsage.CopyDestination,
-                GpuMemoryKind.DeviceLocal,
-                structuredStride: null,
-                "mesh-tonemap-indices"),
-            toneMapIndexBytes);
-        var toneMapArea = new RenderArea(0, 0, snapshot.TargetExtent.Width, snapshot.TargetExtent.Height);
-        var toneMapRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
-        var toneMapPass = graph.AddBuiltInSpriteToneMapRasterPass(
-            new RenderPassDescription(
-                "TerraFX.MeshC0.ToneMap",
-                passIndex,
-                hasPreviousPass ? [previousPass] : [],
-                hasExternalSideEffects: false,
-                renderArea: toneMapArea),
-            new RenderSpriteToneMapGraphPass(
-                currentColorVersion,
-                toneMapFrameBuffer,
-                toneMapObjectBuffer,
-                toneMapVertexBuffer,
-                toneMapIndexBuffer));
-        graph.ReadBuffer(toneMapPass, toneMapFrameBuffer, GraphBufferUsage.UniformRead, new GraphBufferRange(0, toneMapFrameBuffer.Description.ByteLength));
-        graph.ReadBuffer(toneMapPass, toneMapObjectBuffer, GraphBufferUsage.UniformRead, new GraphBufferRange(0, toneMapObjectBuffer.Description.ByteLength));
-        graph.ReadBuffer(toneMapPass, toneMapVertexBuffer, GraphBufferUsage.VertexRead, new GraphBufferRange(0, toneMapVertexBuffer.Description.ByteLength));
-        graph.ReadBuffer(toneMapPass, toneMapIndexBuffer, GraphBufferUsage.IndexRead, new GraphBufferRange(0, toneMapIndexBuffer.Description.ByteLength));
-        graph.ReadTexture(toneMapPass, currentColorVersion, GraphTextureUsage.SampledRead, toneMapRange);
-        var outputColorVersion = graph.GetBuiltInOutputColorVersion();
-        var toneMappedVersion = graph.WriteColorAttachment(
-            toneMapPass,
-            outputColorVersion,
-            toneMapRange,
-            AttachmentLoadAction.Clear,
-            AttachmentStoreAction.Store,
-            Vector4.Zero);
-        graph.SetDefaultPresentationSource(toneMappedVersion);
     }
 }
