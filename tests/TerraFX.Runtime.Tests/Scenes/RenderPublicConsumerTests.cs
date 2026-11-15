@@ -4,18 +4,21 @@ using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Content.Tools;
 using TerraFX.Numerics;
+using TerraFX.Rendering;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
-    private static byte[] CreatePublicMeshConsumerPackage()
+    private static async Task<byte[]> CreatePublicMeshConsumerPackageAsync()
     {
         const uint MeshAssetId = 10;
         const uint MaterialAssetId = 11;
@@ -29,10 +32,6 @@ internal sealed partial class SceneAssetStoreTests
             additionalEntityComponents: [
                 CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue),
             ]);
-        var mesh = EbinPrimitives.Encode(CreateMeshRecord(
-            checked((int)MaterialAssetId),
-            skeletonAssetId: null,
-            groupCount: 2));
         var meshMaterial = CreateRenderMaterialAssetRecord(
             isSprite: false,
             CreateRenderMaterialPbrParametersRecord(emissiveFactor: Vector3.One),
@@ -43,19 +42,52 @@ internal sealed partial class SceneAssetStoreTests
             cullMode: 0,
             outputAlpha: 0,
             requiredCapabilities: 0x191UL);
-        return Package.CreatePackage(
-            new Package.Entry(
-                SceneAssetId,
-                Package.CreateEnvelope(SceneAssetId, cameraScene)),
-            new Package.Entry(
-                4,
-                Package.CreateEnvelope(4, meshScene)),
-            new Package.Entry(
-                MeshAssetId,
-                Package.CreateEnvelope(MeshAssetId, mesh)),
-            new Package.Entry(
-                MaterialAssetId,
-                Package.CreateEnvelope(MaterialAssetId, meshMaterial)));
+        var cookedPackage = StaticMeshSourceAdapters.CookGlbPackage(
+            CreateGlb(),
+            GetProfileRecord(),
+            meshMaterial,
+            MeshAssetId,
+            MaterialAssetId);
+        var cookedPackagePath = Package.WritePackage(cookedPackage);
+
+        try
+        {
+            var schemas = CreateRendererRegistry();
+            var assetRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+            _ = Renderer.RegisterAssetCodecs(assetRegistrationBuilder);
+            var registration = assetRegistrationBuilder.Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(
+                    cookedPackagePath,
+                    SHA256.HashData(cookedPackage),
+                    registration)).ConfigureAwait(false);
+            await using (assets.ConfigureAwait(false))
+            {
+                using var meshLease = await assets.LoadAsync<RenderMeshAsset>(
+                    new AssetId(checked((int)MeshAssetId))).ConfigureAwait(false);
+                using var materialLease = await assets.LoadAsync<RenderMaterialAsset>(
+                    new AssetId(checked((int)MaterialAssetId))).ConfigureAwait(false);
+                var meshRecord = meshLease.Value.EncodedRecord.AsSpan().ToArray();
+                var materialRecord = materialLease.Value.EncodedRecord.AsSpan().ToArray();
+                return Package.CreatePackage(
+                    new Package.Entry(
+                        checked((uint)SceneAssetId),
+                        Package.CreateEnvelope(checked((uint)SceneAssetId), cameraScene)),
+                    new Package.Entry(
+                        4,
+                        Package.CreateEnvelope(4, meshScene)),
+                    new Package.Entry(
+                        MeshAssetId,
+                        Package.CreateEnvelope(MeshAssetId, meshRecord)),
+                    new Package.Entry(
+                        MaterialAssetId,
+                        Package.CreateEnvelope(MaterialAssetId, materialRecord)));
+            }
+        }
+        finally
+        {
+            File.Delete(cookedPackagePath);
+        }
     }
 
     private static byte[] CreatePublicSpriteCameraRecord()
@@ -217,23 +249,22 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
-    public Task PublicD3D12ConsumerRendersPackageBackedMeshAsync()
+    public async Task PublicD3D12ConsumerRendersPackageBackedMeshAsync()
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The D3D12 consumer path requires Windows 11.");
-            return Task.CompletedTask;
         }
 
-        return RunPublicRendererConsumerAsync(
+        await RunPublicRendererConsumerAsync(
             "TerraFX.Graphics.D3D12.Consumer",
             "TERRAFX_D3D12_NATIVEAOT_CONSUMER",
             "D3D12",
-            CreatePublicMeshConsumerPackage(),
+            await CreatePublicMeshConsumerPackageAsync().ConfigureAwait(false),
             SceneAssetReaderTests.Fixtures.RootEntityId,
             "offscreen",
             "render-mesh",
-            "D3D12 Offscreen built-in render graph readback passed");
+            "D3D12 Offscreen built-in render graph readback passed").ConfigureAwait(false);
     }
 
     [Test]
@@ -257,16 +288,16 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
-    public Task PublicHeadlessConsumerExtractsPackageBackedMeshAsync()
-        => RunPublicRendererConsumerAsync(
+    public async Task PublicHeadlessConsumerExtractsPackageBackedMeshAsync()
+        => await RunPublicRendererConsumerAsync(
             "TerraFX.Runtime.Vulkan.Consumer",
             "TERRAFX_VULKAN_NATIVEAOT_CONSUMER",
             "Headless",
-            CreatePublicMeshConsumerPackage(),
+            await CreatePublicMeshConsumerPackageAsync().ConfigureAwait(false),
             SceneAssetReaderTests.Fixtures.RootEntityId,
             "headless-content",
             "mesh",
-            "Headless package-backed mesh extraction passed.");
+            "Headless package-backed mesh extraction passed.").ConfigureAwait(false);
 
     [Test]
     public Task PublicHeadlessConsumerExtractsPackageBackedSpriteAsync()
@@ -281,16 +312,16 @@ internal sealed partial class SceneAssetStoreTests
             "Headless package-backed sprite extraction passed.");
 
     [Test]
-    public Task PublicVulkanConsumerRendersPackageBackedMeshAsync()
-        => RunPublicRendererConsumerAsync(
+    public async Task PublicVulkanConsumerRendersPackageBackedMeshAsync()
+        => await RunPublicRendererConsumerAsync(
             "TerraFX.Runtime.Vulkan.Consumer",
             "TERRAFX_VULKAN_NATIVEAOT_CONSUMER",
             "Vulkan",
-            CreatePublicMeshConsumerPackage(),
+            await CreatePublicMeshConsumerPackageAsync().ConfigureAwait(false),
             SceneAssetReaderTests.Fixtures.RootEntityId,
             "offscreen",
             "render-mesh",
-            "Vulkan Offscreen built-in render graph readback passed");
+            "Vulkan Offscreen built-in render graph readback passed").ConfigureAwait(false);
 
     [Test]
     public Task PublicVulkanConsumerRendersPackageBackedSpriteAsync()
