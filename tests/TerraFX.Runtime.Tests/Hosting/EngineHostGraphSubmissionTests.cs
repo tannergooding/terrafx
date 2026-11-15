@@ -589,6 +589,23 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task RasterRenderAreaMayExceedGraphOutputWhenAttachmentIsLarger(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useAttachmentScopedRenderArea: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task RasterRenderAreaScopesAttachmentClear(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1558,7 +1575,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useEightUniformPipelineOnly = false,
         bool useSixteenSampledImages = false,
         bool useManyBufferCopyDestinations = false,
-        bool useRenderAreaClear = false)
+        bool useRenderAreaClear = false,
+        bool useAttachmentScopedRenderArea = false)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -1837,6 +1855,8 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        GpuTexture? oversizedAttachment = null;
+        GpuTexture? oversizedDepthAttachment = null;
         var secondaryColorAttachmentTextures = new GpuTexture?[3];
         GpuTexture? depthAttachmentTexture = null;
         GpuTexture? delayedGraphTarget = null;
@@ -1982,6 +2002,34 @@ internal sealed partial class EngineHostOptionsTests
                     targetUsage,
                     $"m04-{backend}-offscreen-clear"))
                 .ConfigureAwait(false);
+
+            if (useAttachmentScopedRenderArea)
+            {
+                oversizedAttachment = await graphicsDevice.CreateTextureAsync(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            64,
+                            64,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.Rgba8Unorm,
+                            TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                            $"m05-{backend}-oversized-render-area-attachment"))
+                    .ConfigureAwait(false);
+                oversizedDepthAttachment = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        128,
+                        64,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.D32Float,
+                        TextureUsage.DepthAttachment | TextureUsage.Sampled | TextureUsage.CopySource,
+                        $"m05-{backend}-oversized-depth-render-area-attachment"))
+                    .ConfigureAwait(false);
+            }
 
             if (useMultipleColorAttachments)
             {
@@ -3189,6 +3237,82 @@ internal sealed partial class EngineHostOptionsTests
             var graph = renderer.BuildGraph(
                 renderSnapshot,
                 target);
+
+            if (useAttachmentScopedRenderArea)
+            {
+                const int attachmentExtent = 64;
+                var renderArea = new RenderArea(0, 0, attachmentExtent, attachmentExtent);
+                var invalidGraph = renderer.BuildGraph(renderSnapshot, target);
+                var invalidOutputPass = invalidGraph.AddRasterPass(new RenderPassDescription(
+                    "m05-render-area-too-large-for-attached-output",
+                    int.MinValue,
+                    [],
+                    hasExternalSideEffects: false,
+                    renderArea: renderArea));
+                _ = Assert.Throws<ArgumentException>(() => invalidGraph.WriteColorAttachment(
+                    invalidOutputPass,
+                    invalidGraph.OffscreenColorTargetVersion,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    Vector4.Zero));
+
+                var selectedAttachment = oversizedAttachment
+                    ?? throw new InvalidOperationException("The attachment-scoped render-area test has no larger attachment.");
+                var attachmentRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+                var attachmentInitialVersion = graph.ImportTexture(
+                    selectedAttachment,
+                    attachmentRange,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var selectedDepthAttachment = oversizedDepthAttachment
+                    ?? throw new InvalidOperationException("The attachment-scoped render-area test has no larger depth attachment.");
+                var depthRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth);
+                var depthInitialVersion = graph.ImportTexture(
+                    selectedDepthAttachment,
+                    depthRange,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var depthInitializationArea = new RenderArea(0, 0, 128, attachmentExtent);
+                var depthInitializationPass = graph.AddRasterPass(new RenderPassDescription(
+                    "m05-depth-attachment-initialization",
+                    int.MinValue,
+                    [],
+                    hasExternalSideEffects: true,
+                    renderArea: depthInitializationArea));
+                var depthInitializedVersion = graph.WriteDepthAttachment(
+                    depthInitializationPass,
+                    depthInitialVersion,
+                    depthRange,
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    clearDepth: 0.0f);
+                var depthPass = graph.AddRasterPass(new RenderPassDescription(
+                    "m05-attachment-scoped-color-and-depth-render-area",
+                    int.MinValue + 1,
+                    [depthInitializationPass],
+                    hasExternalSideEffects: true,
+                    renderArea: renderArea));
+                _ = graph.WriteColorAttachment(
+                    depthPass,
+                    attachmentInitialVersion,
+                    attachmentRange,
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    new Vector4(0.0f, 1.0f, 1.0f, 1.0f));
+                _ = graph.WriteDepthAttachment(
+                    depthPass,
+                    depthInitializedVersion,
+                    depthRange,
+                    AttachmentLoadAction.Load,
+                    AttachmentStoreAction.Store,
+                    clearDepth: 0.0f);
+            }
+
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
             var sampledTextureFirstLayer = useArrayedSampledTexture ? 1 : 0;
             var sampledTextureRange = new GraphTextureRange(0, 1, sampledTextureFirstLayer, 1, sampledTextureAspect);
@@ -5904,6 +6028,37 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            if (useAttachmentScopedRenderArea)
+            {
+                var selectedAttachment = oversizedAttachment
+                    ?? throw new InvalidOperationException("The attachment-scoped render-area test lost its larger attachment.");
+                using var attachmentReadback = await graphicsDevice.ReadbackTextureAsync(
+                    selectedAttachment,
+                    new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
+                var attachmentPixel = new byte[4];
+                var attachmentPixelOffset = checked(
+                    (int)((attachmentReadback.RowPitch * (attachmentReadback.Height - 1))
+                        + ((attachmentReadback.Width - 1) * attachmentPixel.Length)));
+
+                using (var readLease = attachmentReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(attachmentPixel);
+                    readLease.UseWindow(attachmentPixelOffset, attachmentPixel.Length, ref copyAction);
+                }
+
+                Assert.That(attachmentPixel, Is.EqualTo(new byte[] { 0, 255, 255, byte.MaxValue }));
+
+                var selectedDepthAttachment = oversizedDepthAttachment
+                    ?? throw new InvalidOperationException("The attachment-scoped render-area test lost its larger depth attachment.");
+                var (depthState, depthContentsValid) =
+                    selectedDepthAttachment.ResourceOwner.GetGraphImportState(
+                        new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth));
+                Assert.Multiple(() => {
+                    Assert.That(depthState, Is.EqualTo(GraphResourceState.DepthWrite));
+                    Assert.That(depthContentsValid, Is.True);
+                });
+            }
+
             if (useColorAttachmentCopy || useColorAttachmentCopyDestination)
             {
                 var copiedColorAttachment = copyDestinationTexture
@@ -6591,6 +6746,8 @@ internal sealed partial class EngineHostOptionsTests
                 secondaryColorAttachmentTexture?.Dispose();
             }
 
+            oversizedAttachment?.Dispose();
+            oversizedDepthAttachment?.Dispose();
             depthAttachmentTexture?.Dispose();
             target?.Dispose();
             delayedGraphTarget?.Dispose();

@@ -471,7 +471,7 @@ public sealed class RenderGraph
             throw new ArgumentOutOfRangeException(nameof(clearColor), "A color attachment clear value must be finite.");
         }
 
-        ValidateStoredPartialArea(pass, previousVersion, range, storeAction);
+        ValidateAttachmentRenderArea(pass, previousVersion, range, storeAction);
         var version = _resources.WriteAttachment(pass, previousVersion, range, loadAction, storeAction);
         _attachmentWrites.Add(new RenderGraphAttachmentWrite(
             pass,
@@ -516,7 +516,7 @@ public sealed class RenderGraph
             throw new ArgumentOutOfRangeException(nameof(clearDepth), "A depth clear value must be finite and in [0, 1].");
         }
 
-        ValidateStoredPartialArea(pass, previousVersion, range, storeAction);
+        ValidateAttachmentRenderArea(pass, previousVersion, range, storeAction);
         var version = _resources.WriteAttachment(pass, previousVersion, range, loadAction, storeAction);
         _attachmentWrites.Add(new RenderGraphAttachmentWrite(
             pass,
@@ -702,14 +702,6 @@ public sealed class RenderGraph
             if (passKind is not RenderGraphPassKind.Raster)
             {
                 throw new ArgumentException("Only raster passes may declare a render area.", nameof(description));
-            }
-
-            if ((renderArea.Width > _options.TargetExtent.Width)
-                || (renderArea.X > (_options.TargetExtent.Width - renderArea.Width))
-                || (renderArea.Height > _options.TargetExtent.Height)
-                || (renderArea.Y > (_options.TargetExtent.Height - renderArea.Height)))
-            {
-                throw new ArgumentException("The render area must fit the graph target extent.", nameof(description));
             }
         }
 
@@ -898,6 +890,32 @@ public sealed class RenderGraph
             && _resources.IsTextureImportedFrom(version, target);
     }
 
+    private void ValidateAttachmentRenderArea(
+        RenderPassId pass,
+        GraphTextureVersion previousVersion,
+        GraphTextureRange range,
+        AttachmentStoreAction storeAction)
+    {
+        if (!_passRenderAreas.TryGetValue(pass, out var renderArea)
+            || !range.IsWithin(previousVersion.Range))
+        {
+            return;
+        }
+
+        var area = renderArea
+            ?? new RenderArea(0, 0, _options.TargetExtent.Width, _options.TargetExtent.Height);
+        ValidateRenderArea(area, previousVersion.Description, range);
+
+        if ((storeAction is AttachmentStoreAction.Store)
+            && !IsFullRenderArea(area, previousVersion.Description, range)
+            && !_resources.IsTextureInitialized(previousVersion, range))
+        {
+            throw new ArgumentException(
+                "A stored partial-area attachment write requires valid prior contents for the selected subresources.",
+                nameof(previousVersion));
+        }
+    }
+
     private void ValidateBufferUsage(RenderPassId pass, GraphBufferUsage usage, bool isWrite)
     {
         var passKind = GetPassKind(pass);
@@ -921,31 +939,6 @@ public sealed class RenderGraph
         if (GetPassKind(pass) != RenderGraphPassKind.Raster)
         {
             throw new ArgumentException("Attachment writes require a raster pass.", nameof(pass));
-        }
-    }
-
-    private void ValidateStoredPartialArea(
-        RenderPassId pass,
-        GraphTextureVersion previousVersion,
-        GraphTextureRange range,
-        AttachmentStoreAction storeAction)
-    {
-        if (!_passRenderAreas.TryGetValue(pass, out var renderArea)
-            || (renderArea is not RenderArea area)
-            || !range.IsWithin(previousVersion.Range))
-        {
-            return;
-        }
-
-        ValidateRenderArea(area, previousVersion.Description, range);
-
-        if ((storeAction is AttachmentStoreAction.Store)
-            && !IsFullRenderArea(area, previousVersion.Description, range)
-            && !_resources.IsTextureInitialized(previousVersion, range))
-        {
-            throw new ArgumentException(
-                "A stored partial-area attachment write requires valid prior contents for the selected subresources.",
-                nameof(previousVersion));
         }
     }
 

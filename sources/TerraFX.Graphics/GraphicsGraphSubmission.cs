@@ -610,8 +610,6 @@ internal sealed class GraphicsGraphSubmission
                     || hasStorageUsage
                     || (description.Dimension != TextureDimension.Dimension2D)
                     || (description.Depth != 1)
-                    || (description.Width != OutputColorTarget.Description.Width)
-                    || (description.Height != OutputColorTarget.Description.Height)
                     || (import.Version.Range.MipCount != 1)
                     || (import.Version.Range.LayerCount != 1)
                     || (import.Version.Range.Aspect != TextureAspect.Color)
@@ -624,7 +622,7 @@ internal sealed class GraphicsGraphSubmission
                         or GraphResourceState.ColorAttachment))
                     || !colorTextureImports.TryAdd(import.Version.ResourceId, import))
                 {
-                    throw new NotSupportedException("Native graph color attachments require matching 2D color imports in a supported state.");
+                    throw new NotSupportedException("Native graph color attachments require valid 2D color imports in a supported state.");
                 }
 
                 if (hasSampledImportAccess)
@@ -1002,16 +1000,32 @@ internal sealed class GraphicsGraphSubmission
             }
             else if ((pass.Kind != CommandRecorderPassKind.Raster) || pass.Attachments.IsEmpty)
             {
-                throw new NotSupportedException("Native graph submission requires a raster pass with a color attachment.");
+                throw new NotSupportedException("Native graph submission requires a raster pass with at least one attachment.");
             }
             else
             {
                 var colorAttachmentCount = 0;
                 var depthAttachmentCount = 0;
                 var passColorAttachmentResources = new HashSet<ulong>();
+                var passRenderArea = pass.RenderArea
+                    ?? new RenderArea(
+                        0,
+                        0,
+                        OutputColorTarget.Description.Width,
+                        OutputColorTarget.Description.Height);
 
                 foreach (var attachment in pass.Attachments)
                 {
+                    var attachmentDescription = attachment.Version.Description;
+
+                    if ((passRenderArea.Width > attachmentDescription.Width)
+                        || (passRenderArea.X > (attachmentDescription.Width - passRenderArea.Width))
+                        || (passRenderArea.Height > attachmentDescription.Height)
+                        || (passRenderArea.Y > (attachmentDescription.Height - passRenderArea.Height)))
+                    {
+                        throw new NotSupportedException("Native graph render areas must fit every raster attachment.");
+                    }
+
                     if (attachment.IsDepth)
                     {
                         depthAttachmentCount++;
@@ -1023,12 +1037,10 @@ internal sealed class GraphicsGraphSubmission
                             || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth))
                             || (description.Dimension != TextureDimension.Dimension2D)
                             || (description.Depth != 1)
-                            || (description.Width != OutputColorTarget.Description.Width)
-                            || (description.Height != OutputColorTarget.Description.Height)
                             || (description.Format != TextureFormat.D32Float)
                             || ((description.Usage & TextureUsage.DepthAttachment) == 0))
                         {
-                            throw new NotSupportedException("Native graph submission requires a mip-0/layer-0 D32Float depth attachment matching its output extent.");
+                            throw new NotSupportedException("Native graph submission requires a mip-0/layer-0 D32Float depth attachment in a supported state.");
                         }
 
                         passDepthTargetFormat = description.Format;
@@ -1049,11 +1061,9 @@ internal sealed class GraphicsGraphSubmission
                             || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
                             || (description.Dimension != TextureDimension.Dimension2D)
                             || (description.Depth != 1)
-                            || (description.Width != OutputColorTarget.Description.Width)
-                            || (description.Height != OutputColorTarget.Description.Height)
                             || ((description.Usage & TextureUsage.ColorAttachment) == 0))
                         {
-                            throw new NotSupportedException("Native graph color attachments must be distinct matching mip-0/layer-0 color textures within the device attachment limit.");
+                            throw new NotSupportedException("Native graph color attachments must be distinct mip-0/layer-0 color textures within the device attachment limit.");
                         }
 
                         passColorTargetFormats.Add(description.Format);
@@ -1062,9 +1072,9 @@ internal sealed class GraphicsGraphSubmission
                     }
                 }
 
-                if (colorAttachmentCount == 0)
+                if ((colorAttachmentCount == 0) && (depthAttachmentCount == 0))
                 {
-                    throw new NotSupportedException("Native graph raster passes require at least one color attachment.");
+                    throw new NotSupportedException("Native graph raster passes require at least one color or depth attachment.");
                 }
             }
 

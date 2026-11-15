@@ -1271,11 +1271,6 @@ internal sealed unsafe partial class VulkanBackendDevice
                     }
                 }
 
-                if (colorAttachmentCount == 0)
-                {
-                    throw new InvalidOperationException("The raster graph pass has no color attachment.");
-                }
-
                 var finalDepthStoreOp = hasDepthAttachment
                     ? GetGraphAttachmentStoreOp(depthAttachment.StoreAction)
                     : default;

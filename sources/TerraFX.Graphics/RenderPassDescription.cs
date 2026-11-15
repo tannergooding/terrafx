@@ -29,7 +29,7 @@ public sealed class RenderPassDescription
     /// <param name="order">The caller-declared topological ordering key.</param>
     /// <param name="predecessors">The initialized explicit predecessor list.</param>
     /// <param name="hasExternalSideEffects">Whether the pass has effects outside graph resources.</param>
-    /// <param name="renderArea">The optional top-left-origin pixel area for a raster pass.</param>
+    /// <param name="renderArea">The optional top-left-origin pixel area for a raster pass; graph validation checks its bounds against that pass's attachments.</param>
     /// <exception cref="ArgumentException"><paramref name="name"/> is empty or <paramref name="predecessors"/> is default or contains an invalid pass.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="renderArea"/> contains the default invalid value.</exception>
@@ -84,6 +84,6 @@ public sealed class RenderPassDescription
     /// <summary>Gets the explicit predecessor passes.</summary>
     public ImmutableArray<RenderPassId> Predecessors { get; }
 
-    /// <summary>Gets the optional raster viewport, scissor, and clear area.</summary>
+    /// <summary>Gets the optional raster viewport, scissor, and clear area, whose bounds are checked against the pass's attachments.</summary>
     public RenderArea? RenderArea { get; }
 }
