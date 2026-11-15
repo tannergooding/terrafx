@@ -48,6 +48,31 @@ internal sealed partial class WorldReplacementOperation
             _plan.TargetWorldGuid);
     }
 
+    internal void TransferSourceToPlayback(WorldPlaybackControl playback)
+    {
+        ArgumentNullException.ThrowIfNull(playback);
+
+        var state = _preparedState
+            ?? throw new InvalidOperationException("The captured World replacement omitted its prepared state.");
+        var operationCredits = _operationCredits
+            ?? throw new InvalidOperationException("The captured World replacement omitted its operation credits.");
+        var sourceCredit = operationCredits.TransferSourceCredit();
+        var sourceCreditTransferred = false;
+
+        try
+        {
+            state.TransferRetainedHistoryToPlayback(playback, sourceCredit);
+            sourceCreditTransferred = true;
+        }
+        finally
+        {
+            if (!sourceCreditTransferred)
+            {
+                sourceCredit.Dispose();
+            }
+        }
+    }
+
     internal bool TryCapture(out WorldLoadReceipt? rejection)
     {
         rejection = null;

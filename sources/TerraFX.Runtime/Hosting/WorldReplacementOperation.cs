@@ -69,7 +69,8 @@ internal sealed partial class WorldReplacementOperation : IWorldGuidRetentionOwn
 
         try
         {
-            candidate = state.CreateRestoredCandidate(CancellationToken.None);
+            var (restoredCandidate, playbackControl) = state.CreateRestoredCandidate(CancellationToken.None);
+            candidate = restoredCandidate;
             var sourceIdentityHistory = state.Checkpoint.WorldContents.Ecs.ValidatedIdentityHistory
                 ?? throw new InvalidOperationException("The prepared checkpoint omitted its validated identity history.");
             var targetIdentityHistory = state.ValidateRestoredCandidate(candidate);
@@ -86,6 +87,7 @@ internal sealed partial class WorldReplacementOperation : IWorldGuidRetentionOwn
                 sourceIdentityHistory.AssignmentsByOrdinal.AsSpan(),
                 targetIdentityHistory.AssignmentsByOrdinal.AsSpan(),
                 operationCredits.Data);
+            TransferSourceToPlayback(playbackControl);
             var restoredPublication = candidate.PrepareRestoredPublication();
             var hostTimestamp = host?.GetWorldReplacementHostTimestamp() ?? 0;
             var hostAdoption = host?.PrepareWorldReplacementAdoption(targetWorld, candidate, hostTimestamp);

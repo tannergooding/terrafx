@@ -424,6 +424,35 @@ internal sealed class WorldAdmissionDomainTests
     }
 
     [Test]
+    public void LoadOperationSourceCreditTransfersToPlaybackAndRetainsDomain()
+    {
+        var domain = new WorldAdmissionDomain(1024 * 1024);
+        Assert.That(
+            domain.TryReserveLoadOperationCredits(
+                1024,
+                2048,
+                3072,
+                4096,
+                out var credits,
+                out var refusal),
+            Is.True);
+        Assert.That(refusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        var creditBundle = credits
+            ?? throw new InvalidOperationException("The load operation omitted its credit bundle.");
+        var playbackSourceCredit = creditBundle.TransferSourceCredit();
+
+        _ = Assert.Throws<InvalidOperationException>(() => _ = creditBundle.TransferSourceCredit());
+        creditBundle.Dispose();
+        domain.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+
+        playbackSourceCredit.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
     public void OperationCreditOutlivesWorldReleaseAndDelaysDomainRetirement()
     {
         var domain = new WorldAdmissionDomain(1024 * 1024);

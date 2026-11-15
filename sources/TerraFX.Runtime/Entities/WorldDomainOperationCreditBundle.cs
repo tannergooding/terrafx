@@ -9,9 +9,10 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
 {
     private readonly WorldDomainOperationCredit _cleanup;
     private readonly WorldDomainOperationCredit _data;
+    private readonly WorldAdmissionDomain _domain;
     private readonly Lock _gate = new();
     private bool _isDisposed;
-    private readonly WorldDomainOperationCredit _source;
+    private WorldDomainOperationCredit? _source;
     private readonly WorldDomainOperationCredit _target;
 
     internal WorldDomainOperationCreditBundle(
@@ -21,6 +22,7 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
         WorldDomainOperationCredit cleanup)
     {
         _source = source;
+        _domain = source.Domain;
         _target = target;
         _data = data;
         _cleanup = cleanup;
@@ -30,9 +32,11 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
 
     internal WorldDomainOperationCredit Data => _data;
 
-    internal WorldAdmissionDomain Domain => _source.Domain;
+    internal WorldAdmissionDomain Domain => _domain;
 
-    internal WorldDomainOperationCredit Source => _source;
+    internal WorldDomainOperationCredit Source
+        => _source
+            ?? throw new InvalidOperationException("The source operation credit was transferred.");
 
     internal WorldDomainOperationCredit Target => _target;
 
@@ -76,10 +80,12 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
             }
 
             _isDisposed = true;
+            var source = _source;
+            _source = null;
 
             try
             {
-                _source.Dispose();
+                source?.Dispose();
             }
             finally
             {
@@ -111,6 +117,8 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            var sourceCredit = _source
+                ?? throw new InvalidOperationException("The source operation credit was transferred.");
             IDisposable? sourceUse = null;
             IDisposable? targetUse = null;
             IDisposable? dataUse = null;
@@ -118,7 +126,7 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
 
             try
             {
-                sourceUse = _source.AcquireRetainedUse(sourceWorkspaceBytes);
+                sourceUse = sourceCredit.AcquireRetainedUse(sourceWorkspaceBytes);
                 targetUse = _target.AcquireRetainedUse(targetWorkspaceBytes);
                 dataUse = _data.AcquireRetainedUse(dataWorkspaceBytes);
                 cleanupUse = _cleanup.AcquireRetainedUse(cleanupWorkspaceBytes);
@@ -133,6 +141,18 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
             {
                 DisposeRetainedUses(sourceUse, targetUse, dataUse, cleanupUse);
             }
+        }
+    }
+
+    internal WorldDomainOperationCredit TransferSourceCredit()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            var source = _source
+                ?? throw new InvalidOperationException("The source operation credit was already transferred.");
+            _source = null;
+            return source;
         }
     }
 

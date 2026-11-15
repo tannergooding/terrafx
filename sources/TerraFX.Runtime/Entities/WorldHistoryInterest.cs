@@ -37,6 +37,8 @@ internal sealed class WorldHistoryInterest : IDisposable
         _worldGuid = worldGuid;
     }
 
+    internal WorldAdmissionDomain Domain => _domain;
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _isDisposed, 1) == 0)

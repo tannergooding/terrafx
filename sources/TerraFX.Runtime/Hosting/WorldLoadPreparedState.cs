@@ -20,7 +20,7 @@ internal sealed class WorldLoadPreparedState : IDisposable
     private bool _isCaptured;
     private bool _isDisposed;
     private AssetPackageLease? _packageLease;
-    private readonly WorldRetainedHistoryControl _retainedHistory;
+    private WorldRetainedHistoryControl? _retainedHistory;
 
     internal WorldLoadPreparedState(
         AssetStore assets,
@@ -43,11 +43,31 @@ internal sealed class WorldLoadPreparedState : IDisposable
         RestoreIntent = restoreIntent;
     }
 
-    internal WorldPersistenceCheckpointContents Checkpoint => _retainedHistory.Checkpoint;
+    internal WorldPersistenceCheckpointContents Checkpoint
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _retainedHistory?.Checkpoint
+                    ?? throw new InvalidOperationException("The prepared World load no longer owns its source checkpoint.");
+            }
+        }
+    }
 
     internal WorldConstructionPlan ConstructionPlan { get; }
 
-    internal byte[] FileRecord => _retainedHistory.FileRecord;
+    internal byte[] FileRecord
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _retainedHistory?.FileRecord
+                    ?? throw new InvalidOperationException("The prepared World load no longer owns its source file record.");
+            }
+        }
+    }
 
     internal WorldGuidReplacementPreparation ReplacementPreparation { get; }
 
@@ -55,6 +75,8 @@ internal sealed class WorldLoadPreparedState : IDisposable
 
     public void Dispose()
     {
+        WorldRetainedHistoryControl? retainedHistory;
+
         lock (_gate)
         {
             if (_isDisposed)
@@ -63,6 +85,8 @@ internal sealed class WorldLoadPreparedState : IDisposable
             }
 
             _isDisposed = true;
+            retainedHistory = _retainedHistory;
+            _retainedHistory = null;
         }
 
         try
@@ -80,7 +104,7 @@ internal sealed class WorldLoadPreparedState : IDisposable
             {
                 try
                 {
-                    _retainedHistory.Dispose();
+                    retainedHistory?.Dispose();
                 }
                 finally
                 {
@@ -112,11 +136,14 @@ internal sealed class WorldLoadPreparedState : IDisposable
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "The owner-boundary operation waits for exact package-backed Scene preparation to finish before candidate or package ownership can be released.")]
-    internal World CreateRestoredCandidate(CancellationToken cancellationToken)
+    internal (World Candidate, WorldPlaybackControl PlaybackControl) CreateRestoredCandidate(
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var candidate = World.CreateRestoreCandidate(ConstructionPlan);
         ScenePersistenceRestorer.PreparedRestore? preparedSceneRestore = null;
+        AssetPackageLease? packageLease = null;
+        WorldPlaybackControl? playbackControl = null;
         var candidateTransferred = false;
 
         try
@@ -142,12 +169,20 @@ internal sealed class WorldLoadPreparedState : IDisposable
                 Checkpoint.WorldContents.ControlRecordCount,
                 Checkpoint.WorldContents.SceneControlPayloadBytes,
                 cancellationToken);
-            candidate.AdoptRestoreLifetimeLease(
-                _packageLease
-                    ?? throw new InvalidOperationException("The prepared load lost its exact package lease."));
-            _packageLease = null;
+            lock (_gate)
+            {
+                packageLease = _packageLease
+                    ?? throw new InvalidOperationException("The prepared load lost its exact package lease.");
+                _packageLease = null;
+            }
+
+            playbackControl = new WorldPlaybackControl(packageLease);
+            packageLease = null;
+            candidate.AdoptRestoreLifetimeLease(playbackControl);
+            var candidatePlaybackControl = playbackControl;
+            playbackControl = null;
             candidateTransferred = true;
-            return candidate;
+            return (candidate, candidatePlaybackControl);
         }
         finally
         {
@@ -157,11 +192,46 @@ internal sealed class WorldLoadPreparedState : IDisposable
             }
             finally
             {
-                if (!candidateTransferred)
+                try
                 {
-                    candidate.Dispose();
+                    playbackControl?.Dispose();
+                }
+                finally
+                {
+                    try
+                    {
+                        packageLease?.Dispose();
+                    }
+                    finally
+                    {
+                        if (!candidateTransferred)
+                        {
+                            candidate.Dispose();
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    internal void TransferRetainedHistoryToPlayback(
+        WorldPlaybackControl playbackControl,
+        WorldDomainOperationCredit sourceCredit)
+    {
+        ArgumentNullException.ThrowIfNull(playbackControl);
+        ArgumentNullException.ThrowIfNull(sourceCredit);
+
+        lock (_gate)
+        {
+            if (!_isCaptured || _isDisposed)
+            {
+                throw new InvalidOperationException("Source playback ownership can transfer only from a captured active load.");
+            }
+
+            var retainedHistory = _retainedHistory
+                ?? throw new InvalidOperationException("The prepared load no longer owns its source history.");
+            playbackControl.AttachRetainedHistory(retainedHistory, sourceCredit);
+            _retainedHistory = null;
         }
     }
 
