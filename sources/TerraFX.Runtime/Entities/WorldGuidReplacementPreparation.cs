@@ -161,8 +161,9 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         }
     }
 
-    internal void TransferReplacementGrantToCandidate()
+    internal void TransferReplacementGrantToCandidate(WorldLifetimeControl lifetimeControl)
     {
+        ArgumentNullException.ThrowIfNull(lifetimeControl);
         lock (_gate)
         {
             if (_isDisposed || _isCommitted || _isReplacementGrantTransferred)
@@ -170,6 +171,17 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
                 throw new InvalidOperationException("The prepared WorldGuid grant cannot be transferred to this candidate.");
             }
 
+            if (!lifetimeControl.IsBoundTo(
+                    _registry,
+                    _domain
+                        ?? throw new InvalidOperationException("The replacement preparation omitted its admission domain."),
+                    _replacementGrant,
+                    isReplacementCandidate: true))
+            {
+                throw new InvalidOperationException("The candidate lifetime does not own this exact provisional WorldGuid binding.");
+            }
+
+            lifetimeControl.AdoptReplacementGrant();
             _isReplacementGrantTransferred = true;
         }
     }
