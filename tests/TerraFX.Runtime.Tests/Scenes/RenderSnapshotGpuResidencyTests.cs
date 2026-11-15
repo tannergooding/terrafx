@@ -29,6 +29,82 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
+    private static byte[] CreatePixelSnapGradientAtlasPageTextureRecord()
+    {
+        var pixels = new byte[16 * 16 * 4];
+        byte[] redValues = [0, 80, 176, byte.MaxValue];
+
+        for (var y = 2; y < 10; y++)
+        {
+            for (var x = 2; x < 10; x++)
+            {
+                var red = redValues[Math.Clamp(x, 4, 7) - 4];
+                var offset = ((y * 16) + x) * 4;
+                pixels[offset] = red;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = checked((byte)(byte.MaxValue - red));
+                pixels[offset + 3] = byte.MaxValue;
+            }
+        }
+
+        return CreateRenderTextureAssetRecord(
+            16,
+            16,
+            RenderTextureColorSpace.Linear,
+            RenderTextureAlphaMode.Premultiplied,
+            RenderTextureSemantic.Color,
+            RenderTextureMipPolicy.BaseOnly,
+            CreateRenderTextureMipRecord(0, 16, 16, pixels));
+    }
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInSpriteC0GraphCoversSharedDiagonalOnceAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            targetExtentOverride: new PixelSize(31, 31));
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public async Task SnapshotBuiltInSpriteC0GraphPixelSnapChangesSamplingAlignmentAsync(GraphicsBackend graphicsBackend)
+    {
+        var snapped = await RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            usePixelSnapGradient: true,
+            spriteRootPositionX: 0.21f,
+            pixelSnap: true).ConfigureAwait(false);
+        var unsnapped = await RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            usePixelSnapGradient: true,
+            spriteRootPositionX: 0.21f,
+            pixelSnap: false).ConfigureAwait(false);
+
+        Assert.That(snapped, Is.Not.Null);
+        Assert.That(unsnapped, Is.Not.Null);
+
+        var snappedPixels = snapped
+            ?? throw new InvalidOperationException("The pixel-snapped Sprite graph omitted its readback.");
+        var unsnappedPixels = unsnapped
+            ?? throw new InvalidOperationException("The unsnapped Sprite graph omitted its readback.");
+        var differingPixels = 0;
+
+        for (var index = 0; index < snappedPixels.Length; index += 4)
+        {
+            if (!snappedPixels.AsSpan(index, 4).SequenceEqual(unsnappedPixels.AsSpan(index, 4)))
+            {
+                differingPixels++;
+            }
+        }
+
+        Assert.That(differingPixels, Is.GreaterThan(0));
+    }
+
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInSpriteC0GraphRejectsMaterialTextureOverrideAsync(GraphicsBackend graphicsBackend)
@@ -45,6 +121,16 @@ internal sealed partial class SceneAssetStoreTests
             useBuiltInSpriteGraph: true,
             cameraClearFlags: CameraClearFlags.Depth,
             expectUninitializedTargetRejection: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInSpriteC0GraphRejectsNegativeHdrClearColorAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            cameraClearColor: new Vector4(-0.01f, 0.0f, 0.0f, 1.0f),
+            expectUnsupportedHdrClearRange: true);
 
     [Test]
     public Task SnapshotBuiltInSpriteC0GraphRejectsPartialInitialViewportAsync()
@@ -71,6 +157,16 @@ internal sealed partial class SceneAssetStoreTests
             graphicsBackend: graphicsBackend,
             useBuiltInSpriteGraph: true,
             activateSecondSceneInstance: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInSpriteC0GraphToneMapsHdrClearColorOnceAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            cameraClearColor: new Vector4(2.0f, 0.5f, 0.0f, 1.0f),
+            expectHdrClearColorReadback: true);
 
     [Test]
     public Task SnapshotGraphCancellationReleasesImportedResourcePinsAsync()
@@ -107,7 +203,7 @@ internal sealed partial class SceneAssetStoreTests
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "The original graph failure is logged before owner cleanup so a secondary shutdown timeout cannot obscure its cause.")]
-    private async Task RunSnapshotAtlasPageResidencyAsync(
+    private async Task<byte[]?> RunSnapshotAtlasPageResidencyAsync(
         bool renderThroughNativeGraph,
         bool failGraphRecording = false,
         bool cancelGraphAdmission = false,
@@ -115,10 +211,17 @@ internal sealed partial class SceneAssetStoreTests
         bool useM05SpritePipeline = false,
         bool useBuiltInSpriteGraph = false,
         bool useUnsupportedMaterialTexture = false,
+        bool usePixelSnapGradient = false,
+        float spriteRootPositionX = 0.0f,
+        bool pixelSnap = true,
         Vector4? cameraViewport = null,
+        Vector4? cameraClearColor = null,
         CameraClearFlags? cameraClearFlags = null,
         bool expectUninitializedTargetRejection = false,
-        bool activateSecondSceneInstance = false)
+        bool expectUnsupportedHdrClearRange = false,
+        bool expectHdrClearColorReadback = false,
+        bool activateSecondSceneInstance = false,
+        PixelSize? targetExtentOverride = null)
     {
         using var submissionCancellation = new CancellationTokenSource();
 
@@ -140,13 +243,13 @@ internal sealed partial class SceneAssetStoreTests
             && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for package-backed Sprite graph submission.");
-            return;
+            return null;
         }
 
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The D3D12 Sprite graph requires Windows 11.");
-            return;
+            return null;
         }
 
         const int TextureAssetId = 1;
@@ -155,7 +258,9 @@ internal sealed partial class SceneAssetStoreTests
         const int SceneAssetId = 4;
         var schemas = CreateRendererRegistry();
         var frameId = new Guid("30000000-0000-4000-8000-000000000001");
-        var textureRecord = CreateRenderAtlasPageTextureRecord(17);
+        var textureRecord = usePixelSnapGradient
+            ? CreatePixelSnapGradientAtlasPageTextureRecord()
+            : CreateRenderAtlasPageTextureRecord(17);
         var atlasRecord = CreateRenderAtlasRecord(
             TextureAssetId,
             CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
@@ -176,13 +281,14 @@ internal sealed partial class SceneAssetStoreTests
             requiredCapabilities: 0x009);
         var sceneBytes = SceneAssetReaderTests.Fixtures.CreateScene(
             new AssetId(SceneAssetId),
+            rootPositionX: spriteRootPositionX,
             additionalEntityComponents: [
                 CreateCameraRecord(order: 0),
                 CreateRenderSpriteRecord(
                     AtlasAssetId,
                     frameId,
                     materialAssetId: MaterialAssetId,
-                    pixelSnap: true,
+                    pixelSnap: pixelSnap,
                     tint: useBuiltInSpriteGraph
                         ? new Vector4(1.0f, 0.5f, 0.25f, 0.5f)
                         : null,
@@ -227,6 +333,7 @@ internal sealed partial class SceneAssetStoreTests
         GpuBuffer? objectDataBuffer = null;
         GpuSampler? sampler = null;
         GpuPipeline? pipeline = null;
+        byte[]? builtInGraphReadback = null;
 
         try
         {
@@ -237,17 +344,17 @@ internal sealed partial class SceneAssetStoreTests
             catch (DllNotFoundException exception)
             {
                 Assert.Ignore($"{graphicsBackend} system library is unavailable: {exception.Message}");
-                return;
+                return null;
             }
             catch (EntryPointNotFoundException exception)
             {
                 Assert.Ignore($"{graphicsBackend} system entry point is unavailable: {exception.Message}");
-                return;
+                return null;
             }
             catch (NotSupportedException exception)
             {
                 Assert.Ignore($"No {graphicsBackend} device satisfies OffscreenNative: {exception.Message}");
-                return;
+                return null;
             }
 
             var engineHost = host
@@ -299,7 +406,7 @@ internal sealed partial class SceneAssetStoreTests
             var activeSceneInstance = sceneInstance
                 ?? throw new InvalidOperationException("The activated Sprite Scene omitted its instance.");
             var cameraId = Guid.Empty;
-            var targetExtent = new PixelSize(32, 32);
+            var targetExtent = targetExtentOverride ?? new PixelSize(32, 32);
             SpatialFrame3 frame3 = default;
 
             await engineHost.InvokeAsync(_ => {
@@ -320,7 +427,7 @@ internal sealed partial class SceneAssetStoreTests
                     default,
                     cameraViewport ?? new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
                     (byte)(cameraClearFlags ?? (CameraClearFlags.Color | CameraClearFlags.Depth)),
-                    new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                    cameraClearColor ?? new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
                     ulong.MaxValue,
                     0);
                 world.Add(cameraEntity, in localTransform);
@@ -398,6 +505,11 @@ internal sealed partial class SceneAssetStoreTests
                         engineHost.Renderer.BuildGraph(spriteSnapshot, selectedTarget));
                 }
                 else if (expectUninitializedTargetRejection)
+                {
+                    _ = Assert.Throws<NotSupportedException>(() =>
+                        engineHost.Renderer.BuildGraph(spriteSnapshot, selectedTarget));
+                }
+                else if (expectUnsupportedHdrClearRange)
                 {
                     _ = Assert.Throws<NotSupportedException>(() =>
                         engineHost.Renderer.BuildGraph(spriteSnapshot, selectedTarget));
@@ -532,19 +644,27 @@ internal sealed partial class SceneAssetStoreTests
 
                     var centerPixelOffset = checked(
                         (int)((graphReadback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
-                    byte[] expectedCenterPixel = activateSecondSceneInstance
-                        ? [8, 8, 2, byte.MaxValue]
-                        : [4, 4, 1, byte.MaxValue];
+                    byte[] expectedClearPixel = expectHdrClearColorReadback
+                        ? [170, 85, 0, byte.MaxValue]
+                        : [0, 0, 0, byte.MaxValue];
                     Assert.Multiple(() => {
-                        for (var channel = 0; channel < expectedCenterPixel.Length; channel++)
+                        if (!usePixelSnapGradient && !expectHdrClearColorReadback)
                         {
-                            Assert.That(
-                                graphReadbackBytes[centerPixelOffset + channel],
-                                Is.EqualTo(expectedCenterPixel[channel]));
+                            byte[] expectedCenterPixel = activateSecondSceneInstance
+                                ? [8, 8, 2, byte.MaxValue]
+                                : [4, 4, 1, byte.MaxValue];
+
+                            for (var channel = 0; channel < expectedCenterPixel.Length; channel++)
+                            {
+                                Assert.That(
+                                    graphReadbackBytes[centerPixelOffset + channel],
+                                    Is.EqualTo(expectedCenterPixel[channel]));
+                            }
                         }
 
-                        Assert.That(graphReadbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
+                        Assert.That(graphReadbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(expectedClearPixel));
                     });
+                    builtInGraphReadback = graphReadbackBytes;
                 }
             }
             else if (renderThroughNativeGraph)
@@ -1025,7 +1145,7 @@ internal sealed partial class SceneAssetStoreTests
 
             var residentTexture = residencyLease.Texture;
             var expectedMip = residencyLease.Asset.Mips[0];
-            Assert.That(expectedMip.Pixels[0], Is.EqualTo(17));
+            Assert.That(expectedMip.Pixels[0], Is.EqualTo(usePixelSnapGradient ? 0 : 17));
             Assert.That(residencyLease.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
             using var readback = await graphicsDevice.ReadbackTextureAsync(
                 residentTexture,
@@ -1089,5 +1209,7 @@ internal sealed partial class SceneAssetStoreTests
 
             File.Delete(packagePath);
         }
+
+        return builtInGraphReadback;
     }
 }
