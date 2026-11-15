@@ -821,7 +821,8 @@ internal sealed class SceneAssetReaderTests
             byte[][]? overrides = null,
             byte[][]? references = null,
             byte[][]? additionalEntityComponents = null,
-            float rootPositionX = 0.0f)
+            float rootPositionX = 0.0f,
+            float rootPositionZ = 0.0f)
         {
             var localTransformSchema = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
             var rootPositionSchema = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
@@ -829,7 +830,14 @@ internal sealed class SceneAssetReaderTests
                 rootPositionSchema,
                 1,
                 0,
-                SceneHierarchyCodecTests.FixtureBuilder.CreatePosition3Field(1, 0, 0, 0, rootPositionX, 0, 0));
+                SceneHierarchyCodecTests.FixtureBuilder.CreatePosition3Field(
+                    1,
+                    0,
+                    0,
+                    0,
+                    rootPositionX,
+                    0,
+                    rootPositionZ));
             var localTransform = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 localTransformSchema,
                 1,

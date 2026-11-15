@@ -7,6 +7,16 @@ dotnet run --project .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.C
 dotnet run --project .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Debug
 ```
 
+## First Sprite/Mesh Vulkan consumers
+
+These focused tests launch the separate public Vulkan consumer with package-backed Scene content, run `Renderer.Extract` -> `BuildGraph` -> `Compile` -> `SubmitAsync`, and verify non-clear offscreen pixels from each built-in path:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~PublicVulkanConsumerRendersPackageBackedMeshAsync|FullyQualifiedName~PublicVulkanConsumerRendersPackageBackedSpriteAsync"
+```
+
+This managed-process witness does not establish NativeAOT behavior; publish and execute the target-specific consumer separately below.
+
 ## NativeAOT
 
 Publish for the target operating system; .NET NativeAOT does not cross-compile between Windows and Linux. `TerraFXPublishAot` is consumed by the owning consumer project; do not set `PublishAot` globally, because that would apply it to build-time analyzers and generators.
