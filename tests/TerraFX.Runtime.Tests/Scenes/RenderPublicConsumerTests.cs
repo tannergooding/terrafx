@@ -136,7 +136,9 @@ internal sealed partial class SceneAssetStoreTests
         string backendName,
         byte[] packageBytes,
         Guid cameraEntityId,
-        string renderMode)
+        string commandMode,
+        string renderMode,
+        string completionMarker)
     {
         var packagePath = Package.WritePackage(packageBytes);
 
@@ -179,7 +181,7 @@ internal sealed partial class SceneAssetStoreTests
                 startInfo.ArgumentList.Add(consumerPath);
             }
 
-            startInfo.ArgumentList.Add("offscreen");
+            startInfo.ArgumentList.Add(commandMode);
             startInfo.ArgumentList.Add(renderMode);
             startInfo.ArgumentList.Add(packagePath);
             startInfo.ArgumentList.Add(cameraEntityId.ToString("N"));
@@ -206,7 +208,7 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(process.ExitCode, Is.Zero, processOutput);
             Assert.That(
                 processOutput,
-                Does.Contain($"{backendName} Offscreen built-in render graph readback passed"));
+                Does.Contain(completionMarker));
         }
         finally
         {
@@ -229,7 +231,9 @@ internal sealed partial class SceneAssetStoreTests
             "D3D12",
             CreatePublicMeshConsumerPackage(),
             SceneAssetReaderTests.Fixtures.RootEntityId,
-            "render-mesh");
+            "offscreen",
+            "render-mesh",
+            "D3D12 Offscreen built-in render graph readback passed");
     }
 
     [Test]
@@ -247,8 +251,34 @@ internal sealed partial class SceneAssetStoreTests
             "D3D12",
             CreatePublicSpriteConsumerPackage(),
             SceneAssetReaderTests.Fixtures.RootEntityId,
-            "render-sprite");
+            "offscreen",
+            "render-sprite",
+            "D3D12 Offscreen built-in render graph readback passed");
     }
+
+    [Test]
+    public Task PublicHeadlessConsumerExtractsPackageBackedMeshAsync()
+        => RunPublicRendererConsumerAsync(
+            "TerraFX.Runtime.Vulkan.Consumer",
+            "TERRAFX_VULKAN_NATIVEAOT_CONSUMER",
+            "Headless",
+            CreatePublicMeshConsumerPackage(),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            "headless-content",
+            "mesh",
+            "Headless package-backed mesh extraction passed.");
+
+    [Test]
+    public Task PublicHeadlessConsumerExtractsPackageBackedSpriteAsync()
+        => RunPublicRendererConsumerAsync(
+            "TerraFX.Runtime.Vulkan.Consumer",
+            "TERRAFX_VULKAN_NATIVEAOT_CONSUMER",
+            "Headless",
+            CreatePublicSpriteConsumerPackage(),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            "headless-content",
+            "sprite",
+            "Headless package-backed sprite extraction passed.");
 
     [Test]
     public Task PublicVulkanConsumerRendersPackageBackedMeshAsync()
@@ -258,7 +288,9 @@ internal sealed partial class SceneAssetStoreTests
             "Vulkan",
             CreatePublicMeshConsumerPackage(),
             SceneAssetReaderTests.Fixtures.RootEntityId,
-            "render-mesh");
+            "offscreen",
+            "render-mesh",
+            "Vulkan Offscreen built-in render graph readback passed");
 
     [Test]
     public Task PublicVulkanConsumerRendersPackageBackedSpriteAsync()
@@ -268,5 +300,7 @@ internal sealed partial class SceneAssetStoreTests
             "Vulkan",
             CreatePublicSpriteConsumerPackage(),
             SceneAssetReaderTests.Fixtures.RootEntityId,
-            "render-sprite");
+            "offscreen",
+            "render-sprite",
+            "Vulkan Offscreen built-in render graph readback passed");
 }

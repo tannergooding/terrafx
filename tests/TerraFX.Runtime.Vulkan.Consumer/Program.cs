@@ -84,7 +84,112 @@ internal static class Program
     private static Task<int> RunAsync(string[] args)
         => (args.Length > 0) && (args[0] is "offscreen")
             ? RunOffscreenAsync(args)
-            : RunInteractiveAsync(args);
+            : (args.Length > 0) && (args[0] is "headless-content")
+                ? RunHeadlessContentAsync(args)
+                : RunInteractiveAsync(args);
+
+    private static async Task<int> RunHeadlessContentAsync(string[] args)
+    {
+        if ((args.Length != 4)
+            || (args[1] is not "mesh" and not "sprite")
+            || !Path.IsPathFullyQualified(args[2])
+            || !Guid.TryParseExact(args[3], "N", out var cameraEntityId))
+        {
+            throw new ArgumentException(
+                "Expected: headless-content <mesh|sprite> <absolute-package-path> <camera-entity-guid-N>.",
+                nameof(args));
+        }
+
+        var schemas = CreateSchemaRegistry();
+        var packageBytes = await File.ReadAllBytesAsync(args[2]).ConfigureAwait(false);
+        var assetStoreOptions = new AssetStoreOptions(
+            args[2],
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreRegistration(schemas));
+        var options = new EngineHostOptions(
+            HostProfile.Headless,
+            PlatformBackend.Headless,
+            graphicsBackend: null,
+            graphicsBackendRegistration: null,
+            assetStoreOptions) {
+            CpuWorkerCount = 0,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+        await using var hostDisposal = host.ConfigureAwait(false);
+        var worldRegistration = CreateWorldRegistration(schemas);
+        World? world = null;
+        SceneLoader? loader = null;
+
+        await host.InvokeAsync(context => {
+            world = context.CreateWorld(new WorldOptions(worldRegistration) {
+                CpuWorkerCount = 0,
+                InitialReplayLineageId = Guid.NewGuid(),
+                WorldGuid = Guid.NewGuid(),
+            });
+            loader = new SceneLoader(world, host.Assets);
+        }).ConfigureAwait(false);
+
+        using var prepared = await loader!.PrepareAsync(
+            new AssetId(3),
+            new SceneLoadOptions()).ConfigureAwait(false);
+        var activation = await loader.ActivateAsync(prepared)
+            .WaitAsync(TimeSpan.FromSeconds(10))
+            .ConfigureAwait(false);
+        var sceneInstance = activation.Instance
+            ?? throw new InvalidOperationException("Headless Scene activation returned no SceneInstance.");
+
+        if (activation.Status is not SceneActivationStatus.Activated)
+        {
+            throw new InvalidOperationException($"Headless Scene activation returned {activation.Status}.");
+        }
+
+        if (args[1] is "mesh")
+        {
+            using var renderablesPrepared = await loader.PrepareAsync(
+                new AssetId(4),
+                new SceneLoadOptions()).ConfigureAwait(false);
+            var renderablesActivation = await loader.ActivateAsync(renderablesPrepared)
+                .WaitAsync(TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+
+            if (renderablesActivation.Status is not SceneActivationStatus.Activated)
+            {
+                throw new InvalidOperationException(
+                    $"Headless renderable Scene activation returned {renderablesActivation.Status}.");
+            }
+        }
+
+        await host.InvokeAsync(_ => world!.Step()).ConfigureAwait(false);
+        RenderSnapshot? snapshot = null;
+        await host.InvokeAsync(_ => {
+            if (!sceneInstance.TryGetEntity(cameraEntityId, out var cameraEntity))
+            {
+                throw new InvalidOperationException("The activated Scene did not contain the expected camera Entity.");
+            }
+
+            var extraction = host.Renderer.Extract(
+                world!,
+                new RenderExtractionOptions3D(
+                    world!.CurrentFrame3,
+                    new PixelSize(32, 32),
+                    [world.GetEntityId(cameraEntity)]));
+
+            if (extraction.Status is not RenderExtractionStatus.Extracted)
+            {
+                throw new InvalidOperationException(
+                    $"Headless {args[1]} extraction returned {extraction.Status}: {string.Join("; ", extraction.Diagnostics)}");
+            }
+
+            snapshot = extraction.Snapshot
+                ?? throw new InvalidOperationException("Headless extraction omitted its RenderSnapshot.");
+        }).ConfigureAwait(false);
+        using var renderSnapshot = snapshot
+            ?? throw new InvalidOperationException("Headless extraction produced no RenderSnapshot.");
+
+        Console.WriteLine($"Headless package-backed {args[1]} extraction passed.");
+        return 0;
+    }
 
     private static async Task<int> RunInteractiveAsync(string[] args)
     {
