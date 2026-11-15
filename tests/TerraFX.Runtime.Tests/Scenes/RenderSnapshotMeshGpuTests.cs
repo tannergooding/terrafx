@@ -73,6 +73,7 @@ internal sealed partial class SceneAssetStoreTests
         bool useDirectionalLight = false,
         bool useSecondDirectionalLight = false,
         int spotLightCount = 0,
+        int? spotLightPriority = null,
         bool useShadowCaster = false,
         bool usePointLight = false,
         bool useMultiplePointLights = false,
@@ -485,7 +486,7 @@ internal sealed partial class SceneAssetStoreTests
                         outerConeAngle: 0.7f,
                         layerMask: ulong.MaxValue,
                         enabled: true,
-                        priority: spotIndex);
+                        priority: spotLightPriority ?? spotIndex);
                     world.Add(spotEntity, in spotTransform);
                     world.Add(spotEntity, in spotRootPosition);
                     world.Add(spotEntity, in spotLight);
@@ -674,9 +675,9 @@ internal sealed partial class SceneAssetStoreTests
                     {
                         var light = meshSnapshot.SpotLights[spotIndex];
                         var firstShadowPriority = Math.Max(0, spotLightCount - RenderSpotShadowData.Capacity);
-                        var expectedShadowSlot = light.Priority < firstShadowPriority
-                            ? 0
-                            : spotLightCount - light.Priority;
+                        var expectedShadowSlot = spotLightPriority.HasValue
+                            ? spotIndex < RenderSpotShadowData.Capacity ? spotIndex + 1 : 0
+                            : light.Priority < firstShadowPriority ? 0 : spotLightCount - light.Priority;
                         var shadowSlot = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(
                             spotLightUpload.Bytes.AsSpan(
                                 RenderMeshC0SpotLightBufferBuilder.InnerCosineShadowSlotOffset
@@ -1338,6 +1339,15 @@ internal sealed partial class SceneAssetStoreTests
             graphicsBackend,
             useAlphaBlend: true,
             baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphSelectsEqualPrioritySpotShadowsByStableIdAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            spotLightCount: 5,
+            spotLightPriority: 0,
+            expectedBuildWarning: "ShadowBudgetExceeded");
 
     [Test]
     public Task SnapshotBuiltInMeshC0GraphSupportsMixedSecondaryCamerasInCameraOrderAsync()
