@@ -460,20 +460,28 @@ internal sealed class WorldPersistenceCommitTests
         }
     }
 
-    [TestCase(false)]
-    [TestCase(true)]
+    [TestCase(0, TestName = "CompletesCapturedLoadAfterExternalDomainClosureWithoutScene")]
+    [TestCase(1, TestName = "CompletesCapturedLoadAfterExternalDomainClosureWithSpriteScene")]
+    [TestCase(2, TestName = "CompletesCapturedLoadAfterExternalDomainClosureWithMeshScene")]
     [SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "The standalone owner-thread test synchronously joins every persistence and retirement task before disposing its Worlds.")]
-    public void CompletesCapturedLoadAfterExternalDomainClosure(bool includeActiveScene)
+    public void CompletesCapturedLoadAfterExternalDomainClosure(int sceneKind)
     {
+        const int NoScene = 0;
+        const int SpriteScene = 1;
+        const int MeshScene = 2;
         var schemas = CreateCommitSchemas();
         var sceneAssetId = new AssetId(1);
         var spriteFrameId = new Guid("30000000-0000-4000-8000-000000000001");
-        var packageBytes = includeActiveScene
-            ? SceneAssetStoreTests.CreatePersistenceSpriteScenePackage(sceneAssetId, spriteFrameId)
-            : SceneAssetStoreTests.Package.CreatePackage();
+        var includeActiveScene = sceneKind != NoScene;
+        var packageBytes = sceneKind switch {
+            NoScene => SceneAssetStoreTests.Package.CreatePackage(),
+            SpriteScene => SceneAssetStoreTests.CreatePersistenceSpriteScenePackage(sceneAssetId, spriteFrameId),
+            MeshScene => SceneAssetStoreTests.CreatePersistenceMeshScenePackage(sceneAssetId),
+            _ => throw new ArgumentOutOfRangeException(nameof(sceneKind)),
+        };
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
         var savePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.captured-closed-domain.state");
         using var domain = new WorldAdmissionDomain(8_589_934_592L);

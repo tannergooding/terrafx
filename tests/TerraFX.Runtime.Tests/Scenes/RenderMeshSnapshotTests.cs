@@ -19,6 +19,39 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
+    internal static byte[] CreatePersistenceMeshScenePackage(AssetId sceneAssetId)
+    {
+        const uint MeshAssetId = 2;
+        const uint MaterialAssetId = 3;
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
+            sceneAssetId,
+            additionalEntityComponents: [
+                CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue),
+            ]);
+        var meshRecord = EbinPrimitives.Encode(CreateMeshRecord(MaterialAssetId, skeletonAssetId: null, groupCount: 1));
+        var materialRecord = CreateRenderMaterialAssetRecord(
+            isSprite: false,
+            CreateRenderMaterialPbrParametersRecord(),
+            alphaMode: 0,
+            doubleSided: false,
+            depthTest: true,
+            depthWrite: true,
+            cullMode: 1,
+            outputAlpha: 0,
+            requiredCapabilities: 0x191);
+
+        return Package.CreatePackage(
+            new Package.Entry(
+                checked((uint)sceneAssetId.Value),
+                Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord)),
+            new Package.Entry(
+                MeshAssetId,
+                Package.CreateEnvelope(MeshAssetId, meshRecord)),
+            new Package.Entry(
+                MaterialAssetId,
+                Package.CreateEnvelope(MaterialAssetId, materialRecord)));
+    }
+
     private static EbinRecord CreateMeshAssetReferenceRecord(uint assetId, Guid schemaId)
         => new(
             new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
