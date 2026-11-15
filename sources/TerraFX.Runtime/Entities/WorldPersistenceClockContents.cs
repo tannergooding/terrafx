@@ -9,6 +9,7 @@ internal sealed class WorldPersistenceClockContents
     internal WorldPersistenceClockContents(
         long nextTick,
         int tickRate,
+        float initialTimeScale,
         float timeScale,
         long nextPublicationSequence,
         int segmentCount,
@@ -20,6 +21,7 @@ internal sealed class WorldPersistenceClockContents
     {
         NextTick = nextTick;
         TickRate = tickRate;
+        InitialTimeScale = initialTimeScale;
         TimeScale = timeScale;
         NextPublicationSequence = nextPublicationSequence;
         SegmentCount = segmentCount;
@@ -39,6 +41,8 @@ internal sealed class WorldPersistenceClockContents
     internal ReadOnlyMemory<byte> InitialFrame2Record { get; }
 
     internal ReadOnlyMemory<byte> InitialFrame3Record { get; }
+
+    internal float InitialTimeScale { get; }
 
     internal long NextPublicationSequence { get; }
 

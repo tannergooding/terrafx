@@ -288,6 +288,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                     readContents.WorldContents.Configuration,
                     preparation,
                     readContents.WorldContents.Clock.TickRate,
+                    readContents.WorldContents.Clock.InitialTimeScale,
                     readContents.WorldContents.Clock.TimeScale,
                     out var constructionPlan,
                     out bindingRefusal,
@@ -620,6 +621,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             restoreState,
             checkpoint.WorldContents.Configuration,
             checkpoint.WorldContents.Clock.TickRate,
+            checkpoint.WorldContents.Clock.InitialTimeScale,
             checkpoint.WorldContents.Clock.TimeScale,
             restoreEcsPlan);
         Assert.That(
@@ -643,6 +645,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                 checkpoint.WorldContents.Configuration,
                 preparation,
                 checkpoint.WorldContents.Clock.TickRate,
+                checkpoint.WorldContents.Clock.InitialTimeScale,
                 checkpoint.WorldContents.Clock.TimeScale,
                 out var constructionPlan,
                 out bindingRefusal,
@@ -691,6 +694,153 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
         finally
         {
             plan.ReleaseUntransferredRestoreResources();
+        }
+    }
+
+    [Test]
+    public void RestoresRegisteredAttachmentStateIntoAnEmptyCandidate()
+    {
+        var schemas = CreateWorldRootSchemas();
+        var attachmentSchema = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("application/world-root-test/attachment-state/v1").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var codec = new RestoreAttachmentCodec(attachmentSchema);
+        var attachmentField = WorldAttachmentFieldBinding<RestoreAttachmentValue, RestoreAttachmentAuthor>.Value<
+            long,
+            RestoreAttachmentValueReader,
+            RestoreAttachmentAuthorReader>(
+                schemas,
+                attachmentSchema,
+                new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)]),
+                default,
+                default);
+        var attachmentFactory = WorldAttachmentFactoryBinding<RestoreAttachmentValue, RestoreAttachmentAuthor>.Create(
+            Guid.NewGuid(),
+            1,
+            schemas,
+            attachmentSchema,
+            [attachmentField],
+            codec);
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterAttachment(AttachmentScope.World, attachmentFactory);
+        var registration = registrationBuilder.Build();
+
+        using var admissionDomain = new WorldAdmissionDomain(512L * 1024 * 1024);
+        using var world = World.Create(new WorldOptions(registration) {
+            AdmissionDomain = admissionDomain,
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        world.SetAttachment(new RestoreAttachmentValue { Counter = 124 }, AttachmentOwnership.Transferred);
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
+            world,
+            in lease,
+            schemas,
+            []);
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var identityScratch = new WorldPersistenceIdentityScratchEntry[
+            WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits)];
+        var lineageScratch = new Guid[
+            WorldPersistenceWorldRecordReader.MeasureLineageMembershipScratchCapacity(worldRecord, limits)];
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        var savedWorld = WorldPersistenceWorldRecordReader.Read(
+            worldRecord,
+            limits,
+            registration,
+            identityScratch,
+            lineageScratch,
+            ref strictLayoutBuffers);
+        var identityHistory = savedWorld.Ecs.ValidatedIdentityHistory
+            ?? throw new InvalidOperationException("The saved World omitted its validated identity history.");
+        var restoreIdentityState = WorldRestoreIdentityState.CreateBranch(
+            identityHistory,
+            Guid.NewGuid(),
+            new byte[32],
+            savedWorld.Clock.NextTick,
+            isStrictLocal: false,
+            savedWorld.Configuration);
+        var restoreEcsPlan = WorldPersistenceEcsReader.CreateRestorePlan(
+            savedWorld.EcsRecord,
+            savedWorld.Ecs,
+            registration,
+            savedWorld.Configuration);
+        var targetBytes = world.MeasureRestoreWorldOwnedBytes(
+            restoreIdentityState,
+            savedWorld.Configuration,
+            savedWorld.Clock.TickRate,
+            savedWorld.Clock.InitialTimeScale,
+            savedWorld.Clock.TimeScale,
+            restoreEcsPlan,
+            savedWorld.ControlRecordCount,
+            savedWorld.SceneControlPayloadBytes,
+            savedWorld.Ecs.AttachmentCount);
+        Assert.That(savedWorld.Ecs.AttachmentCount, Is.EqualTo(1));
+        Assert.That(
+            world.TryPrepareLoadReplacement(
+                world.WorldGuid,
+                sourceBytes: worldRecord.Length,
+                targetBytes,
+                dataBytes: checked(worldRecord.Length + restoreEcsPlan.OwnedByteReservation + 4096L),
+                cleanupBytes: targetBytes,
+                out var replacementPreparation,
+                out var bindingRefusal,
+                out var admissionRefusal),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        using var preparation = replacementPreparation
+            ?? throw new InvalidOperationException("The attachment candidate test did not retain its replacement preparation.");
+        Assert.That(
+            world.TryPrepareRestoreConstructionPlan(
+                restoreIdentityState,
+                savedWorld.Configuration,
+                preparation,
+                savedWorld.Clock.TickRate,
+                savedWorld.Clock.InitialTimeScale,
+                savedWorld.Clock.TimeScale,
+                out var constructionPlan,
+                out bindingRefusal,
+                out admissionRefusal,
+                restoreEcsPlan,
+                savedWorld.ControlRecordCount,
+                savedWorld.SceneControlPayloadBytes,
+                savedWorld.Ecs.AttachmentCount),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        var candidatePlan = constructionPlan
+            ?? throw new InvalidOperationException("The attachment candidate test did not produce its candidate plan.");
+
+        try
+        {
+            using (var candidate = World.CreateRestoreCandidate(candidatePlan))
+            {
+                World.InitializeRestoreCandidate(candidate);
+                candidate.RestoreEcsRows(savedWorld.EcsRecord, savedWorld.Ecs, CancellationToken.None);
+                candidate.RestoreHierarchyLinks([], []);
+                candidate.RestoreCheckpointClockAndControls(
+                    worldRecord,
+                    savedWorld.Clock,
+                    savedWorld.Cursors,
+                    savedWorld.ControlRecordCount,
+                    savedWorld.SceneControlPayloadBytes,
+                    CancellationToken.None);
+
+                Assert.That(candidate.TryGetAttachment<RestoreAttachmentValue>(out var restoredAttachment), Is.True);
+                Assert.That(restoredAttachment?.Counter, Is.EqualTo(124));
+            }
+
+            Assert.That(codec.RestoreCount, Is.EqualTo(1));
+            Assert.That(codec.ReleaseCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            candidatePlan.ReleaseUntransferredRestoreResources();
         }
     }
 
@@ -749,9 +899,22 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
         using var world = World.Create(new WorldOptions(registration) {
             AdmissionDomain = admissionDomain,
             CpuWorkerCount = 0,
+            Enable2DFrame = true,
             InitialReplayLineageId = Guid.NewGuid(),
             WorldGuid = Guid.NewGuid(),
         });
+        world.SetTimeScale(0.5f);
+        var sourceFrame2 = world.CurrentFrame2
+            ?? throw new InvalidOperationException("The empty-candidate clock test omitted its admitted Frame2.");
+        var sourceFrame3 = world.CurrentFrame3;
+        _ = world.SetFrame(world.CreateNextFrame2(
+            sourceFrame2.Origin,
+            sourceFrame2.Minimum,
+            sourceFrame2.Maximum));
+        _ = world.SetFrame(world.CreateNextFrame3(
+            sourceFrame3.Origin,
+            sourceFrame3.Minimum,
+            sourceFrame3.Maximum));
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
@@ -791,8 +954,11 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             restoreIdentityState,
             savedWorld.Configuration,
             savedWorld.Clock.TickRate,
+            savedWorld.Clock.InitialTimeScale,
             savedWorld.Clock.TimeScale,
-            restoreEcsPlan);
+            restoreEcsPlan,
+            savedWorld.ControlRecordCount,
+            savedWorld.SceneControlPayloadBytes);
         Assert.That(
             world.TryPrepareLoadReplacement(
                 world.WorldGuid,
@@ -814,11 +980,14 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                 savedWorld.Configuration,
                 preparation,
                 savedWorld.Clock.TickRate,
+                savedWorld.Clock.InitialTimeScale,
                 savedWorld.Clock.TimeScale,
                 out var constructionPlan,
                 out bindingRefusal,
                 out admissionRefusal,
-                restoreEcsPlan),
+                restoreEcsPlan,
+                savedWorld.ControlRecordCount,
+                savedWorld.SceneControlPayloadBytes),
             Is.True);
         Assert.That(bindingRefusal.IsNone, Is.True);
         Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
@@ -830,10 +999,24 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             using var candidate = World.CreateRestoreCandidate(candidatePlan);
             World.InitializeRestoreCandidate(candidate);
             candidate.RestoreEcsRows(savedWorld.EcsRecord, savedWorld.Ecs, CancellationToken.None);
+            candidate.RestoreHierarchyLinks([], []);
+            candidate.RestoreCheckpointClockAndControls(
+                worldRecord,
+                savedWorld.Clock,
+                savedWorld.Cursors,
+                savedWorld.ControlRecordCount,
+                savedWorld.SceneControlPayloadBytes,
+                CancellationToken.None);
             Assert.Multiple(() => {
                 Assert.That(savedWorld.Ecs.EntityCount, Is.Zero);
                 Assert.That(systemCodec.RestoreCount, Is.EqualTo(1));
                 Assert.That(systemCodec.RestoredCounter, Is.EqualTo(124));
+                Assert.That(candidate.InitialTimeScale, Is.EqualTo(1.0f));
+                Assert.That(candidate.CurrentTimeScale, Is.EqualTo(0.5f));
+                Assert.That(candidate.TimeScaleSegmentSequence, Is.EqualTo(2));
+                Assert.That(candidate.NextTickIndex, Is.EqualTo(savedWorld.Clock.NextTick));
+                Assert.That(candidate.CurrentFrame2?.Revision, Is.EqualTo(world.CurrentFrame2?.Revision));
+                Assert.That(candidate.CurrentFrame3.Revision, Is.EqualTo(world.CurrentFrame3.Revision));
             });
         }
         finally
@@ -1073,6 +1256,165 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
 
         public ResetMarker Restore(in byte author, WorldStateRestoreBinding binding, CancellationToken cancellationToken)
             => throw new NotSupportedException();
+    }
+
+    private readonly record struct RestoreAttachmentAuthor(long Counter);
+
+    private readonly struct RestoreAttachmentAuthorReader : IComponentValueReader<RestoreAttachmentAuthor, long>
+    {
+        public long Get(in RestoreAttachmentAuthor value)
+            => value.Counter;
+    }
+
+    private sealed class RestoreAttachmentCodec : IWorldAttachmentStateProvider<RestoreAttachmentValue, RestoreAttachmentAuthor>
+    {
+        private int _releaseCount;
+        private int _restoreCount;
+        private readonly ContentSchemaReference _schema;
+
+        internal RestoreAttachmentCodec(ContentSchemaReference schema)
+        {
+            _schema = schema;
+        }
+
+        internal int ReleaseCount => Volatile.Read(ref _releaseCount);
+
+        internal int RestoreCount => Volatile.Read(ref _restoreCount);
+
+        public nint Count(
+            RestoreAttachmentValue value,
+            WorldAttachmentCaptureBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return MeasureRecord(value.Counter);
+        }
+
+        public WorldAttachmentReadResult<RestoreAttachmentAuthor> Read(
+            scoped ReadOnlySpan<byte> source,
+            WorldAttachmentReadBinding<RestoreAttachmentAuthor> binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var record = new EbinRecordReadView(source);
+            var header = record.Header;
+
+            if ((header.SchemaId != _schema.SchemaId)
+                || (header.Major != _schema.Major)
+                || (header.Minor != _schema.Minor)
+                || (record.FieldCount != 1)
+                || !record.TryGetField(1, out var field)
+                || (field.Kind != 8)
+                || !field.IsRequired
+                || (field.Count != 1)
+                || (field.Payload.Length != sizeof(long)))
+            {
+                throw new InvalidOperationException("The restored attachment record does not match its registered schema.");
+            }
+
+            var author = new RestoreAttachmentAuthor(BinaryPrimitives.ReadInt64LittleEndian(field.Payload));
+            return binding.Complete(in author, source.Length);
+        }
+
+        public void Release(RestoreAttachmentValue value, WorldAttachmentReleaseBinding binding)
+            => _ = Interlocked.Increment(ref _releaseCount);
+
+        public RestoreAttachmentValue Restore(
+            in RestoreAttachmentAuthor author,
+            WorldAttachmentRestoreBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = Interlocked.Increment(ref _restoreCount);
+            return new RestoreAttachmentValue { Counter = author.Counter };
+        }
+
+        public ImmutableArray<Diagnostic> Validate(
+            RestoreAttachmentValue value,
+            WorldAttachmentValidationBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return [];
+        }
+
+        public nint Write(
+            RestoreAttachmentValue value,
+            scoped Span<byte> destination,
+            WorldAttachmentCaptureBinding binding,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Span<byte> payload = stackalloc byte[sizeof(long)];
+
+            if (EbinPayloadWriter.Write(value.Counter, payload, out var payloadBytes, out var diagnostic)
+                is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException(diagnostic?.Category);
+            }
+
+            Span<EbinFieldSource> fields = [new EbinFieldSource(1, 8, 1, 1, new EbinPayloadSlice(0, payloadBytes))];
+            var source = new EbinRecordWriteView(
+                _schema.SchemaId,
+                _schema.Major,
+                _schema.Minor,
+                fields,
+                payload[..payloadBytes]);
+            var recordBytes = MeasureRecord(value.Counter);
+            Span<byte> candidate = stackalloc byte[recordBytes];
+            var status = EbinStructuralWriter.Write(
+                in source,
+                EbinReadLimits.Foundation,
+                candidate,
+                destination[..recordBytes],
+                out var bytesWritten,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException(diagnostic?.Category);
+            }
+
+            return bytesWritten;
+        }
+
+        private int MeasureRecord(long counter)
+        {
+            Span<byte> payload = stackalloc byte[sizeof(long)];
+
+            if (EbinPayloadWriter.Write(counter, payload, out var payloadBytes, out var diagnostic)
+                is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException(diagnostic?.Category);
+            }
+
+            Span<EbinFieldSource> fields = [new EbinFieldSource(1, 8, 1, 1, new EbinPayloadSlice(0, payloadBytes))];
+            var source = new EbinRecordWriteView(
+                _schema.SchemaId,
+                _schema.Major,
+                _schema.Minor,
+                fields,
+                payload[..payloadBytes]);
+            var status = EbinStructuralWriter.Measure(
+                in source,
+                EbinReadLimits.Foundation,
+                out var recordBytes,
+                out diagnostic);
+            return (status is EbinWriteStatus.Complete)
+                ? recordBytes
+                : throw new InvalidOperationException(diagnostic?.Category);
+        }
+    }
+
+    private sealed class RestoreAttachmentValue
+    {
+        internal long Counter { get; init; }
+    }
+
+    private readonly struct RestoreAttachmentValueReader : IComponentValueReader<RestoreAttachmentValue, long>
+    {
+        public long Get(in RestoreAttachmentValue value)
+            => value.Counter;
     }
 
     private readonly record struct RestoreProbeAuthor(int Counter);

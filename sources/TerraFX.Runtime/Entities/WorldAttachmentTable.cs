@@ -34,6 +34,25 @@ internal sealed class WorldAttachmentTable
 
     internal long OwnedByteReservation => _ownedByteReservation;
 
+    internal static long GetStorageByteReservationForCount(int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        var capacity = 4;
+
+        while (capacity < count)
+        {
+            capacity = checked(capacity * 2);
+        }
+
+        return ArrayBytes(capacity);
+    }
+
     private static long ArrayBytes(int capacity)
         => checked(ArrayHeaderBytes + ((checked((long)capacity * EntryBytes) + 7L) & ~7L));
 
@@ -139,6 +158,27 @@ internal sealed class WorldAttachmentTable
         }
 
         var newCapacity = (_entries.Length == 0) ? 4 : checked(_entries.Length * 2);
+        var preparedEntries = new AttachmentEntry[newCapacity];
+        _entries.AsSpan().CopyTo(preparedEntries);
+        return preparedEntries;
+    }
+
+    internal AttachmentEntry[] PrepareCapacityForCount(int requiredCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(requiredCount);
+
+        if (requiredCount <= _entries.Length)
+        {
+            throw new InvalidOperationException("The World attachment table does not require the requested capacity.");
+        }
+
+        var newCapacity = (_entries.Length == 0) ? 4 : _entries.Length;
+
+        while (newCapacity < requiredCount)
+        {
+            newCapacity = checked(newCapacity * 2);
+        }
+
         var preparedEntries = new AttachmentEntry[newCapacity];
         _entries.AsSpan().CopyTo(preparedEntries);
         return preparedEntries;

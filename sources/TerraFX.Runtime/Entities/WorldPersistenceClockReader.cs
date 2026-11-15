@@ -92,6 +92,7 @@ internal static class WorldPersistenceClockReader
         }
 
         var previousStartNextTick = 0L;
+        var initialTimeScale = 0.0f;
         var finalTimeScale = 0.0f;
 
         for (var index = 0; index < segmentCount; index++)
@@ -107,6 +108,12 @@ internal static class WorldPersistenceClockReader
                 index == 0,
                 nameof(clockRecord));
             previousStartNextTick = segmentStartNextTick;
+
+            if (index == 0)
+            {
+                initialTimeScale = segmentScale;
+            }
+
             finalTimeScale = segmentScale;
         }
 
@@ -118,6 +125,7 @@ internal static class WorldPersistenceClockReader
         return new WorldPersistenceClockContents(
             nextTick,
             tickRate,
+            initialTimeScale,
             timeScale,
             nextPublicationSequence,
             segmentCount,

@@ -55,6 +55,42 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
         return count;
     }
 
+    public object ReadStateRecord(scoped ReadOnlySpan<byte> source, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var binding = new WorldAttachmentReadBinding<TAuthor>(Descriptor.Schema, source.Length);
+
+        try
+        {
+            var result = binding.ValidateComplete(_binding.Provider.Read(source, binding, cancellationToken));
+
+            if (binding.Failure is { } failure)
+            {
+                throw failure;
+            }
+
+            if (result.Status is WorldAttachmentReadStatus.Rejected)
+            {
+                var diagnostic = result.Diagnostics[0];
+                throw new System.IO.InvalidDataException($"{diagnostic.Code}: {diagnostic.Message}");
+            }
+
+            if ((result.Status is not WorldAttachmentReadStatus.Read)
+                || (result.ConsumedBytes != source.Length)
+                || !result.Diagnostics.IsEmpty
+                || !result.TryGetAuthorValue(out var author))
+            {
+                throw new InvalidOperationException("The successful attachment state read did not return its complete author value.");
+            }
+
+            return author;
+        }
+        finally
+        {
+            binding.Revoke();
+        }
+    }
+
     public void Release(object value, WorldAttachmentReleaseBinding binding)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -66,6 +102,24 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
         }
 
         _binding.Provider.Release(attachment, binding);
+    }
+
+    public object RestoreState(
+        object author,
+        WorldAttachmentRestoreBinding binding,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(author);
+        ArgumentNullException.ThrowIfNull(binding);
+
+        if (author is not TAuthor typedAuthor)
+        {
+            throw new InvalidOperationException("The attachment restore author has the wrong type.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return _binding.Provider.Restore(in typedAuthor, binding, cancellationToken)
+            ?? throw new InvalidOperationException("The attachment restore provider returned null.");
     }
 
     public ImmutableArray<Diagnostic> Validate(World world, object value)
@@ -109,6 +163,9 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
             context.Revoke();
         }
     }
+
+    public void ValidateEntityReferences(World world, object value)
+        => ValidateEntityReferences(world, value, excludedEntity: null, excludedEntities: null);
 
     public void ValidateEntityReferences(World world, object value, Entity excludedEntity)
         => ValidateEntityReferences(world, value, excludedEntity, excludedEntities: null);

@@ -3341,8 +3341,11 @@ internal sealed partial class SceneAssetStoreTests
                     restoreIdentityState,
                     savedWorld.Configuration,
                     savedWorld.Clock.TickRate,
+                    savedWorld.Clock.InitialTimeScale,
                     savedWorld.Clock.TimeScale,
-                    restoreEcsPlan);
+                    restoreEcsPlan,
+                    savedWorld.ControlRecordCount,
+                    savedWorld.SceneControlPayloadBytes);
                 Assert.That(
                     world.TryPrepareLoadReplacement(
                         world.WorldGuid,
@@ -3365,11 +3368,14 @@ internal sealed partial class SceneAssetStoreTests
                         savedWorld.Configuration,
                         preparation,
                         savedWorld.Clock.TickRate,
+                        savedWorld.Clock.InitialTimeScale,
                         savedWorld.Clock.TimeScale,
                         out var constructionPlan,
                         out bindingRefusal,
                         out admissionRefusal,
-                        restoreEcsPlan),
+                        restoreEcsPlan,
+                        savedWorld.ControlRecordCount,
+                        savedWorld.SceneControlPayloadBytes),
                     Is.True,
                     $"{bindingRefusal.Code}/{admissionRefusal}");
                 Assert.That(bindingRefusal.IsNone, Is.True);
@@ -3391,6 +3397,13 @@ internal sealed partial class SceneAssetStoreTests
                         savedWorld.Scenes,
                         CancellationToken.None).GetAwaiter().GetResult();
                     ScenePersistenceRestorer.RestorePrepared(candidate, preparedRestore, CancellationToken.None);
+                    candidate.RestoreCheckpointClockAndControls(
+                        worldRecord,
+                        savedWorld.Clock,
+                        savedWorld.Cursors,
+                        savedWorld.ControlRecordCount,
+                        savedWorld.SceneControlPayloadBytes,
+                        CancellationToken.None);
                     Assert.That(candidate.TryGetEntity(expectedEntityIds[0], out var restoredChild), Is.True);
                     Assert.That(
                         candidate.TryGetHierarchyParent(restoredChild, out _),

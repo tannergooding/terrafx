@@ -18,12 +18,17 @@ internal sealed class WorldConstructionPlan
     private readonly WorldGuidRegistry _registry;
     private readonly WorldGuidReplacementPreparation? _replacementPreparation;
     private readonly ResolvedWorldOptions _resolvedOptions;
+    private readonly int _restoreAttachmentCount;
+    private readonly long _restoreAttachmentStorageByteReservation;
     private readonly long _restoreComponentWorkspaceByteReservation;
+    private readonly int _restoreControlRecordCount;
+    private readonly long _restoreControlStorageByteReservation;
     private readonly long _restoreEcsArchetypeMetadataByteReservation;
     private readonly WorldRestoreEcsPlan? _restoreEcsPlan;
     private readonly long _restoreEcsStorageByteReservation;
     private readonly WorldRestoreIdentityState? _restoreIdentityState;
     private int _restoreResourcesState;
+    private readonly long _restoreSceneControlPayloadByteReservation;
     private readonly long _restoreWorkPlanByteReservation;
     private readonly int _restoreWorkPlanCapacity;
     private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
@@ -55,8 +60,18 @@ internal sealed class WorldConstructionPlan
         long restoreEcsStorageByteReservation = 0,
         int restoreWorkPlanCapacity = 0,
         long restoreWorkPlanByteReservation = 0,
-        long restoreComponentWorkspaceByteReservation = 0)
+        long restoreComponentWorkspaceByteReservation = 0,
+        int restoreControlRecordCount = 0,
+        long restoreControlStorageByteReservation = 0,
+        long restoreSceneControlPayloadByteReservation = 0,
+        int restoreAttachmentCount = 0,
+        long restoreAttachmentStorageByteReservation = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentStorageByteReservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreControlRecordCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreControlStorageByteReservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsArchetypeMetadataByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsStorageByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreWorkPlanCapacity);
@@ -69,7 +84,12 @@ internal sealed class WorldConstructionPlan
                 || (restoreEcsStorageByteReservation != 0)
                 || (restoreWorkPlanCapacity != 0)
                 || (restoreWorkPlanByteReservation != 0)
-                || (restoreComponentWorkspaceByteReservation != 0)))
+                || (restoreComponentWorkspaceByteReservation != 0)
+                || (restoreControlRecordCount != 0)
+                || (restoreControlStorageByteReservation != 0)
+                || (restoreSceneControlPayloadByteReservation != 0)
+                || (restoreAttachmentCount != 0)
+                || (restoreAttachmentStorageByteReservation != 0)))
         {
             throw new ArgumentException("Fresh World construction cannot own restore ECS storage reservations.", nameof(restoreIdentityState));
         }
@@ -98,6 +118,11 @@ internal sealed class WorldConstructionPlan
         _restoreWorkPlanCapacity = restoreWorkPlanCapacity;
         _restoreWorkPlanByteReservation = restoreWorkPlanByteReservation;
         _restoreComponentWorkspaceByteReservation = restoreComponentWorkspaceByteReservation;
+        _restoreAttachmentCount = restoreAttachmentCount;
+        _restoreAttachmentStorageByteReservation = restoreAttachmentStorageByteReservation;
+        _restoreControlRecordCount = restoreControlRecordCount;
+        _restoreControlStorageByteReservation = restoreControlStorageByteReservation;
+        _restoreSceneControlPayloadByteReservation = restoreSceneControlPayloadByteReservation;
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
@@ -128,7 +153,15 @@ internal sealed class WorldConstructionPlan
 
     internal ResolvedWorldOptions ResolvedOptions => _resolvedOptions;
 
+    internal int RestoreAttachmentCount => _restoreAttachmentCount;
+
+    internal long RestoreAttachmentStorageByteReservation => _restoreAttachmentStorageByteReservation;
+
     internal long RestoreComponentWorkspaceByteReservation => _restoreComponentWorkspaceByteReservation;
+
+    internal int RestoreControlRecordCount => _restoreControlRecordCount;
+
+    internal long RestoreControlStorageByteReservation => _restoreControlStorageByteReservation;
 
     internal long RestoreEcsArchetypeMetadataByteReservation => _restoreEcsArchetypeMetadataByteReservation;
 
@@ -137,6 +170,8 @@ internal sealed class WorldConstructionPlan
     internal long RestoreEcsStorageByteReservation => _restoreEcsStorageByteReservation;
 
     internal WorldRestoreIdentityState? RestoreIdentityState => _restoreIdentityState;
+
+    internal long RestoreSceneControlPayloadByteReservation => _restoreSceneControlPayloadByteReservation;
 
     internal long RestoreWorkPlanByteReservation => _restoreWorkPlanByteReservation;
 
@@ -198,8 +233,11 @@ internal sealed class WorldConstructionPlan
     {
         var expectedIssuanceNamespace = _restoreIdentityState?.IssuanceNamespace ?? _worldGuid;
         var hasRestoreEntityRows = (_restoreIdentityState?.EntitySlots.LiveEntityCount ?? 0) != 0;
+        var hasRestoreAttachments = _restoreAttachmentCount != 0;
         var hasRestoreArchetype = (_restoreEcsPlan is not null) && _restoreEcsPlan.HasArchetypes;
         var hasRestoreEcsWorkspace = (_restoreEcsPlan is not null) && (_restoreEcsPlan.ArchetypeCount != 0);
+        var hasRestoreControlRecords = _restoreControlRecordCount != 0;
+        var hasRestoreControlStorage = _restoreControlStorageByteReservation != 0;
 
         if ((_worldGuid == Guid.Empty)
             || (ReplayLineageId == Guid.Empty)
@@ -222,6 +260,11 @@ internal sealed class WorldConstructionPlan
             || (_workerPool is null)
             || (_workerPool.WorkerCount != _resolvedOptions.CpuWorkerCount)
             || (_resolvedOptions.Options.Registration is null)
+            || (_restoreControlRecordCount > _resolvedOptions.Options.MaximumRecordedControls)
+            || hasRestoreControlRecords != hasRestoreControlStorage
+            || hasRestoreAttachments != (_restoreAttachmentStorageByteReservation != 0)
+            || (_restoreAttachmentStorageByteReservation
+                != WorldAttachmentTable.GetStorageByteReservationForCount(_restoreAttachmentCount))
             || (_restoreWorkPlanByteReservation > _resolvedOptions.Options.SchedulingLimits.MaximumWorkPlanBytes)
             || ((_restoreIdentityState is not null)
                 && ((_restoreIdentityState.WorldGuid != _worldGuid)

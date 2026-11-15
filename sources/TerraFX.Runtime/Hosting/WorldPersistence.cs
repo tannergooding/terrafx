@@ -1211,6 +1211,7 @@ public sealed class WorldPersistence : IAsyncDisposable
             }
 
             var tickRate = checkpointContents.WorldContents.Clock.TickRate;
+            var initialTimeScale = checkpointContents.WorldContents.Clock.InitialTimeScale;
             var timeScale = checkpointContents.WorldContents.Clock.TimeScale;
             WorldRestoreEcsPlan restoreEcsPlan;
 
@@ -1235,8 +1236,12 @@ public sealed class WorldPersistence : IAsyncDisposable
                     restoreIdentityState,
                     checkpointContents.WorldContents.Configuration,
                     tickRate,
+                    initialTimeScale,
                     timeScale,
-                    restoreEcsPlan);
+                    restoreEcsPlan,
+                    checkpointContents.WorldContents.ControlRecordCount,
+                    checkpointContents.WorldContents.SceneControlPayloadBytes,
+                    checkpointContents.WorldContents.Ecs.AttachmentCount);
             }
             catch (InvalidOperationException exception)
             {
@@ -1276,11 +1281,15 @@ public sealed class WorldPersistence : IAsyncDisposable
                     replacementPreparation
                         ?? throw new InvalidOperationException("The replacement preparation was not retained."),
                     tickRate,
+                    initialTimeScale,
                     timeScale,
                     out constructionPlan,
                     out bindingRefusal,
                     out admissionRefusal,
-                    restoreEcsPlan)
+                    restoreEcsPlan,
+                    checkpointContents.WorldContents.ControlRecordCount,
+                    checkpointContents.WorldContents.SceneControlPayloadBytes,
+                    checkpointContents.WorldContents.Ecs.AttachmentCount)
                 || (constructionPlan is null))
             {
                 var message = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)

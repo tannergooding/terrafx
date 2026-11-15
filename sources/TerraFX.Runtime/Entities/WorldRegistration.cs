@@ -282,6 +282,19 @@ public sealed class WorldRegistration
         }
     }
 
+    internal IWorldAttachmentRegistration GetAttachmentRegistration(AttachmentScope scope, ContentSchemaReference schema)
+    {
+        foreach (var attachment in _attachments)
+        {
+            if ((attachment.Scope == scope) && (attachment.Descriptor.Schema == schema))
+            {
+                return attachment;
+            }
+        }
+
+        throw new KeyNotFoundException("No attachment with the supplied scope and schema is registered.");
+    }
+
     internal IComponentRegistration GetComponentRegistration(ContentSchemaReference schema)
         => FindComponent(schema);
 

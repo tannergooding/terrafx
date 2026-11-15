@@ -25,6 +25,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         int assetIdCount,
         ReadOnlyMemory<byte> controlRecordsPayload,
         int controlRecordCount,
+        long sceneControlPayloadBytes,
         ReadOnlyMemory<byte> cursorsRecord,
         ReadOnlyMemory<byte> randomStreamsPayload,
         int randomStreamCount,
@@ -47,6 +48,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         AssetIdCount = assetIdCount;
         ControlRecordsPayload = controlRecordsPayload;
         ControlRecordCount = controlRecordCount;
+        SceneControlPayloadBytes = sceneControlPayloadBytes;
         CursorsRecord = cursorsRecord;
         RandomStreamsPayload = randomStreamsPayload;
         RandomStreamCount = randomStreamCount;
@@ -89,6 +91,8 @@ internal sealed class WorldPersistenceWorldRecordContents
     internal WorldPersistenceRegistrationContents Registration { get; }
 
     internal ReadOnlyMemory<byte> RegistrationRecord { get; }
+
+    internal long SceneControlPayloadBytes { get; }
 
     internal WorldPersistenceScenesContents Scenes { get; }
 

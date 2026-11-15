@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace TerraFX.Entities;
@@ -16,12 +17,18 @@ public sealed partial class World
         long restoreEcsArchetypeMetadataBytes,
         long restoreEcsStorageBytes,
         long restoreWorkPlanBytes,
-        long restoreComponentWorkspaceBytes)
+        long restoreComponentWorkspaceBytes,
+        long restoreControlStorageBytes,
+        long restoreSceneControlPayloadBytes,
+        long restoreAttachmentStorageBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsArchetypeMetadataBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsStorageBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreWorkPlanBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreComponentWorkspaceBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreControlStorageBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentStorageBytes);
         var archetypeDirectoryBytes = checked(2 * ArrayBytes(options.MaximumArchetypes, IntPtr.Size));
         var resourceBytes = 0L;
         var systemBytes = checked(
@@ -58,7 +65,10 @@ public sealed partial class World
             + restoreEcsArchetypeMetadataBytes
             + restoreEcsStorageBytes
             + restoreWorkPlanBytes
-            + restoreComponentWorkspaceBytes);
+            + restoreComponentWorkspaceBytes
+            + restoreControlStorageBytes
+            + restoreSceneControlPayloadBytes
+            + restoreAttachmentStorageBytes);
 
         if (worldOwnedBytes > options.SchedulingLimits.MaximumOwnedStateBytes)
         {
@@ -73,6 +83,7 @@ public sealed partial class World
         WorldRestoreIdentityState restoreIdentityState,
         WorldPersistenceConfiguration configuration,
         int tickRate,
+        float initialTimeScale,
         float timeScale)
         => new(targetWorld._options.Registration) {
             AdmissionDomain = targetWorld._admissionDomain,
@@ -81,7 +92,7 @@ public sealed partial class World
             FrameExtent2 = targetWorld._options.FrameExtent2,
             FrameExtent3 = targetWorld._options.FrameExtent3,
             InitialReplayLineageId = restoreIdentityState.ReplayLineageId,
-            InitialTimeScale = timeScale,
+            InitialTimeScale = initialTimeScale,
             MaximumActiveSceneInstances = configuration.MaximumActiveSceneInstances,
             MaximumArchetypes = configuration.MaximumArchetypes,
             MaximumComponentTypes = configuration.MaximumComponentTypes,
@@ -103,6 +114,14 @@ public sealed partial class World
             TickRate = tickRate,
             WorldGuid = restoreIdentityState.WorldGuid,
         };
+
+    private static long GetRestoreAttachmentStorageByteReservation(int attachmentCount)
+        => WorldAttachmentTable.GetStorageByteReservationForCount(attachmentCount);
+
+    private static long GetRestoreControlStorageByteReservation(int controlRecordCount)
+        => (controlRecordCount == 0)
+            ? 0
+            : ArrayBytes(controlRecordCount, Unsafe.SizeOf<WorldControlRecord>());
 
     private static int GetRestoreWorkPlanCapacity(
         int requiredPartitionCount,
@@ -238,13 +257,21 @@ public sealed partial class World
         WorldRestoreIdentityState restoreIdentityState,
         WorldPersistenceConfiguration configuration,
         int tickRate,
+        float initialTimeScale,
         float timeScale,
-        WorldRestoreEcsPlan? restoreEcsPlan = null)
+        WorldRestoreEcsPlan? restoreEcsPlan = null,
+        int restoreControlRecordCount = 0,
+        long restoreSceneControlPayloadBytes = 0,
+        int restoreAttachmentCount = 0)
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreControlRecordCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(restoreControlRecordCount, configuration.MaximumRecordedControls);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
         restoreEcsPlan ??= WorldRestoreEcsPlan.CreateEmpty(restoreIdentityState.EntitySlots.LiveEntityCount);
-        var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
+        var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, initialTimeScale, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
         var (metadataBytes, storageBytes, _, workPlanBytes, componentWorkspaceBytes) =
             MeasureRestoreEcsStorage(_ownerId, options, restoreIdentityState, restoreEcsPlan);
@@ -255,7 +282,10 @@ public sealed partial class World
             metadataBytes,
             storageBytes,
             workPlanBytes,
-            componentWorkspaceBytes);
+            componentWorkspaceBytes,
+            GetRestoreControlStorageByteReservation(restoreControlRecordCount),
+            restoreSceneControlPayloadBytes,
+            GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount));
     }
 
     internal void ReleasePersistenceAdmissionBytes(long bytes)
@@ -468,11 +498,15 @@ public sealed partial class World
         WorldPersistenceConfiguration configuration,
         WorldGuidReplacementPreparation replacementPreparation,
         int tickRate,
+        float initialTimeScale,
         float timeScale,
         out WorldConstructionPlan? constructionPlan,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal,
-        WorldRestoreEcsPlan? restoreEcsPlan = null)
+        WorldRestoreEcsPlan? restoreEcsPlan = null,
+        int restoreControlRecordCount = 0,
+        long restoreSceneControlPayloadBytes = 0,
+        int restoreAttachmentCount = 0)
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -487,6 +521,10 @@ public sealed partial class World
 
         ArgumentOutOfRangeException.ThrowIfLessThan(timeScale, 0);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeScale, 4);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreControlRecordCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(restoreControlRecordCount, configuration.MaximumRecordedControls);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
         constructionPlan = null;
         bindingRefusal = default;
         admissionRefusal = WorldAdmissionRefusal.None;
@@ -503,7 +541,7 @@ public sealed partial class World
             return false;
         }
 
-        var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
+        var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, initialTimeScale, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
         restoreEcsPlan ??= WorldRestoreEcsPlan.CreateEmpty(restoreIdentityState.EntitySlots.LiveEntityCount);
         var (restoreEcsArchetypeMetadataBytes, restoreEcsStorageBytes, restoreWorkPlanCapacity, restoreWorkPlanBytes, restoreComponentWorkspaceBytes) =
@@ -515,7 +553,10 @@ public sealed partial class World
             restoreEcsArchetypeMetadataBytes,
             restoreEcsStorageBytes,
             restoreWorkPlanBytes,
-            restoreComponentWorkspaceBytes);
+            restoreComponentWorkspaceBytes,
+            GetRestoreControlStorageByteReservation(restoreControlRecordCount),
+            restoreSceneControlPayloadBytes,
+            GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount));
         WorldDomainReservation? domainReservation = null;
         WorldSystemQuarantineReservation? quarantineReservation = null;
         WorldDiagnosticsCapability? diagnosticsCapability = null;
@@ -608,7 +649,12 @@ public sealed partial class World
                 restoreEcsStorageBytes,
                 restoreWorkPlanCapacity,
                 restoreWorkPlanBytes,
-                restoreComponentWorkspaceBytes);
+                restoreComponentWorkspaceBytes,
+                restoreControlRecordCount,
+                GetRestoreControlStorageByteReservation(restoreControlRecordCount),
+                restoreSceneControlPayloadBytes,
+                restoreAttachmentCount,
+                GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount));
             domainReservation = null;
             planCreated = true;
             return true;

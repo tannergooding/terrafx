@@ -36,10 +36,9 @@ internal static class WorldPersistenceEcsReader
         ArgumentNullException.ThrowIfNull(targetRegistration);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        if ((contents.LiveEntityCount != contents.EntityCount)
-            || (contents.AttachmentCount != 0))
+        if (contents.LiveEntityCount != contents.EntityCount)
         {
-            throw new NotSupportedException("The candidate restore slice does not support attachments.");
+            throw new NotSupportedException("Candidate ECS restoration requires every persisted Entity to be live.");
         }
 
         var record = new EbinRecordReadView(ecsRecord.Span);

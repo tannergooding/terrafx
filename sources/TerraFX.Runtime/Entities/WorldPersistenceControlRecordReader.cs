@@ -40,10 +40,12 @@ internal static class WorldPersistenceControlRecordReader
         int controlRecordCount,
         EbinRecordReadView clockRecord,
         WorldPersistenceClockContents clock,
+        out long sceneControlPayloadBytes,
         string parameterName)
     {
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentOutOfRangeException.ThrowIfNegative(controlRecordCount);
+        sceneControlPayloadBytes = 0;
 
         var initialFrame3 = new EbinRecordReadView(clock.InitialFrame3Record.Span);
         var worldGuid = ReadGuid(initialFrame3, 1, parameterName);
@@ -224,6 +226,8 @@ internal static class WorldPersistenceControlRecordReader
                 {
                     throw new ArgumentException("A state/control-scene payload has the wrong schema version or field count.", parameterName);
                 }
+
+                sceneControlPayloadBytes = checked(sceneControlPayloadBytes + payload.EncodedBytes.Length);
             }
             else
             {

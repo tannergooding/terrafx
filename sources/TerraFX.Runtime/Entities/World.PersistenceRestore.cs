@@ -177,15 +177,11 @@ public sealed partial class World
         if ((contents.WorldGuid != _worldGuid)
             || (contents.ReplayLineageId != _replayLineageId)
             || (contents.EntityCount != restoreEcsPlan.EntityCount)
+            || (contents.AttachmentCount != _restoreAttachmentCount)
             || (contents.LiveEntityCount != contents.EntityCount)
             || (_entitySlots.LiveEntityCount != contents.LiveEntityCount))
         {
             throw new ArgumentException("The validated ECS counts or identity do not match the restore candidate.", nameof(contents));
-        }
-
-        if (contents.AttachmentCount != 0)
-        {
-            throw new NotSupportedException("This candidate restore slice does not support attachments.");
         }
 
         if (contents.EntityCount > _maximumLiveEntities)
@@ -243,7 +239,7 @@ public sealed partial class World
             var expectedCount = fieldIndex switch {
                 1 => contents.SystemCount,
                 2 => contents.ResourceCount,
-                _ => 0,
+                _ => contents.AttachmentCount,
             };
 
             if ((field.Tag != (uint)fieldIndex + 1)
@@ -428,6 +424,7 @@ public sealed partial class World
 
             RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
             RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
+            RestoreTransferredAttachmentStateRecords(root, contents.AttachmentCount, cancellationToken);
             _isRestoreEcsRowsRestored = true;
             _restoreEcsPlan = null;
             return;
@@ -734,6 +731,7 @@ public sealed partial class World
 
         RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
         RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
+        RestoreTransferredAttachmentStateRecords(root, contents.AttachmentCount, cancellationToken);
         _isRestoreEcsRowsRestored = true;
         _restoreEcsPlan = null;
     }
@@ -924,6 +922,224 @@ public sealed partial class World
         if (systemRegistrationIndex != Registration.Systems.Length)
         {
             throw new InvalidOperationException("The validated ECS state omitted a registered stateful system.");
+        }
+    }
+
+    private void RestoreTransferredAttachmentStateRecords(
+        EbinRecordReadView ecsRecord,
+        int attachmentCount,
+        CancellationToken cancellationToken)
+    {
+        for (var attachmentIndex = 0; attachmentIndex < attachmentCount; attachmentIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var attachmentRecord = ecsRecord.GetRecordArrayElement(4, attachmentIndex);
+            var payload = attachmentRecord.GetRecord(3);
+            var payloadHeader = payload.Header;
+            var schema = new ContentSchemaReference(
+                payloadHeader.SchemaId,
+                payloadHeader.Major,
+                payloadHeader.Minor,
+                ContentSchemaScope.Content);
+            Guid? ownerEntityId = attachmentRecord.TryGetField(2, out var ownerField)
+                ? new Guid(ownerField.Payload, bigEndian: true)
+                : null;
+            var scope = ownerEntityId.HasValue ? AttachmentScope.Entity : AttachmentScope.World;
+            var registration = Registration.GetAttachmentRegistration(scope, schema);
+            var author = RunAttachmentStateRead(registration, payload.EncodedBytes, cancellationToken);
+            var context = new WorldAttachmentRestoreContext(this, registration);
+            var binding = new WorldAttachmentRestoreBinding(context);
+            object value;
+
+            try
+            {
+                value = RunAttachmentStateRestore(registration, author, binding, cancellationToken);
+                context.ThrowIfFailed();
+            }
+            finally
+            {
+                binding.Revoke();
+                context.Revoke();
+            }
+
+            var installationId = checked(_nextAttachmentInstallationId + 1);
+            _attachments.Set(
+                registration.ValueType,
+                ownerEntityId,
+                value,
+                AttachmentOwnership.Transferred,
+                installationId,
+                registration);
+            _nextAttachmentInstallationId = installationId;
+            var diagnostics = RunAttachmentChecks(registration, value);
+
+            if (!diagnostics.IsEmpty)
+            {
+                throw new InvalidDataException($"The restored attachment failed validation: {diagnostics[0].Code}.");
+            }
+        }
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The restore wrapper must prefer the first sticky reentrancy failure and revoke the attachment callback boundary.")]
+    private object RunAttachmentStateRead(
+        IWorldAttachmentRegistration registration,
+        scoped ReadOnlySpan<byte> source,
+        CancellationToken cancellationToken)
+    {
+        StartAttachmentCallback();
+        object? author = null;
+        Exception? callbackFailure = null;
+
+        try
+        {
+            author = registration.ReadStateRecord(source, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            callbackFailure = exception;
+        }
+        finally
+        {
+            StopAttachmentCallback();
+        }
+
+        var stickyFailure = Interlocked.Exchange(ref _attachmentCallbackStickyFailure, null);
+
+        if (stickyFailure is not null)
+        {
+            throw stickyFailure;
+        }
+
+        if (callbackFailure is not null)
+        {
+            throw callbackFailure;
+        }
+
+        return author ?? throw new InvalidOperationException("The attachment state reader returned a null author value.");
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The restore wrapper must prefer the first sticky reentrancy failure and revoke the attachment callback boundary.")]
+    private object RunAttachmentStateRestore(
+        IWorldAttachmentRegistration registration,
+        object author,
+        WorldAttachmentRestoreBinding binding,
+        CancellationToken cancellationToken)
+    {
+        StartAttachmentCallback();
+        object? value = null;
+        Exception? callbackFailure = null;
+
+        try
+        {
+            value = registration.RestoreState(author, binding, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            callbackFailure = exception;
+        }
+        finally
+        {
+            StopAttachmentCallback();
+        }
+
+        var stickyFailure = Interlocked.Exchange(ref _attachmentCallbackStickyFailure, null);
+
+        if (stickyFailure is not null)
+        {
+            throw stickyFailure;
+        }
+
+        if (callbackFailure is not null)
+        {
+            throw callbackFailure;
+        }
+
+        return value ?? throw new InvalidOperationException("The attachment restore provider returned a null value.");
+    }
+
+    private sealed class WorldAttachmentRestoreContext : IWorldAttachmentRestoreContext
+    {
+        private Exception? _failure;
+        private int _isActive = 1;
+        private readonly IWorldAttachmentRegistration _registration;
+        private readonly World _world;
+
+        internal WorldAttachmentRestoreContext(World world, IWorldAttachmentRegistration registration)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            ArgumentNullException.ThrowIfNull(registration);
+            _world = world;
+            _registration = registration;
+            OwnerThreadId = world._ownerThreadId;
+        }
+
+        public Exception? Failure => Volatile.Read(ref _failure);
+
+        public bool IsActive => Volatile.Read(ref _isActive) != 0;
+
+        public int OwnerThreadId { get; }
+
+        public Exception RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            return Interlocked.CompareExchange(ref _failure, exception, null) ?? exception;
+        }
+
+        public Entity ResolveEntity(WorldAttachmentFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            if (!IsActive || (Environment.CurrentManagedThreadId != OwnerThreadId))
+            {
+                throw RecordFailure(new InvalidOperationException("The attachment restore context is expired or used from another thread."));
+            }
+
+            ArgumentNullException.ThrowIfNull(referenceField);
+
+            if ((referenceField.Schema != _registration.Descriptor.Schema)
+                || (referenceField.Field.WireKind != 11)
+                || (referenceField.Field.Reference != ContentReferenceKind.Entity)
+                || referenceField.Field.IsRequired
+                || (targetEntityId == Guid.Empty))
+            {
+                throw RecordFailure(new ArgumentException("The selected attachment reference field or stable Entity identity is invalid."));
+            }
+
+            var isRegisteredField = false;
+
+            foreach (var field in _registration.Descriptor.Fields)
+            {
+                isRegisteredField |= ReferenceEquals(field, referenceField);
+            }
+
+            if (!isRegisteredField)
+            {
+                throw RecordFailure(new ArgumentException("The selected attachment reference field does not belong to this restore registration."));
+            }
+
+            try
+            {
+                return _world.ResolveRestoreEntity(targetEntityId);
+            }
+            catch (Exception exception)
+            {
+                throw RecordFailure(exception);
+            }
+        }
+
+        internal void Revoke()
+            => Volatile.Write(ref _isActive, 0);
+
+        internal void ThrowIfFailed()
+        {
+            if (Failure is { } failure)
+            {
+                throw failure;
+            }
         }
     }
 

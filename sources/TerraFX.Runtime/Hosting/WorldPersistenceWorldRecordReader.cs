@@ -636,6 +636,7 @@ internal static class WorldPersistenceWorldRecordReader
             controlRecordCount,
             record.GetRecord(2),
             parsedClock,
+            out var sceneControlPayloadBytes,
             nameof(worldRecord));
         WorldPersistencePcgReader.Validate(worldRecord, fieldTag: 10, randomStreamCount, nameof(worldRecord));
         var parsedCursors = WorldPersistenceCursorReader.Read(
@@ -762,6 +763,7 @@ internal static class WorldPersistenceWorldRecordReader
             assetIdCount,
             controlRecordsPayload,
             controlRecordCount,
+            sceneControlPayloadBytes,
             cursorsRecord,
             randomStreamsPayload,
             randomStreamCount,

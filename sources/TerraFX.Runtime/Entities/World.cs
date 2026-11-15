@@ -55,12 +55,13 @@ public sealed partial class World : IDisposable
     private Guid _identityBranchId;
     private WorldIdentityBranchRecord[] _identityBranches = [];
     private readonly StableIdentityLedger _identityLedger;
-    private readonly SpatialFrame2? _initialFrame2;
-    private readonly SpatialFrame3 _initialFrame3;
+    private SpatialFrame2? _initialFrame2;
+    private SpatialFrame3 _initialFrame3;
     private readonly float _initialTimeScale;
     private int _isAttachmentCallbackActive;
     private bool _isCandidateInitialized;
     private readonly bool _isRestoreCandidate;
+    private bool _isRestoreClockStateRestored;
     private bool _isRestoreEcsRowsRestored;
     private bool _isRestoreHierarchyInstalled;
     private int _isStructuralOperationActive;
@@ -105,6 +106,7 @@ public sealed partial class World : IDisposable
     private readonly Guid _replayLineageId;
     private ImmutableArray<object> _resourceStorage;
     private readonly long _resourceStorageByteReservation;
+    private readonly int _restoreAttachmentCount;
     private long _restoreComponentWorkspaceByteReservation;
     private readonly WorldComponentRestoreContext? _restoreContext;
     private readonly long _restoreEcsArchetypeMetadataByteReservation;
@@ -200,9 +202,30 @@ public sealed partial class World : IDisposable
         _restoreEcsStorageByteReservation = constructionPlan.RestoreEcsStorageByteReservation;
         _restoreEcsArchetypeMetadataByteReservation = constructionPlan.RestoreEcsArchetypeMetadataByteReservation;
         _restoreEcsPlan = constructionPlan.RestoreEcsPlan;
+        _restoreAttachmentCount = constructionPlan.RestoreAttachmentCount;
         _restoreWorkPlanByteReservation = constructionPlan.RestoreWorkPlanByteReservation;
         _restoreWorkPlanCapacity = constructionPlan.RestoreWorkPlanCapacity;
         _restoreComponentWorkspaceByteReservation = constructionPlan.RestoreComponentWorkspaceByteReservation;
+        _controlRecords = (constructionPlan.RestoreControlRecordCount == 0)
+            ? []
+            : new WorldControlRecord[constructionPlan.RestoreControlRecordCount];
+        _controlStorageByteReservation = constructionPlan.RestoreControlStorageByteReservation;
+        _sceneControlPayloadByteReservation = constructionPlan.RestoreSceneControlPayloadByteReservation;
+
+        if (constructionPlan.RestoreAttachmentCount != 0)
+        {
+            if (constructionPlan.RestoreAttachmentStorageByteReservation
+                != WorldAttachmentTable.GetStorageByteReservationForCount(constructionPlan.RestoreAttachmentCount))
+            {
+                throw new InvalidOperationException("The restore attachment table reservation does not match its saved count.");
+            }
+
+            var preparedAttachments = _attachments.PrepareCapacityForCount(constructionPlan.RestoreAttachmentCount);
+            _attachments.CommitCapacity(
+                preparedAttachments,
+                constructionPlan.RestoreAttachmentStorageByteReservation);
+        }
+
         _entitySlots = restoreIdentityState?.EntitySlots ?? new EntitySlotTable(options.MaximumEntitySlots);
         _executionSessionId = constructionPlan.ExecutionSessionId;
         _identityBranchId = constructionPlan.IdentityBranchId;

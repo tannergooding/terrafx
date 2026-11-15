@@ -384,6 +384,7 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
                 configuration,
                 preparation,
                 tickRate: 60,
+                initialTimeScale: 1,
                 timeScale: 1,
                 out var constructionPlan,
                 out bindingRefusal,

@@ -21,9 +21,15 @@ internal interface IWorldAttachmentRegistration
         WorldAttachmentCaptureBinding binding,
         CancellationToken cancellationToken);
 
+    object ReadStateRecord(scoped ReadOnlySpan<byte> source, CancellationToken cancellationToken);
+
     void Release(object value, WorldAttachmentReleaseBinding binding);
 
+    object RestoreState(object author, WorldAttachmentRestoreBinding binding, CancellationToken cancellationToken);
+
     ImmutableArray<Diagnostic> Validate(World world, object value);
+
+    void ValidateEntityReferences(World world, object value);
 
     void ValidateEntityReferences(World world, object value, Entity excludedEntity);
 
