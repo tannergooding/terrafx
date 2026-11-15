@@ -516,6 +516,74 @@ internal sealed class WorldAdmissionDomainTests
     }
 
     [Test]
+    public void RetainedHistoryInterestKeepsMembershipUntilDataRelease()
+    {
+        var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var worldGuid = Guid.NewGuid();
+        var lineageId = Guid.NewGuid();
+        var branchId = Guid.NewGuid();
+        WorldDomainReservation? worldReservation = null;
+        WorldDomainReservation? probeReservation = null;
+        WorldHistoryInterest? historyInterest = null;
+
+        try
+        {
+            Assert.That(domain.TryReserveWorld(4096, out worldReservation), Is.True);
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    worldReservation!,
+                    worldGuid,
+                    lineageId,
+                    branchId,
+                    out var grant,
+                    out _,
+                    issuanceNamespace: worldGuid),
+                Is.True);
+            Assert.That(domain.TryCommitFreshLineage(grant), Is.True);
+            var membership =
+                WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership.CreateValidated(
+                    worldGuid,
+                    lineageId,
+                    branchId,
+                    worldGuid,
+                    [lineageId]);
+            Assert.That(domain.TryRetainValidatedHistory(membership, out historyInterest, out _), Is.True);
+            Assert.That(domain.TryRollbackFreshLineage(grant), Is.True);
+            worldReservation?.Dispose();
+            worldReservation = null;
+
+            Assert.That(domain.TryReserveWorld(4096, out probeReservation), Is.True);
+            var probeWorldGuid = Guid.NewGuid();
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    probeReservation
+                        ?? throw new InvalidOperationException("The retained-history probe omitted its reservation."),
+                    probeWorldGuid,
+                    lineageId,
+                    Guid.NewGuid(),
+                    out _,
+                    out _,
+                    issuanceNamespace: probeWorldGuid),
+                Is.False);
+            probeReservation?.Dispose();
+            probeReservation = null;
+
+            domain.Dispose();
+            Assert.That(domain.Retirement.IsCompleted, Is.False);
+            historyInterest?.Dispose();
+            historyInterest = null;
+            Assert.That(domain.Retirement.IsCompleted, Is.True);
+        }
+        finally
+        {
+            historyInterest?.Dispose();
+            probeReservation?.Dispose();
+            worldReservation?.Dispose();
+            domain.Dispose();
+        }
+    }
+
+    [Test]
     public void RollbackCommittedFreshLineageReleasesMembership()
     {
         var domain = new WorldAdmissionDomain(8 * 1024 * 1024);

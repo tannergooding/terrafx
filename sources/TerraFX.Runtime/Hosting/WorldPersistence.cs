@@ -684,6 +684,10 @@ public sealed class WorldPersistence : IAsyncDisposable
     /// <exception cref="ArgumentOutOfRangeException">A load option is outside its supported range.</exception>
     /// <exception cref="ObjectDisposedException">This persistence service has been disposed.</exception>
     /// <exception cref="OperationCanceledException">Cancellation was requested before source inspection was admitted.</exception>
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The exact target history interest transfers into a strongly anchored retained-history control before asynchronous file work; all non-transfer paths dispose it in finally.")]
     public Task<WorldLoadPreparation> PrepareLoadAsync(
         World targetWorld,
         string savePath,
@@ -721,7 +725,44 @@ public sealed class WorldPersistence : IAsyncDisposable
                 targetWorldGuid));
         }
 
-        return PrepareLoadCoreAsync(targetWorld, targetWorldGuid, targetPath, options, cancellationToken);
+        WorldHistoryInterest? targetHistoryInterest = null;
+        WorldRetainedHistoryControl? retainedHistory = null;
+        var loadCoreOwnsEnd = false;
+
+        try
+        {
+            if (!targetWorld.TryRetainCurrentHistoryInterest(out targetHistoryInterest, out var admissionRefusal)
+                || (targetHistoryInterest is null))
+            {
+                return Task.FromResult(CreateLoadRejected(
+                    "load-target-admission-rejected",
+                    $"The target World refused retained history with admission code {admissionRefusal}.",
+                    targetWorldGuid));
+            }
+
+            retainedHistory = new WorldRetainedHistoryControl(targetHistoryInterest);
+            targetHistoryInterest = null;
+            var task = PrepareLoadCoreAsync(
+                targetWorld,
+                targetWorldGuid,
+                targetPath,
+                options,
+                retainedHistory,
+                cancellationToken);
+            retainedHistory = null;
+            loadCoreOwnsEnd = true;
+            return task;
+        }
+        finally
+        {
+            retainedHistory?.Dispose();
+            targetHistoryInterest?.Dispose();
+
+            if (!loadCoreOwnsEnd)
+            {
+                EndLoad();
+            }
+        }
     }
 
     /// <summary>Captures a committed World synchronously on its owner and atomically writes one checkpoint.</summary>
@@ -1044,6 +1085,7 @@ public sealed class WorldPersistence : IAsyncDisposable
         Guid targetWorldGuid,
         string targetPath,
         LoadOptions options,
+        WorldRetainedHistoryControl retainedHistory,
         CancellationToken cancellationToken)
     {
         AssetPackageLease? packageLease = null;
@@ -1056,6 +1098,7 @@ public sealed class WorldPersistence : IAsyncDisposable
         WorldGuidReplacementPreparation? replacementPreparation = null;
         WorldConstructionPlan? constructionPlan = null;
         WorldLoadPreparedState? preparedState = null;
+        var retainedHistoryControl = retainedHistory;
         WorldLoadPlan? loadPlan = null;
         WorldPersistenceUseLease? combinedUse = null;
         byte[]? fileRecord = null;
@@ -1175,7 +1218,10 @@ public sealed class WorldPersistence : IAsyncDisposable
                     var activeValidationUse = validationReservation.AcquireRetainedUse(
                         targetWorld,
                         validationWorkspaceBytes);
+                    var activeValidationUseReleased = false;
                     WorldPersistenceCheckpointContents? validatedContents = null;
+                    WorldHistoryInterest? sourceHistoryInterest = null;
+                    IDisposable? retainedUse = null;
 
                     try
                     {
@@ -1226,6 +1272,18 @@ public sealed class WorldPersistence : IAsyncDisposable
                             ref strictLayoutBuffers);
                         var history = validatedContents.WorldContents.Ecs.ValidatedIdentityHistory
                             ?? throw new InvalidOperationException("The validated State2 checkpoint omitted its identity history.");
+                        var lineageMembership = validatedContents.WorldContents.Ecs.LineageMembership
+                            ?? throw new InvalidOperationException("The validated State2 checkpoint omitted its lineage membership.");
+
+                        if (!targetWorld.TryRetainValidatedHistoryInterest(
+                                lineageMembership,
+                                out sourceHistoryInterest,
+                                out var historyRefusal)
+                            || (sourceHistoryInterest is null))
+                        {
+                            sourceMismatch = $"The target World could not retain source history with admission code {historyRefusal}.";
+                            return null;
+                        }
 
                         for (var index = 0; index < history.Branches.Length; index++)
                         {
@@ -1254,6 +1312,22 @@ public sealed class WorldPersistence : IAsyncDisposable
                             packageLease,
                             limits,
                             validationCancellationToken).ConfigureAwait(false);
+
+                        activeValidationUse.Dispose();
+                        activeValidationUseReleased = true;
+                        validationReservation.Shrink(
+                            checked(validationWorkspaceBytes - requirements.RetainedContentsBytes));
+                        retainedUse = validationReservation.AcquireRetainedUse(
+                            targetWorld,
+                            requirements.RetainedContentsBytes);
+                        var candidateValidation = new WorldPersistenceRecoveryReader.CandidateValidation(
+                            validatedContents,
+                            retainedUse,
+                            sourceHistoryInterest);
+                        retainedUse = null;
+                        sourceHistoryInterest = null;
+                        restoreValidationWorkspaceByteReservation = requirements.TotalWorkspaceBytes;
+                        return candidateValidation;
                     }
                     catch (Exception exception) when (
                         exception is ArgumentException
@@ -1266,16 +1340,25 @@ public sealed class WorldPersistence : IAsyncDisposable
                     }
                     finally
                     {
-                        activeValidationUse.Dispose();
+                        try
+                        {
+                            if (!activeValidationUseReleased)
+                            {
+                                activeValidationUse.Dispose();
+                            }
+                        }
+                        finally
+                        {
+                            try
+                            {
+                                retainedUse?.Dispose();
+                            }
+                            finally
+                            {
+                                sourceHistoryInterest?.Dispose();
+                            }
+                        }
                     }
-
-                    validationReservation.Shrink(
-                        checked(validationWorkspaceBytes - requirements.RetainedContentsBytes));
-                    var retainedUse = validationReservation.AcquireRetainedUse(
-                        targetWorld,
-                        requirements.RetainedContentsBytes);
-                    restoreValidationWorkspaceByteReservation = requirements.TotalWorkspaceBytes;
-                    return new WorldPersistenceRecoveryReader.CandidateValidation(validatedContents!, retainedUse);
                 }
             }
 
@@ -1471,18 +1554,26 @@ public sealed class WorldPersistence : IAsyncDisposable
             recoveryUse = null;
             sourcePerWorldUse = null;
             restoreIdentityUse = null;
+            var retainedCheckpoint = checkpointContents
+                ?? throw new InvalidOperationException("The prepared load omitted its validated checkpoint.");
+            var retainedFileRecord = fileRecord
+                ?? throw new InvalidOperationException("The prepared load omitted its source file record.");
+            var retainedSourceUse = combinedUse
+                ?? throw new InvalidOperationException("The prepared load omitted its retained source use.");
+            var historyControl = retainedHistoryControl
+                ?? throw new InvalidOperationException("The prepared load omitted its retained history control.");
+            historyControl.Attach(retainedCheckpoint, retainedFileRecord, retainedSourceUse);
             preparedState = new WorldLoadPreparedState(
                 _assets,
                 constructionPlan,
                 replacementPreparation,
                 packageLease,
-                combinedUse,
-                fileRecord,
-                checkpointContents,
+                historyControl,
                 options.RestoreIntent);
             constructionPlan = null;
             replacementPreparation = null;
             packageLease = null;
+            retainedHistoryControl = null;
             combinedUse = null;
             fileRecord = null;
             var payloadDigest = SHA256.HashData(checkpointContents.WorldRecord.Span);
@@ -1516,6 +1607,7 @@ public sealed class WorldPersistence : IAsyncDisposable
         {
             loadPlan?.Dispose();
             preparedState?.Dispose();
+            retainedHistoryControl?.Dispose();
             constructionPlan?.ReleaseUntransferredRestoreResources();
             replacementPreparation?.Dispose();
             readPreparation?.Dispose();

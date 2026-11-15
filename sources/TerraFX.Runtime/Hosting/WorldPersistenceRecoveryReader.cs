@@ -279,6 +279,18 @@ internal static class WorldPersistenceRecoveryReader
             RetainedUse = retainedUse;
         }
 
+        internal CandidateValidation(
+            WorldPersistenceCheckpointContents contents,
+            IDisposable retainedUse,
+            IDisposable historyUse)
+        {
+            ArgumentNullException.ThrowIfNull(contents);
+            ArgumentNullException.ThrowIfNull(retainedUse);
+            ArgumentNullException.ThrowIfNull(historyUse);
+            Contents = contents;
+            RetainedUse = new CompositeDisposable(historyUse, retainedUse);
+        }
+
         internal WorldPersistenceCheckpointContents Contents { get; }
 
         internal IDisposable RetainedUse { get; set; }

@@ -984,4 +984,53 @@ public sealed partial class World
             return true;
         }
     }
+
+    internal bool TryRetainCurrentHistoryInterest(
+        out WorldHistoryInterest? historyInterest,
+        out WorldAdmissionRefusal refusal)
+    {
+        lock (_sceneStorageGate)
+        {
+            lock (_persistenceAdmissionGate)
+            {
+                lock (_ownerControlGate)
+                {
+                    if ((Volatile.Read(ref _disposed) != 0) || !_lifetimeControl.HasCommittedHistory)
+                    {
+                        historyInterest = null;
+                        refusal = WorldAdmissionRefusal.DomainClosed;
+                        return false;
+                    }
+
+                    return _admissionDomain.TryRetainHistoryForWorld(_lineageGrant, out historyInterest, out refusal);
+                }
+            }
+        }
+    }
+
+    internal bool TryRetainValidatedHistoryInterest(
+        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership membership,
+        out WorldHistoryInterest? historyInterest,
+        out WorldAdmissionRefusal refusal)
+    {
+        ArgumentNullException.ThrowIfNull(membership);
+
+        lock (_sceneStorageGate)
+        {
+            lock (_persistenceAdmissionGate)
+            {
+                lock (_ownerControlGate)
+                {
+                    if ((Volatile.Read(ref _disposed) != 0) || !_lifetimeControl.HasCommittedHistory)
+                    {
+                        historyInterest = null;
+                        refusal = WorldAdmissionRefusal.DomainClosed;
+                        return false;
+                    }
+
+                    return _admissionDomain.TryRetainValidatedHistory(membership, out historyInterest, out refusal);
+                }
+            }
+        }
+    }
 }

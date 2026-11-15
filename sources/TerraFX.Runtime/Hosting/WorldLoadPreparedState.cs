@@ -20,40 +20,34 @@ internal sealed class WorldLoadPreparedState : IDisposable
     private bool _isCaptured;
     private bool _isDisposed;
     private AssetPackageLease? _packageLease;
-    private readonly IDisposable _sourceUse;
+    private readonly WorldRetainedHistoryControl _retainedHistory;
 
     internal WorldLoadPreparedState(
         AssetStore assets,
         WorldConstructionPlan constructionPlan,
         WorldGuidReplacementPreparation replacementPreparation,
         AssetPackageLease packageLease,
-        IDisposable sourceUse,
-        byte[] fileRecord,
-        WorldPersistenceCheckpointContents checkpoint,
+        WorldRetainedHistoryControl retainedHistory,
         WorldRestoreIntent restoreIntent)
     {
         ArgumentNullException.ThrowIfNull(assets);
         ArgumentNullException.ThrowIfNull(constructionPlan);
         ArgumentNullException.ThrowIfNull(replacementPreparation);
         ArgumentNullException.ThrowIfNull(packageLease);
-        ArgumentNullException.ThrowIfNull(sourceUse);
-        ArgumentNullException.ThrowIfNull(fileRecord);
-        ArgumentNullException.ThrowIfNull(checkpoint);
+        ArgumentNullException.ThrowIfNull(retainedHistory);
         _assets = assets;
         ConstructionPlan = constructionPlan;
         ReplacementPreparation = replacementPreparation;
         _packageLease = packageLease;
-        _sourceUse = sourceUse;
-        FileRecord = fileRecord;
-        Checkpoint = checkpoint;
+        _retainedHistory = retainedHistory;
         RestoreIntent = restoreIntent;
     }
 
-    internal WorldPersistenceCheckpointContents Checkpoint { get; }
+    internal WorldPersistenceCheckpointContents Checkpoint => _retainedHistory.Checkpoint;
 
     internal WorldConstructionPlan ConstructionPlan { get; }
 
-    internal byte[] FileRecord { get; }
+    internal byte[] FileRecord => _retainedHistory.FileRecord;
 
     internal WorldGuidReplacementPreparation ReplacementPreparation { get; }
 
@@ -86,7 +80,7 @@ internal sealed class WorldLoadPreparedState : IDisposable
             {
                 try
                 {
-                    _sourceUse.Dispose();
+                    _retainedHistory.Dispose();
                 }
                 finally
                 {
