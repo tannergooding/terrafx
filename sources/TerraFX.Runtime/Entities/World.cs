@@ -45,7 +45,6 @@ public sealed partial class World : IDisposable
     private long _controlStorageByteReservation;
     private WorldFrameCohort _currentFrameCohort;
     private int _currentIdentityBranchIndex;
-    private WorldDefaultDomainOwner? _defaultDomainOwner;
     private readonly WorldDiagnosticsCapability _diagnosticsCapability;
     private int _disposed;
     private readonly WorldDomainReservation _domainReservation;
@@ -70,6 +69,7 @@ public sealed partial class World : IDisposable
     private int _isTickActive;
     private Diagnostic? _lastFault;
     private WorldSystemCleanupReport? _lastSystemCleanupReport;
+    private readonly WorldLifetimeControl _lifetimeControl;
     private readonly WorldLineageGrant _lineageGrant;
     private readonly int _maximumArchetypes;
     private readonly long _maximumCommandStagingBytes;
@@ -137,7 +137,6 @@ public sealed partial class World : IDisposable
     private long _timeScaleSegmentSequence = 1;
     private readonly WorldWorkerPool _workerPool;
     private readonly Guid _worldGuid;
-    private readonly WorldGuidGrant _worldGuidGrant;
 
     private World(WorldConstructionPlan constructionPlan)
     {
@@ -274,8 +273,7 @@ public sealed partial class World : IDisposable
         _initialTimeScale = options.InitialTimeScale;
         _tickRate = options.TickRate;
         _timeScale = options.InitialTimeScale;
-        _worldGuidGrant = constructionPlan.WorldGuidGrant;
-        _defaultDomainOwner = constructionPlan.TransferDefaultDomainOwnerToWorld();
+        _lifetimeControl = constructionPlan.LifetimeControl;
         _worldGuid = constructionPlan.WorldGuid;
         _systemCleanupPreparation = new WorldSystemCleanupPreparation(_worldGuid, systems.Length);
         _sceneSupportByteReservation = options.Registration.SceneSupport?.GetWorldStorageByteReservation(options) ?? 0;
@@ -452,7 +450,7 @@ public sealed partial class World : IDisposable
             candidate = new World(constructionPlan);
             (constructionPlan.ReplacementPreparation
                 ?? throw new InvalidOperationException("The restore construction plan omitted its replacement preparation."))
-                .TransferReplacementGrantToCandidate();
+                .TransferReplacementGrantToCandidate(candidate._lifetimeControl);
             return candidate;
         }
         catch
@@ -487,6 +485,7 @@ public sealed partial class World : IDisposable
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The reserved identity, domain charge, and returned World transfer together only after both admission commits; the finally path releases them on failure.")]
+    [SuppressMessage("Usage", "CA2219:Do not raise exceptions in finally clauses", Justification = "An unrecoverable WorldGuid retirement failure during unpublished construction unwind must surface rather than hide a retained process binding.")]
     private static World AdmitWorld(
         WorldOptions options,
         WorldWorkerPool? sharedWorkerPool,
@@ -520,6 +519,7 @@ public sealed partial class World : IDisposable
         WorldAdmissionDomain? admissionDomain = null;
         var ownsAdmissionDomain = false;
         WorldDefaultDomainOwner? defaultDomainOwner = null;
+        WorldLifetimeControl? lifetimeControl = null;
         WorldDomainReservation? domainReservation = null;
         WorldSystemQuarantineReservation? systemQuarantineReservation = null;
         WorldWorkerPool? workerPool = null;
@@ -528,6 +528,7 @@ public sealed partial class World : IDisposable
         WorldDiagnosticsCapability? diagnosticsCapability = null;
         var lineageCommitted = false;
         var publicationCommitted = false;
+        var constructionCleanupFailed = false;
 
         try
         {
@@ -550,6 +551,13 @@ public sealed partial class World : IDisposable
             defaultDomainOwner = ownsAdmissionDomain
                 ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
                 : null;
+            lifetimeControl = new WorldLifetimeControl(
+                registry,
+                admissionDomain,
+                worldGuidGrant,
+                defaultDomainOwner,
+                isReplacementCandidate: false);
+            defaultDomainOwner = null;
 
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
             var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
@@ -639,7 +647,7 @@ public sealed partial class World : IDisposable
                 identityBranchId,
                 executionSessionId,
                 admissionDomain,
-                defaultDomainOwner,
+                lifetimeControl,
                 ownsWorkerPool,
                 domainReservation,
                 lineageGrant,
@@ -676,6 +684,7 @@ public sealed partial class World : IDisposable
                     throw new InvalidOperationException("The reserved WorldGuid binding could not be committed.");
                 }
 
+                world._lifetimeControl.PublishFresh();
                 publicationCommitted = true;
                 return world;
             }
@@ -689,6 +698,7 @@ public sealed partial class World : IDisposable
 
                 if (cleanupReport.FailureCount != 0)
                 {
+                    constructionCleanupFailed = true;
                     throw world._systemCleanupPreparation.CreateCleanupException();
                 }
 
@@ -732,7 +742,23 @@ public sealed partial class World : IDisposable
                     domainReservation?.Dispose();
                 }
 
-                if ((registry is not null) && worldGuidGrant.IsValid)
+                if (lifetimeControl is not null)
+                {
+                    if (constructionCleanupFailed)
+                    {
+                        if (!lifetimeControl.BeginRetirement())
+                        {
+                            throw new InvalidOperationException("The failed World construction could not revoke its WorldGuid binding.");
+                        }
+
+                        lifetimeControl.CloseDefaultDomain();
+                    }
+                    else
+                    {
+                        lifetimeControl.AbandonUnpublished();
+                    }
+                }
+                else if ((registry is not null) && worldGuidGrant.IsValid)
                 {
                     _ = registry.TryReleaseFresh(worldGuidGrant);
                 }
@@ -1256,7 +1282,7 @@ public sealed partial class World : IDisposable
                 }
             }
 
-            if (!_registry.TryReleaseFresh(_worldGuidGrant))
+            if (!_lifetimeControl.BeginRetirement())
             {
                 lock (_sceneStorageGate)
                 {
@@ -1300,6 +1326,7 @@ public sealed partial class World : IDisposable
             }
 
             var lineageRetired = false;
+            var attachmentQuarantineRetainsReservation = false;
 
             try
             {
@@ -1328,7 +1355,8 @@ public sealed partial class World : IDisposable
                 _archetypeCount = 0;
                 _ = _attachments.ReleaseOwnedStorage();
 
-                var attachmentQuarantineRetainsReservation = WorldAttachmentInstanceRegistry.HasRetainedDomainReservation(_domainReservation);
+                attachmentQuarantineRetainsReservation =
+                    WorldAttachmentInstanceRegistry.HasRetainedDomainReservation(_domainReservation);
 
                 if (sceneControlPayloadBytes != 0)
                 {
@@ -1339,18 +1367,29 @@ public sealed partial class World : IDisposable
                 {
                     _domainReservation.Dispose();
                 }
-
-                if (!attachmentQuarantineRetainsReservation)
-                {
-                    _defaultDomainOwner?.Close();
-                    _defaultDomainOwner = null;
-                }
             }
 
-            if (!lineageRetired)
+            var lifetimeRetirementFailure = false;
+
+            if (lineageRetired
+                && (systemCleanupReport.FailureCount == 0)
+                && (attachmentCleanupException is null)
+                && !_systemQuarantineReservation.RetainsDomainReservation
+                && !attachmentQuarantineRetainsReservation
+                && !_lifetimeControl.CompleteRetirement())
             {
-                var lineageFailure = new InvalidOperationException("The World replay-lineage root could not be retired; the World is already closed.");
-                var cleanupFailures = new List<Exception>(3) { lineageFailure };
+                lifetimeRetirementFailure = true;
+            }
+
+            _lifetimeControl.CloseDefaultDomain();
+
+            if (!lineageRetired || lifetimeRetirementFailure)
+            {
+                var lifetimeFailure = new InvalidOperationException(
+                    !lineageRetired
+                        ? "The World replay-lineage root could not be retired; the World is already closed."
+                        : "The WorldGuid lifetime could not be retired after cleanup.");
+                var cleanupFailures = new List<Exception>(4) { lifetimeFailure };
 
                 if (systemCleanupReport.FailureCount != 0)
                 {
@@ -1363,7 +1402,7 @@ public sealed partial class World : IDisposable
                     cleanupFailures.Add(attachmentCleanupException);
                 }
 
-                throw (cleanupFailures.Count == 1) ? lineageFailure : new AggregateException(cleanupFailures);
+                throw (cleanupFailures.Count == 1) ? lifetimeFailure : new AggregateException(cleanupFailures);
             }
 
             if (attachmentCleanupException is not null)
@@ -1718,7 +1757,7 @@ public sealed partial class World : IDisposable
         WorldWorkerPool workerPool,
         DiagnosticsService diagnostics,
         WorldAdmissionDomain admissionDomain)
-        => (_defaultDomainOwner is null)
+        => (_lifetimeControl.DefaultDomainOwner is null)
             && !_ownsWorkerPool
             && ReferenceEquals(_workerPool, workerPool)
             && ReferenceEquals(_diagnosticsCapability.Diagnostics, diagnostics)

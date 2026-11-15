@@ -402,7 +402,7 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
                 Assert.That(plan.IdentityBranchId, Is.EqualTo(branchId));
                 Assert.That(plan.ReplayLineageId, Is.EqualTo(history.ReplayLineageId));
                 Assert.That(plan.RestoreIdentityState, Is.SameAs(restoreState));
-                Assert.That(plan.DefaultDomainOwner, Is.Null);
+                Assert.That(plan.LifetimeControl.DefaultDomainOwner, Is.Null);
                 Assert.That(plan.OwnsWorkerPool, Is.False);
                 Assert.That(plan.RestoreEcsStorageByteReservation, Is.GreaterThan(0));
                 Assert.That(plan.RestoreWorkPlanCapacity, Is.GreaterThan(0));

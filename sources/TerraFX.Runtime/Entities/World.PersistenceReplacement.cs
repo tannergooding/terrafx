@@ -77,7 +77,7 @@ public sealed partial class World
                 lock (_ownerControlGate)
                 {
                     if (Volatile.Read(ref _disposed) != 0
-                        || !preparation.IsBoundTo(_registry, _worldGuidGrant))
+                        || !preparation.IsBoundTo(_registry, _lifetimeControl.WorldGuidGrant))
                     {
                         bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
                         admissionRefusal = WorldAdmissionRefusal.None;
@@ -117,7 +117,7 @@ public sealed partial class World
                 lock (_ownerControlGate)
                 {
                     if (Volatile.Read(ref _disposed) != 0
-                        || !preparation.IsBoundTo(_registry, _worldGuidGrant))
+                        || !preparation.IsBoundTo(_registry, _lifetimeControl.WorldGuidGrant))
                     {
                         bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
                         return false;
@@ -132,7 +132,6 @@ public sealed partial class World
                         || !replacementWorld._isRestoreHierarchyInstalled
                         || !replacementWorld._isRestoreClockStateRestored
                         || (replacementWorld._committedPublication is not null)
-                        || (replacementWorld._defaultDomainOwner is not null)
                         || (restoredPublication.WorldGuid != replacementWorld._worldGuid)
                         || (restoredPublication.WorldOwnerId != replacementWorld._ownerId)
                         || (restoredPublication.ExecutionSessionId != replacementWorld._executionSessionId)
@@ -145,17 +144,11 @@ public sealed partial class World
                         throw new InvalidOperationException("The candidate, marker, or admission-domain handoff is not ready for replacement.");
                     }
 
-                    var currentDefaultDomainOwner = _defaultDomainOwner;
-
-                    if ((currentDefaultDomainOwner is null) != (defaultDomainHandoff is null)
-                        || (currentDefaultDomainOwner is not null
-                            && !defaultDomainHandoff!.IsBoundTo(
-                                currentDefaultDomainOwner,
-                                _admissionDomain,
-                                _worldGuidGrant,
-                                replacementWorld._worldGuidGrant)))
+                    if (!_lifetimeControl.IsReadyToReplaceWith(
+                            replacementWorld._lifetimeControl,
+                            defaultDomainHandoff))
                     {
-                        throw new InvalidOperationException("The default-domain handoff does not match the exact target and replacement bindings.");
+                        throw new InvalidOperationException("The World lifetime handoff does not match the exact target and replacement bindings.");
                     }
 
                     if (!preparation.TryCommitWithCredits(
@@ -167,15 +160,9 @@ public sealed partial class World
                         return false;
                     }
 
-                    if (currentDefaultDomainOwner is not null)
-                    {
-                        replacementWorld._defaultDomainOwner = defaultDomainHandoff!.Consume(
-                            currentDefaultDomainOwner,
-                            _admissionDomain,
-                            _worldGuidGrant,
-                            replacementWorld._worldGuidGrant);
-                        _defaultDomainOwner = null;
-                    }
+                    _lifetimeControl.TransferToReplacement(
+                        replacementWorld._lifetimeControl,
+                        defaultDomainHandoff);
 
                     replacementWorld._committedMutationRevision =
                         Volatile.Read(ref replacementWorld._canonicalMutationRevision);

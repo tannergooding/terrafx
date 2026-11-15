@@ -411,7 +411,7 @@ public sealed partial class World
                         return false;
                     }
 
-                    return _registry.TryPrepareReplacement(_worldGuidGrant, out preparation, out refusal);
+                    return _registry.TryPrepareReplacement(_lifetimeControl.WorldGuidGrant, out preparation, out refusal);
                 }
             }
         }
@@ -453,7 +453,7 @@ public sealed partial class World
                     }
 
                     if (!_registry.TryReserveReplacement(
-                            _worldGuidGrant,
+                            _lifetimeControl.WorldGuidGrant,
                             replacementWorldGuid,
                             out var replacementGrant,
                             out bindingRefusal))
@@ -492,7 +492,7 @@ public sealed partial class World
                     }
 
                     WorldDomainOperationCredit? handoffCredit = null;
-                    var defaultDomainOwner = _defaultDomainOwner;
+                    var defaultDomainOwner = _lifetimeControl.DefaultDomainOwner;
                     WorldDefaultDomainHandoff? handoff = null;
 
                     try
@@ -569,7 +569,7 @@ public sealed partial class World
                         {
                             handoff = new WorldDefaultDomainHandoff(
                                 defaultDomainOwner,
-                                _worldGuidGrant,
+                                _lifetimeControl.WorldGuidGrant,
                                 replacementGrant,
                                 handoffCredit
                                     ?? throw new InvalidOperationException("The default-domain handoff omitted its credit."));
@@ -578,7 +578,7 @@ public sealed partial class World
 
                         preparation = new WorldGuidReplacementPreparation(
                             _registry,
-                            _worldGuidGrant,
+                            _lifetimeControl.WorldGuidGrant,
                             replacementGrant,
                             credits,
                             handoff);
@@ -696,7 +696,7 @@ public sealed partial class World
         bindingRefusal = default;
         admissionRefusal = WorldAdmissionRefusal.None;
 
-        if (!replacementPreparation.IsBoundTo(_registry, _worldGuidGrant))
+        if (!replacementPreparation.IsBoundTo(_registry, _lifetimeControl.WorldGuidGrant))
         {
             bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
             return false;
@@ -793,6 +793,12 @@ public sealed partial class World
                 restoreIdentityState.WorldGuid,
                 _executionSessionId);
             quarantineReservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(options.Registration.Systems.Length);
+            var lifetimeControl = new WorldLifetimeControl(
+                _registry,
+                _admissionDomain,
+                replacementGrant,
+                defaultDomainOwner: null,
+                isReplacementCandidate: true);
 
             if (!replacementPreparation.IsTargetCurrent())
             {
@@ -807,7 +813,7 @@ public sealed partial class World
                 restoreIdentityState.ActiveBranchId,
                 _executionSessionId,
                 _admissionDomain,
-                defaultDomainOwner: null,
+                lifetimeControl,
                 ownsWorkerPool: false,
                 domainReservation,
                 lineageGrant,

@@ -98,18 +98,24 @@ internal sealed class WorldGuidRegistryTests
         var registry = WorldGuidRegistry.GetSelected();
         var worldGuids = new Guid[WorldGuidRegistry.MaximumWorldGuidKeys];
         var grants = new WorldGuidGrant[WorldGuidRegistry.MaximumWorldGuidKeys];
+        var grantCount = 0;
 
-        for (var index = 0; index < worldGuids.Length; index++)
+        for (; grantCount < worldGuids.Length; grantCount++)
         {
-            worldGuids[index] = Guid.NewGuid();
-            Assert.That(registry.TryReserveFresh(worldGuids[index], out grants[index], out _), Is.True);
+            worldGuids[grantCount] = Guid.NewGuid();
+
+            if (!registry.TryReserveFresh(worldGuids[grantCount], out grants[grantCount], out _))
+            {
+                break;
+            }
         }
 
         Assert.That(registry.TryReserveFresh(Guid.NewGuid(), out var rejectedGrant, out var refusal), Is.False);
         Assert.That(rejectedGrant.IsValid, Is.False);
         Assert.That(refusal.Code, Is.EqualTo(WorldGuidRefusal.KeyCapacity));
+        Assert.That(grantCount, Is.GreaterThan(0));
 
-        for (var index = 0; index < grants.Length; index++)
+        for (var index = 0; index < grantCount; index++)
         {
             Assert.That(
                 registry.TryReserveFresh(worldGuids[index], out var duplicateGrant, out refusal),

@@ -298,7 +298,7 @@ internal sealed class WorldGuidRegistry
         using var scope = ReentrantGate.EnterScope(ref _admissionGate);
 
         if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
-            || !IsBindingCellValid(grant.BindingCellIndex, grant.BindingGeneration)
+            || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration)
             || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
         {
             return false;
@@ -895,6 +895,51 @@ internal sealed class WorldGuidRegistry
         out WorldGuidGrant replacement,
         out WorldGuidRefusal refusal)
         => TryReserveReplacement(current, current.WorldGuid, out replacement, out refusal);
+
+    internal bool TryRetire(WorldGuidRetirementPermit permit)
+    {
+        ArgumentNullException.ThrowIfNull(permit);
+        return permit.TryConsume(this, out var grant)
+            && TryReleaseFresh(grant);
+    }
+
+    internal bool TryRevokeForRetirement(in WorldGuidGrant grant)
+    {
+        if (!grant.IsOwnedBy(this))
+        {
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+        if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+            || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration)
+            || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
+        {
+            return false;
+        }
+
+        ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+        ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+        ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
+
+        if ((keyCell._worldGuid != grant.WorldGuid)
+            || (bindingCell._state is not (CellStateActive or CellStateRevoked))
+            || (bindingCell._keyCellIndex != grant.KeyCellIndex)
+            || (bindingCell._keyGeneration != grant.KeyGeneration)
+            || (ownerUseCell._state != CellStateReserved)
+            || (ownerUseCell._role != UseRoleOwner)
+            || (ownerUseCell._keyCellIndex != grant.KeyCellIndex)
+            || (ownerUseCell._keyGeneration != grant.KeyGeneration)
+            || (ownerUseCell._bindingCellIndex != grant.BindingCellIndex)
+            || (ownerUseCell._bindingGeneration != grant.BindingGeneration))
+        {
+            return false;
+        }
+
+        bindingCell._state = CellStateRevoked;
+        return true;
+    }
 
     private void AbandonSlabGrant(in WorldGuidSlabGrant grant)
     {
