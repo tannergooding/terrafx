@@ -1060,6 +1060,7 @@ public sealed class WorldPersistence : IAsyncDisposable
         WorldPersistenceUseLease? combinedUse = null;
         byte[]? fileRecord = null;
         WorldPersistenceCheckpointContents? checkpointContents = null;
+        var restoreValidationWorkspaceByteReservation = 0L;
         var sourceMismatch = (string?)null;
 
         try
@@ -1273,6 +1274,7 @@ public sealed class WorldPersistence : IAsyncDisposable
                     var retainedUse = validationReservation.AcquireRetainedUse(
                         targetWorld,
                         requirements.RetainedContentsBytes);
+                    restoreValidationWorkspaceByteReservation = requirements.TotalWorkspaceBytes;
                     return new WorldPersistenceRecoveryReader.CandidateValidation(validatedContents!, retainedUse);
                 }
             }
@@ -1360,6 +1362,9 @@ public sealed class WorldPersistence : IAsyncDisposable
                 return CreateLoadRejected("load-state-not-supported", exception.Message, targetWorldGuid);
             }
 
+            var restoreSceneHierarchyWorkspaceByteReservation =
+                ScenePersistenceRestorer.MeasureHierarchyRestoreWorkspaceBytes(
+                    checkpointContents.WorldContents.Scenes.HierarchyNodeCount);
             long targetBytes;
 
             try
@@ -1373,13 +1378,16 @@ public sealed class WorldPersistence : IAsyncDisposable
                     restoreEcsPlan,
                     checkpointContents.WorldContents.ControlRecordCount,
                     checkpointContents.WorldContents.SceneControlPayloadBytes,
-                    checkpointContents.WorldContents.Ecs.AttachmentCount);
+                    checkpointContents.WorldContents.Ecs.AttachmentCount,
+                    restoreSceneHierarchyWorkspaceByteReservation);
             }
             catch (InvalidOperationException exception)
             {
                 return CreateLoadRejected("load-target-budget-rejected", exception.Message, targetWorldGuid);
             }
 
+            restoreValidationWorkspaceByteReservation = checked(
+                restoreValidationWorkspaceByteReservation + targetBytes);
             var sourceBytes = Math.Max(1L, checked((long)fileRecord.Length + readWorkspaceBytes));
             var remapBytes = WorldIdentityRemapHelpers.MeasureRetainedBytes(
                 checkpointContents.WorldContents.Ecs.LiveEntityCount,
@@ -1425,7 +1433,9 @@ public sealed class WorldPersistence : IAsyncDisposable
                     restoreEcsPlan,
                     checkpointContents.WorldContents.ControlRecordCount,
                     checkpointContents.WorldContents.SceneControlPayloadBytes,
-                    checkpointContents.WorldContents.Ecs.AttachmentCount)
+                    checkpointContents.WorldContents.Ecs.AttachmentCount,
+                    restoreSceneHierarchyWorkspaceByteReservation,
+                    restoreValidationWorkspaceByteReservation)
                 || (constructionPlan is null))
             {
                 var message = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)

@@ -112,6 +112,9 @@ public sealed partial class World : IDisposable
     private readonly long _restoreEcsArchetypeMetadataByteReservation;
     private WorldRestoreEcsPlan? _restoreEcsPlan;
     private readonly long _restoreEcsStorageByteReservation;
+    private long _restoreSceneHierarchyWorkspaceByteReservation;
+    private long _restoreValidationWorkspaceByteReservation;
+    private readonly long _restoreValidationWorkspaceCapacity;
     private readonly long _restoreWorkPlanByteReservation;
     private readonly int _restoreWorkPlanCapacity;
     private long _sceneControlPayloadByteReservation;
@@ -211,6 +214,10 @@ public sealed partial class World : IDisposable
             : new WorldControlRecord[constructionPlan.RestoreControlRecordCount];
         _controlStorageByteReservation = constructionPlan.RestoreControlStorageByteReservation;
         _sceneControlPayloadByteReservation = constructionPlan.RestoreSceneControlPayloadByteReservation;
+        _restoreSceneHierarchyWorkspaceByteReservation = constructionPlan.RestoreSceneHierarchyWorkspaceByteReservation;
+        _scenePlanStorageByteReservation = _restoreSceneHierarchyWorkspaceByteReservation;
+        _restoreValidationWorkspaceByteReservation = constructionPlan.RestoreValidationWorkspaceByteReservation;
+        _restoreValidationWorkspaceCapacity = _restoreValidationWorkspaceByteReservation;
 
         if (constructionPlan.RestoreAttachmentCount != 0)
         {
@@ -1848,6 +1855,37 @@ public sealed partial class World : IDisposable
 
         sibling = CreateEntityHandle(siblingIndex, siblingGeneration);
         return true;
+    }
+
+    internal WorldSceneStorageReservation? TryReserveRestoredSceneStorage(
+        IWorldSceneParticipant participant,
+        long bytes)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        if (!_isRestoreCandidate || (bytes > _restoreSceneHierarchyWorkspaceByteReservation))
+        {
+            return TryReserveSceneStorage(participant, bytes);
+        }
+
+        lock (_sceneStorageGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return null;
+            }
+
+            if (!ReferenceEquals(_sceneParticipant, participant))
+            {
+                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
+            }
+
+            var reservation = new WorldSceneStorageReservation(this, bytes);
+            _restoreSceneHierarchyWorkspaceByteReservation =
+                checked(_restoreSceneHierarchyWorkspaceByteReservation - bytes);
+            return reservation;
+        }
     }
 
     internal WorldSceneStorageReservation? TryReserveSceneStorage(

@@ -568,7 +568,9 @@ internal ref struct WorldPersistenceCaptureLease
         out WorldPersistenceAdmissionReservation? reservation)
     {
         ValidateCurrent();
-        return _world.TryReservePersistenceAdmissionBytes(bytes, maximumAdditionalBytes, out reservation);
+        return IsRestoreValidation
+            ? _world.TryReserveRestoreValidationAdmissionBytes(bytes, maximumAdditionalBytes, out reservation)
+            : _world.TryReservePersistenceAdmissionBytes(bytes, maximumAdditionalBytes, out reservation);
     }
 
     internal readonly bool TryReserveAdmissionBytes(
@@ -576,7 +578,9 @@ internal ref struct WorldPersistenceCaptureLease
         out WorldPersistenceAdmissionReservation? reservation)
     {
         ValidateCurrent();
-        return _world.TryReservePersistenceAdmissionBytes(bytes, out reservation);
+        return IsRestoreValidation
+            ? _world.TryReserveRestoreValidationAdmissionBytes(bytes, maximumAdditionalBytes: 0, out reservation)
+            : _world.TryReservePersistenceAdmissionBytes(bytes, out reservation);
     }
 
     internal readonly void ValidateCurrent()

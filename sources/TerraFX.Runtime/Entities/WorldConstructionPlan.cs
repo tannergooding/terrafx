@@ -30,6 +30,8 @@ internal sealed class WorldConstructionPlan
     private readonly WorldRestoreIdentityState? _restoreIdentityState;
     private int _restoreResourcesState;
     private readonly long _restoreSceneControlPayloadByteReservation;
+    private readonly long _restoreSceneHierarchyWorkspaceByteReservation;
+    private readonly long _restoreValidationWorkspaceByteReservation;
     private readonly long _restoreWorkPlanByteReservation;
     private readonly int _restoreWorkPlanCapacity;
     private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
@@ -68,6 +70,8 @@ internal sealed class WorldConstructionPlan
         long restoreSceneControlPayloadByteReservation = 0,
         int restoreAttachmentCount = 0,
         long restoreAttachmentStorageByteReservation = 0,
+        long restoreSceneHierarchyWorkspaceByteReservation = 0,
+        long restoreValidationWorkspaceByteReservation = 0,
         World? targetWorld = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
@@ -75,6 +79,8 @@ internal sealed class WorldConstructionPlan
         ArgumentOutOfRangeException.ThrowIfNegative(restoreControlRecordCount);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreControlStorageByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadByteReservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneHierarchyWorkspaceByteReservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreValidationWorkspaceByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsArchetypeMetadataByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsStorageByteReservation);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreWorkPlanCapacity);
@@ -91,6 +97,8 @@ internal sealed class WorldConstructionPlan
                 || (restoreControlRecordCount != 0)
                 || (restoreControlStorageByteReservation != 0)
                 || (restoreSceneControlPayloadByteReservation != 0)
+                || (restoreSceneHierarchyWorkspaceByteReservation != 0)
+                || (restoreValidationWorkspaceByteReservation != 0)
                 || (restoreAttachmentCount != 0)
                 || (restoreAttachmentStorageByteReservation != 0)
                 || (targetWorld is not null)))
@@ -134,6 +142,8 @@ internal sealed class WorldConstructionPlan
         _restoreControlRecordCount = restoreControlRecordCount;
         _restoreControlStorageByteReservation = restoreControlStorageByteReservation;
         _restoreSceneControlPayloadByteReservation = restoreSceneControlPayloadByteReservation;
+        _restoreSceneHierarchyWorkspaceByteReservation = restoreSceneHierarchyWorkspaceByteReservation;
+        _restoreValidationWorkspaceByteReservation = restoreValidationWorkspaceByteReservation;
         _preparedReplacement = (restoreIdentityState is null)
             ? null
             : new WorldPreparedReplacement(
@@ -193,6 +203,10 @@ internal sealed class WorldConstructionPlan
     internal WorldRestoreIdentityState? RestoreIdentityState => _restoreIdentityState;
 
     internal long RestoreSceneControlPayloadByteReservation => _restoreSceneControlPayloadByteReservation;
+
+    internal long RestoreSceneHierarchyWorkspaceByteReservation => _restoreSceneHierarchyWorkspaceByteReservation;
+
+    internal long RestoreValidationWorkspaceByteReservation => _restoreValidationWorkspaceByteReservation;
 
     internal long RestoreWorkPlanByteReservation => _restoreWorkPlanByteReservation;
 

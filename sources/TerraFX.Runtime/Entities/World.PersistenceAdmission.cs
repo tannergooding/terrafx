@@ -20,6 +20,7 @@ public sealed partial class World
         long restoreComponentWorkspaceBytes,
         long restoreControlStorageBytes,
         long restoreSceneControlPayloadBytes,
+        long restoreSceneHierarchyWorkspaceBytes,
         long restoreAttachmentStorageBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsArchetypeMetadataBytes);
@@ -28,6 +29,7 @@ public sealed partial class World
         ArgumentOutOfRangeException.ThrowIfNegative(restoreComponentWorkspaceBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreControlStorageBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneHierarchyWorkspaceBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentStorageBytes);
         var archetypeDirectoryBytes = checked(2 * ArrayBytes(options.MaximumArchetypes, IntPtr.Size));
         var resourceBytes = 0L;
@@ -68,6 +70,7 @@ public sealed partial class World
             + restoreComponentWorkspaceBytes
             + restoreControlStorageBytes
             + restoreSceneControlPayloadBytes
+            + restoreSceneHierarchyWorkspaceBytes
             + restoreAttachmentStorageBytes);
 
         if (worldOwnedBytes > options.SchedulingLimits.MaximumOwnedStateBytes)
@@ -262,7 +265,8 @@ public sealed partial class World
         WorldRestoreEcsPlan? restoreEcsPlan = null,
         int restoreControlRecordCount = 0,
         long restoreSceneControlPayloadBytes = 0,
-        int restoreAttachmentCount = 0)
+        int restoreAttachmentCount = 0,
+        long restoreSceneHierarchyWorkspaceByteReservation = 0)
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -270,6 +274,7 @@ public sealed partial class World
         ArgumentOutOfRangeException.ThrowIfGreaterThan(restoreControlRecordCount, configuration.MaximumRecordedControls);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneHierarchyWorkspaceByteReservation);
         restoreEcsPlan ??= WorldRestoreEcsPlan.CreateEmpty(restoreIdentityState.EntitySlots.LiveEntityCount);
         var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, initialTimeScale, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
@@ -285,6 +290,7 @@ public sealed partial class World
             componentWorkspaceBytes,
             GetRestoreControlStorageByteReservation(restoreControlRecordCount),
             restoreSceneControlPayloadBytes,
+            restoreSceneHierarchyWorkspaceByteReservation,
             GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount));
     }
 
@@ -300,6 +306,45 @@ public sealed partial class World
             }
 
             _activePersistenceAdmissionBytes -= bytes;
+        }
+    }
+
+    internal void ReleaseRestoreValidationAdmissionBytes(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        lock (_persistenceAdmissionGate)
+        {
+            if ((bytes > _activePersistenceAdmissionBytes)
+                || (bytes > (_restoreValidationWorkspaceCapacity - _restoreValidationWorkspaceByteReservation)))
+            {
+                throw new InvalidOperationException("The restore-validation workspace has no matching active reservation.");
+            }
+
+            _activePersistenceAdmissionBytes -= bytes;
+            _restoreValidationWorkspaceByteReservation = checked(_restoreValidationWorkspaceByteReservation + bytes);
+        }
+    }
+
+    internal void ReleaseUnusedRestoreValidationWorkspace()
+    {
+        EnsureOwnerThread();
+        long unusedBytes;
+
+        lock (_persistenceAdmissionGate)
+        {
+            if (!_isRestoreCandidate || (_activePersistenceAdmissionBytes != 0))
+            {
+                throw new InvalidOperationException("The restore-validation workspace cannot be released while its capture reservations remain active.");
+            }
+
+            unusedBytes = _restoreValidationWorkspaceByteReservation;
+            _restoreValidationWorkspaceByteReservation = 0;
+        }
+
+        if (unusedBytes > 0)
+        {
+            _domainReservation.ReleaseAdditional(unusedBytes);
         }
     }
 
@@ -327,6 +372,26 @@ public sealed partial class World
 
         ReleasePersistenceAdmissionBytes(bytes);
         return false;
+    }
+
+    internal bool TryGrowRestoreValidationAdmissionBytes(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        lock (_persistenceAdmissionGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0
+                || !_isRestoreCandidate
+                || (bytes > _restoreValidationWorkspaceByteReservation)
+                || (bytes > _maximumPersistenceAdmissionBytes - _activePersistenceAdmissionBytes))
+            {
+                return false;
+            }
+
+            _restoreValidationWorkspaceByteReservation -= bytes;
+            _activePersistenceAdmissionBytes = checked(_activePersistenceAdmissionBytes + bytes);
+            return true;
+        }
     }
 
     internal bool TryPrepareGuidReplacement(
@@ -506,7 +571,9 @@ public sealed partial class World
         WorldRestoreEcsPlan? restoreEcsPlan = null,
         int restoreControlRecordCount = 0,
         long restoreSceneControlPayloadBytes = 0,
-        int restoreAttachmentCount = 0)
+        int restoreAttachmentCount = 0,
+        long restoreSceneHierarchyWorkspaceByteReservation = 0,
+        long restoreValidationWorkspaceByteReservation = 0)
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -525,6 +592,8 @@ public sealed partial class World
         ArgumentOutOfRangeException.ThrowIfGreaterThan(restoreControlRecordCount, configuration.MaximumRecordedControls);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneControlPayloadBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreSceneHierarchyWorkspaceByteReservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreValidationWorkspaceByteReservation);
         constructionPlan = null;
         bindingRefusal = default;
         admissionRefusal = WorldAdmissionRefusal.None;
@@ -556,6 +625,7 @@ public sealed partial class World
             restoreComponentWorkspaceBytes,
             GetRestoreControlStorageByteReservation(restoreControlRecordCount),
             restoreSceneControlPayloadBytes,
+            restoreSceneHierarchyWorkspaceByteReservation,
             GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount));
         WorldDomainReservation? domainReservation = null;
         WorldSystemQuarantineReservation? quarantineReservation = null;
@@ -597,6 +667,13 @@ public sealed partial class World
         {
             if (!_admissionDomain.TryReserveWorld(worldOwnedBytes, out domainReservation)
                 || (domainReservation is null))
+            {
+                admissionRefusal = WorldAdmissionRefusal.OperationCapacity;
+                return false;
+            }
+
+            if ((restoreValidationWorkspaceByteReservation != 0)
+                && !domainReservation.TryReserveAdditional(restoreValidationWorkspaceByteReservation))
             {
                 admissionRefusal = WorldAdmissionRefusal.OperationCapacity;
                 return false;
@@ -655,6 +732,8 @@ public sealed partial class World
                 restoreSceneControlPayloadBytes,
                 restoreAttachmentCount,
                 GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount),
+                restoreSceneHierarchyWorkspaceByteReservation,
+                restoreValidationWorkspaceByteReservation,
                 targetWorld: this);
             domainReservation = null;
             planCreated = true;
@@ -756,4 +835,36 @@ public sealed partial class World
 
     internal bool TryReservePersistenceAdmissionBytes(long bytes, out WorldPersistenceAdmissionReservation? reservation)
         => TryReservePersistenceAdmissionBytes(bytes, maximumAdditionalBytes: 0, out reservation);
+
+    internal bool TryReserveRestoreValidationAdmissionBytes(
+        long bytes,
+        long maximumAdditionalBytes,
+        out WorldPersistenceAdmissionReservation? reservation)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumAdditionalBytes);
+        reservation = null;
+
+        lock (_persistenceAdmissionGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0
+                || !_isRestoreCandidate
+                || !_isPersistenceCaptureLeaseActive
+                || (bytes > _restoreValidationWorkspaceByteReservation)
+                || (bytes > _maximumPersistenceAdmissionBytes - _activePersistenceAdmissionBytes))
+            {
+                return false;
+            }
+
+            var admittedReservation = new WorldPersistenceAdmissionReservation(
+                this,
+                _domainReservation,
+                bytes,
+                usesRestoreValidationWorkspace: true);
+            _restoreValidationWorkspaceByteReservation -= bytes;
+            _activePersistenceAdmissionBytes = checked(_activePersistenceAdmissionBytes + bytes);
+            reservation = admittedReservation;
+            return true;
+        }
+    }
 }

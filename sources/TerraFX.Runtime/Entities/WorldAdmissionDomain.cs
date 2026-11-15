@@ -612,11 +612,21 @@ public sealed class WorldAdmissionDomain : IDisposable
             {
                 RemoveLineageIndexEntry(grant.LineageId);
             }
-            else
+
+            var retainedBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+            if (retainedBucketIndex < 0)
             {
-                ref var retainedBucket = ref _lineageIndex[lineageBucketIndex];
-                retainedBucket._reservedRootIndexPlusOne = 0;
-                retainedBucket._reservedGeneration = 0;
+                throw new InvalidOperationException("The released lineage reservation lost its retained index bucket.");
+            }
+
+            ref var retainedBucket = ref _lineageIndex[retainedBucketIndex];
+            retainedBucket._reservedRootIndexPlusOne = 0;
+            retainedBucket._reservedGeneration = 0;
+
+            if (retainedBucket._edgeCount == 0)
+            {
+                RemoveLineageIndexEntryBucket(retainedBucketIndex);
             }
 
             var membershipBytes = entry.MembershipBytes;
@@ -1423,11 +1433,21 @@ public sealed class WorldAdmissionDomain : IDisposable
                 {
                     RemoveLineageIndexEntry(grant.LineageId);
                 }
-                else
+
+                var retainedBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+                if (retainedBucketIndex < 0)
                 {
-                    ref var retainedBucket = ref _lineageIndex[reservedBucketIndex];
-                    retainedBucket._reservedRootIndexPlusOne = 0;
-                    retainedBucket._reservedGeneration = 0;
+                    throw new InvalidOperationException("The rolled-back lineage reservation lost its retained index bucket.");
+                }
+
+                ref var retainedBucket = ref _lineageIndex[retainedBucketIndex];
+                retainedBucket._reservedRootIndexPlusOne = 0;
+                retainedBucket._reservedGeneration = 0;
+
+                if (retainedBucket._edgeCount == 0)
+                {
+                    RemoveLineageIndexEntryBucket(retainedBucketIndex);
                 }
             }
             else if (entry.MembershipKeys is { } membershipKeys)
@@ -1825,6 +1845,32 @@ public sealed class WorldAdmissionDomain : IDisposable
         {
             target._edgeCount--;
             return;
+        }
+
+        if (target._reservedRootIndexPlusOne != 0)
+        {
+            target._edgeCount = 0;
+            return;
+        }
+
+        target._edgeCount = 0;
+        RemoveLineageIndexEntryBucket(bucketIndex);
+    }
+
+    private void RemoveLineageIndexEntryBucket(int bucketIndex)
+    {
+        if ((uint)bucketIndex >= (uint)_lineageIndex.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bucketIndex));
+        }
+
+        ref var target = ref _lineageIndex[bucketIndex];
+
+        if ((target._hashCode == 0)
+            || (target._edgeCount != 0)
+            || (target._reservedRootIndexPlusOne != 0))
+        {
+            throw new InvalidOperationException("The domain lineage bucket still has committed edges or a reservation.");
         }
 
         var hole = bucketIndex;

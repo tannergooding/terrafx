@@ -29,6 +29,14 @@ internal static class ScenePersistenceRestorer
     private static readonly Guid s_sceneInstanceSchemaId = new ContentSchemaIdentityAssignment("state/scene-instance").SchemaId;
     private static readonly Guid s_scenesSchemaId = new ContentSchemaIdentityAssignment("state/scenes").SchemaId;
 
+    internal static long MeasureHierarchyRestoreWorkspaceBytes(int nodeCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(nodeCount);
+        return (nodeCount == 0)
+            ? 0
+            : checked(128L + (2 * ArrayBytes(nodeCount, Unsafe.SizeOf<Entity>())));
+    }
+
     internal static async Task<PreparedRestore> PrepareAsync(
         World world,
         AssetStore assets,
@@ -486,8 +494,8 @@ internal static class ScenePersistenceRestorer
 
         var participant = registry
             ?? throw new InvalidOperationException("The candidate World lacks the Scene registry required by its hierarchy.");
-        var workspaceBytes = checked(128L + (2 * ArrayBytes(nodeCount, Unsafe.SizeOf<Entity>())));
-        using var reservation = world.TryReserveSceneStorage(participant, workspaceBytes)
+        var workspaceBytes = MeasureHierarchyRestoreWorkspaceBytes(nodeCount);
+        using var reservation = world.TryReserveRestoredSceneStorage(participant, workspaceBytes)
             ?? throw new InvalidOperationException("The candidate World cannot admit its hierarchy restoration workspace.");
         var entities = new Entity[nodeCount];
         var parents = new Entity[nodeCount];

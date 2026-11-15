@@ -248,6 +248,8 @@ internal sealed class WorldLoadPreparedState : IDisposable
             ConstructionPlan,
             Checkpoint.CheckpointDigest.Span,
             Checkpoint.NextTick);
+        retainedCaptureReservation.Dispose();
+        candidate.ReleaseUnusedRestoreValidationWorkspace();
         return targetIdentityHistory;
     }
 }

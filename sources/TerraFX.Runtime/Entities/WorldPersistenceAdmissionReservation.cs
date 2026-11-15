@@ -15,18 +15,29 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
     private readonly WorldDomainReservation _domainReservation;
     private bool _isChargeReleased;
     private bool _isDisposed;
+    private readonly bool _usesRestoreValidationWorkspace;
     private readonly World _world;
 
     internal WorldPersistenceAdmissionReservation(
         World world,
         WorldDomainReservation domainReservation,
         long bytes)
+        : this(world, domainReservation, bytes, usesRestoreValidationWorkspace: false)
+    {
+    }
+
+    internal WorldPersistenceAdmissionReservation(
+        World world,
+        WorldDomainReservation domainReservation,
+        long bytes,
+        bool usesRestoreValidationWorkspace)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(domainReservation);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
         _bytes = bytes;
         _domainReservation = domainReservation;
+        _usesRestoreValidationWorkspace = usesRestoreValidationWorkspace;
         _world = world;
     }
 
@@ -123,8 +134,17 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(bytes, _bytes - _activeWorkspaceBytes);
-            _domainReservation.ReleaseAdditional(bytes);
-            _world.ReleasePersistenceAdmissionBytes(bytes);
+
+            if (_usesRestoreValidationWorkspace)
+            {
+                _world.ReleaseRestoreValidationAdmissionBytes(bytes);
+            }
+            else
+            {
+                _domainReservation.ReleaseAdditional(bytes);
+                _world.ReleasePersistenceAdmissionBytes(bytes);
+            }
+
             _bytes -= bytes;
         }
     }
@@ -138,7 +158,11 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             var expandedBytes = checked(_bytes + bytes);
 
-            if (!_world.TryGrowPersistenceAdmissionBytes(_domainReservation, bytes))
+            var admitted = _usesRestoreValidationWorkspace
+                ? _world.TryGrowRestoreValidationAdmissionBytes(bytes)
+                : _world.TryGrowPersistenceAdmissionBytes(_domainReservation, bytes);
+
+            if (!admitted)
             {
                 return false;
             }
@@ -583,8 +607,16 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             return;
         }
 
-        _domainReservation.Dispose();
-        _world.ReleasePersistenceAdmissionBytes(_bytes);
+        if (_usesRestoreValidationWorkspace)
+        {
+            _world.ReleaseRestoreValidationAdmissionBytes(_bytes);
+        }
+        else
+        {
+            _domainReservation.Dispose();
+            _world.ReleasePersistenceAdmissionBytes(_bytes);
+        }
+
         _isChargeReleased = true;
     }
 
