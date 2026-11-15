@@ -39,10 +39,9 @@ internal static class WorldPersistenceEcsReader
         if ((contents.LiveEntityCount != contents.EntityCount)
             || (contents.LiveSceneInstanceCount != 0)
             || (contents.SystemCount != 0)
-            || (contents.ResourceCount != 0)
             || (contents.AttachmentCount != 0))
         {
-            throw new NotSupportedException("The candidate restore slice does not support Scene identities or system, resource, or attachment state.");
+            throw new NotSupportedException("The candidate restore slice does not support Scene identities, systems, or attachments.");
         }
 
         var record = new EbinRecordReadView(ecsRecord.Span);
@@ -294,6 +293,11 @@ internal static class WorldPersistenceEcsReader
             validatedLineageMembership,
             validatedIdentityHistory);
     }
+
+    internal static ContentSchemaReference ReadSchemaReferenceForRestore(
+        EbinRecordReadView record,
+        string parameterName)
+        => ReadSchemaReference(record, parameterName);
 
     internal static ContentSchemaReference ReadTagSchemaReferenceForRestore(
         EbinRecordReadView record,

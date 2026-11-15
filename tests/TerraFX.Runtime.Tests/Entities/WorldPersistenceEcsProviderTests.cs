@@ -83,7 +83,10 @@ internal sealed class WorldPersistenceEcsProviderTests
         });
     }
 
-    private static World CreateResourceWorld(out Guid resourceId, out Guid stateSchemaId)
+    private static World CreateResourceWorld(
+        out Guid resourceId,
+        out Guid stateSchemaId,
+        out EcsResourceStateCodec codec)
     {
         var assignment = new ContentSchemaIdentityAssignment("application/resource-state/ecs-test/v1");
         var schemaReference = new ContentSchemaReference(
@@ -142,7 +145,7 @@ internal sealed class WorldPersistenceEcsProviderTests
             partitionStorage,
             [fieldBinding],
             new EcsResourceDefaults());
-        var codec = new EcsResourceStateCodec(factory, fieldDescriptor);
+        codec = new EcsResourceStateCodec(factory, fieldDescriptor);
         resourceId = Guid.Parse("20000000-0000-0000-0000-000000000002");
         stateSchemaId = schemaReference.SchemaId;
         var builder = new WorldRegistrationBuilder(registry);
@@ -263,7 +266,7 @@ internal sealed class WorldPersistenceEcsProviderTests
     [Test]
     public void CapturesResourceRegistrationInTheWorldRegistrationRoot()
     {
-        using var world = CreateResourceWorld(out _, out _);
+        using var world = CreateResourceWorld(out _, out _, out _);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         Assert.That(
@@ -295,6 +298,28 @@ internal sealed class WorldPersistenceEcsProviderTests
     }
 
     [Test]
+    public void RestoresResourceStateRecordIntoRegisteredPartitions()
+    {
+        using var world = CreateResourceWorld(out _, out _, out var codec);
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var ecsRecord = WorldPersistenceEcsTestHelper.CopyEcsRecord(world, in lease);
+        var resourceRecord = new EbinRecordReadView(ecsRecord).GetRecordArrayElement(3, 0);
+        var registration = world.Options.Registration.Resources[0];
+        var storage = registration.CreateStorage();
+        registration.InitializeAndValidate(storage);
+        ((ulong[])storage)[0] = 999;
+
+        registration.RestoreStateRecord(
+            resourceRecord.GetRecord(2).EncodedBytes,
+            storage,
+            CancellationToken.None);
+
+        Assert.That(codec.RestoreCallCount, Is.EqualTo(1));
+        Assert.That(((ulong[])storage)[0], Is.EqualTo(17));
+    }
+
+    [Test]
     public void WritesAttachmentPayloadAsACompleteNestedRecord()
     {
         using var world = CreateAttachmentWorld(out var attachmentSchemaId);
@@ -313,7 +338,7 @@ internal sealed class WorldPersistenceEcsProviderTests
     [Test]
     public void WritesResourcePayloadAsACompleteNestedRecord()
     {
-        using var world = CreateResourceWorld(out var resourceId, out var stateSchemaId);
+        using var world = CreateResourceWorld(out var resourceId, out var stateSchemaId, out _);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         var assertions = new EcsResourceAssertions(
@@ -629,6 +654,7 @@ internal sealed class WorldPersistenceEcsProviderTests
         private WorldResourceCodecBinding<ulong>? _binding;
         private readonly WorldResourceFactoryBinding<ulong, ImmutableArray<ulong>> _factory;
         private readonly WorldResourceFieldDescriptor _field;
+        private int _restoreCallCount;
 
         internal EcsResourceStateCodec(
             WorldResourceFactoryBinding<ulong, ImmutableArray<ulong>> factory,
@@ -640,6 +666,8 @@ internal sealed class WorldPersistenceEcsProviderTests
 
         public WorldResourceCodecBinding<ulong> Binding
             => _binding ??= WorldResourceCodecBinding<ulong>.Create(_factory, this);
+
+        internal int RestoreCallCount => Volatile.Read(ref _restoreCallCount);
 
         public nint Count(
             scoped WorldResourceStateView<ulong> value,
@@ -654,7 +682,25 @@ internal sealed class WorldPersistenceEcsProviderTests
             scoped ReadOnlySpan<byte> source,
             WorldResourceReadBinding<ImmutableArray<ulong>> binding,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var action = new ResourceReadAction(binding, _factory.Descriptor.Schema, _field.Path);
+            var status = EbinStructuralReader.Read(
+                source,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out var diagnostic);
+
+            if (status is not EbinReadStatus.Complete)
+            {
+                return binding.Reject(status, diagnostic);
+            }
+
+            return action.Result
+                ?? throw new InvalidOperationException("The complete resource read did not issue its author value.");
+        }
 
         public void Restore(
             in ImmutableArray<ulong> author,
@@ -662,6 +708,7 @@ internal sealed class WorldPersistenceEcsProviderTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            _ = Interlocked.Increment(ref _restoreCallCount);
 
             for (var index = 0; index < author.Length; index++)
             {
@@ -779,6 +826,71 @@ internal sealed class WorldPersistenceEcsProviderTests
             return (status is EbinWriteStatus.Complete)
                 ? recordBytes
                 : throw new InvalidOperationException(diagnostic?.Category);
+        }
+
+        private struct ResourceReadAction : IAction<EbinRecordReadView>
+        {
+            private readonly WorldResourceReadBinding<ImmutableArray<ulong>> _binding;
+            private readonly ComponentFieldPath _fieldPath;
+            private readonly ContentSchemaReference _schema;
+            private WorldResourceReadResult<ImmutableArray<ulong>>? _result;
+
+            internal ResourceReadAction(
+                WorldResourceReadBinding<ImmutableArray<ulong>> binding,
+                ContentSchemaReference schema,
+                ComponentFieldPath fieldPath)
+            {
+                _binding = binding;
+                _schema = schema;
+                _fieldPath = fieldPath;
+                _result = null;
+            }
+
+            internal readonly WorldResourceReadResult<ImmutableArray<ulong>>? Result => _result;
+
+            public void Invoke(scoped EbinRecordReadView record)
+            {
+                var header = record.Header;
+
+                if ((header.SchemaId != _schema.SchemaId)
+                    || (header.Major != _schema.Major)
+                    || (header.Minor != _schema.Minor))
+                {
+                    _result = _binding.Reject(
+                        WorldResourceReadFailureKind.SchemaMismatch,
+                        16,
+                        null,
+                        "The resource record does not match the selected schema tuple.");
+                    return;
+                }
+
+                if ((record.FieldCount != 1)
+                    || !record.TryGetField(1, out var field)
+                    || (field.Kind != 23)
+                    || !field.IsRequired
+                    || (field.Count != (ulong)_binding.PartitionCount)
+                    || (field.Payload.Length != checked(32 + (_binding.PartitionCount * sizeof(ulong))))
+                    || (BinaryPrimitives.ReadUInt16LittleEndian(field.Payload[16..]) != 4)
+                    || (BinaryPrimitives.ReadUInt32LittleEndian(field.Payload[20..]) != sizeof(ulong)))
+                {
+                    _result = _binding.Reject(
+                        WorldResourceReadFailureKind.InvalidField,
+                        64,
+                        _fieldPath,
+                        "The resource record does not match its registered partition array.");
+                    return;
+                }
+
+                var values = ImmutableArray.CreateBuilder<ulong>(_binding.PartitionCount);
+
+                for (var index = 0; index < _binding.PartitionCount; index++)
+                {
+                    values.Add(BinaryPrimitives.ReadUInt64LittleEndian(field.Payload[(32 + (index * sizeof(ulong)))..]));
+                }
+
+                var author = values.MoveToImmutable();
+                _result = _binding.Complete(in author, record.EncodedBytes.Length);
+            }
         }
     }
 

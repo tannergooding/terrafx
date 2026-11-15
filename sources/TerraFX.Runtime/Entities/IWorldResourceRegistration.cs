@@ -29,6 +29,11 @@ internal interface IWorldResourceRegistration
 
     void InitializeAndValidate(object storage);
 
+    void RestoreStateRecord(
+        scoped ReadOnlySpan<byte> source,
+        object storage,
+        CancellationToken cancellationToken);
+
     void ValidateForExecution(object storage);
 
     nint WriteStateRecord(object storage, scoped Span<byte> destination, CancellationToken cancellationToken);

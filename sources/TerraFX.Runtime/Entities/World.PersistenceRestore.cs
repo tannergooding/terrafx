@@ -185,10 +185,9 @@ public sealed partial class World
 
         if ((contents.LiveSceneInstanceCount != 0)
             || (contents.SystemCount != 0)
-            || (contents.ResourceCount != 0)
             || (contents.AttachmentCount != 0))
         {
-            throw new NotSupportedException("This candidate restore slice does not support Scene identities or system, resource, or attachment state.");
+            throw new NotSupportedException("This candidate restore slice does not support Scene identities, systems, or attachments.");
         }
 
         if (contents.EntityCount > _maximumLiveEntities)
@@ -243,14 +242,20 @@ public sealed partial class World
         for (var fieldIndex = 1; fieldIndex < 4; fieldIndex++)
         {
             var field = root.GetField(fieldIndex);
+            var expectedCount = (fieldIndex == 2) ? contents.ResourceCount : 0;
 
             if ((field.Tag != (uint)fieldIndex + 1)
                 || (field.Kind != 24)
                 || !field.IsRequired
-                || (field.Count != 0))
+                || (field.Count != (ulong)expectedCount))
             {
-                throw new NotSupportedException("This candidate restore slice does not support system, resource, or attachment state.");
+                throw new NotSupportedException("This candidate restore slice does not support system or attachment state.");
             }
+        }
+
+        if (Registration.Resources.Length != contents.ResourceCount)
+        {
+            throw new InvalidOperationException("The validated resource rows do not match the candidate registration.");
         }
 
         var previousEntityId = Guid.Empty;
@@ -692,8 +697,50 @@ public sealed partial class World
             _restoreComponentWorkspaceByteReservation = 0;
         }
 
+        RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
         _isRestoreEcsRowsRestored = true;
         _restoreEcsPlan = null;
+    }
+
+    private void RestoreResourceStateRecords(
+        EbinRecordReadView ecsRecord,
+        int resourceCount,
+        CancellationToken cancellationToken)
+    {
+        for (var resourceIndex = 0; resourceIndex < resourceCount; resourceIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var resourceRecord = ecsRecord.GetRecordArrayElement(3, resourceIndex);
+            var resourceIdField = resourceRecord.GetField(0);
+
+            if ((resourceIdField.Tag != 1)
+                || (resourceIdField.Kind != 11)
+                || !resourceIdField.IsRequired
+                || (resourceIdField.Payload.Length != 16))
+            {
+                throw new ArgumentException("A candidate state/resource-state row has an invalid ResourceId.", nameof(ecsRecord));
+            }
+
+            var resourceId = new Guid(resourceIdField.Payload, bigEndian: true);
+            var payload = resourceRecord.GetRecord(2);
+            var payloadHeader = payload.Header;
+            var schema = new ContentSchemaReference(
+                payloadHeader.SchemaId,
+                payloadHeader.Major,
+                payloadHeader.Minor,
+                ContentSchemaScope.Content);
+            var registration = Registration.Resources[resourceIndex];
+
+            if ((resourceId != registration.ResourceId) || (schema != registration.Schema))
+            {
+                throw new ArgumentException("A candidate state/resource-state row does not match its exact registration.", nameof(ecsRecord));
+            }
+
+            registration.RestoreStateRecord(
+                payload.EncodedBytes,
+                _resourceStorage[resourceIndex],
+                cancellationToken);
+        }
     }
 
     private sealed class WorldComponentRestoreContext : IComponentRestoreContext

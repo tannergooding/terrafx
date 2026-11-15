@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
 
@@ -94,6 +95,37 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
                 throw new InvalidOperationException("A resource default partition failed codec validation.");
             }
         }
+    }
+
+    public void RestoreStateRecord(
+        scoped ReadOnlySpan<byte> source,
+        object storage,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var outcome = _codec.Read(source, ResourceId, Schema, PartitionCount, cancellationToken);
+
+        if (outcome.Status is WorldResourceReadStatus.Rejected)
+        {
+            var diagnostic = outcome.Diagnostics[0];
+            throw new InvalidDataException($"{diagnostic.Code}: {diagnostic.Message}");
+        }
+
+        if ((outcome.Status is not WorldResourceReadStatus.Read)
+            || (outcome.ConsumedBytes != source.Length)
+            || (outcome.Author is null)
+            || !outcome.Diagnostics.IsEmpty)
+        {
+            throw new InvalidOperationException("The successful resource state read did not return its complete author value.");
+        }
+
+        var partitions = GetPartitions(storage);
+        _codec.Restore(
+            outcome.Author,
+            CreateOperation(WorldResourceOperationKind.Restore),
+            partitions,
+            cancellationToken);
+        ValidateForExecution(storage);
     }
 
     public void ValidateForExecution(object storage)
