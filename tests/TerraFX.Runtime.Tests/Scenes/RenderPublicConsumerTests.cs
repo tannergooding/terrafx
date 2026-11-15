@@ -153,14 +153,29 @@ internal sealed partial class SceneAssetStoreTests
                 outputDirectory.Name,
                 "TerraFX.Runtime.Vulkan.Consumer.dll");
             Assert.That(File.Exists(consumerAssembly), Is.True, "The public Vulkan consumer project reference must build the separate witness.");
+            var configuredConsumerPath = Environment.GetEnvironmentVariable("TERRAFX_VULKAN_NATIVEAOT_CONSUMER");
+            var consumerPath = string.IsNullOrWhiteSpace(configuredConsumerPath)
+                ? consumerAssembly
+                : configuredConsumerPath;
 
-            var startInfo = new ProcessStartInfo("dotnet") {
+            if (!Path.IsPathFullyQualified(consumerPath) || !File.Exists(consumerPath))
+            {
+                throw new InvalidOperationException("TERRAFX_VULKAN_NATIVEAOT_CONSUMER must name an existing absolute file.");
+            }
+
+            var isManagedAssembly = StringComparer.OrdinalIgnoreCase.Equals(Path.GetExtension(consumerPath), ".dll");
+            var startInfo = new ProcessStartInfo(isManagedAssembly ? "dotnet" : consumerPath) {
                 CreateNoWindow = true,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
-            startInfo.ArgumentList.Add(consumerAssembly);
+
+            if (isManagedAssembly)
+            {
+                startInfo.ArgumentList.Add(consumerPath);
+            }
+
             startInfo.ArgumentList.Add("offscreen");
             startInfo.ArgumentList.Add(renderMode);
             startInfo.ArgumentList.Add(packagePath);

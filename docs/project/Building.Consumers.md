@@ -16,6 +16,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 ```
 
 This managed-process witness does not establish NativeAOT behavior; publish and execute the target-specific consumer separately below.
+To run the same cases through a published consumer, set `TERRAFX_VULKAN_NATIVEAOT_CONSUMER` to its absolute executable path before running the filter. A `.dll` path is launched through `dotnet`; this still qualifies only the selected host/backend.
 
 ## NativeAOT
 
