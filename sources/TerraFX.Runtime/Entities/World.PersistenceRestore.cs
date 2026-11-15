@@ -183,9 +183,9 @@ public sealed partial class World
             throw new ArgumentException("The validated ECS counts or identity do not match the restore candidate.", nameof(contents));
         }
 
-        if ((contents.LiveSceneInstanceCount != 0) || (contents.AttachmentCount != 0))
+        if (contents.AttachmentCount != 0)
         {
-            throw new NotSupportedException("This candidate restore slice does not support Scene identities or attachments.");
+            throw new NotSupportedException("This candidate restore slice does not support attachments.");
         }
 
         if (contents.EntityCount > _maximumLiveEntities)
@@ -281,12 +281,13 @@ public sealed partial class World
             var componentField = entityRecord.GetField(1);
             var tagField = entityRecord.GetField(2);
             var transientSchemaField = entityRecord.GetField(3);
+            var hasSceneInstanceId = entityRecord.TryGetField(6, out var sceneInstanceField);
             var archetypePlan = restoreEcsPlan.GetArchetype(restoreEcsPlan.GetEntityArchetypeIndex(index));
 
             if ((entityRecord.Header.SchemaId != new ContentSchemaIdentityAssignment("state/entity").SchemaId)
                 || (entityRecord.Header.Major != 1)
                 || (entityRecord.Header.Minor != 0)
-                || (entityRecord.FieldCount != 5)
+                || (entityRecord.FieldCount != (hasSceneInstanceId ? 6 : 5))
                 || (componentField.Tag != 2)
                 || (componentField.Kind != 24)
                 || !componentField.IsRequired
@@ -298,10 +299,28 @@ public sealed partial class World
                 || (transientSchemaField.Tag != 4)
                 || (transientSchemaField.Kind != 24)
                 || !transientSchemaField.IsRequired
-                || (transientSchemaField.Count != (ulong)archetypePlan.TransientComponentCount)
-                || entityRecord.TryGetField(6, out _))
+                || (transientSchemaField.Count != (ulong)archetypePlan.TransientComponentCount))
             {
-                throw new NotSupportedException("This candidate restore slice does not support Scene-owned ECS Entities.");
+                throw new ArgumentException("A candidate ECS Entity row does not match its preflighted shape.", nameof(ecsRecord));
+            }
+
+            if (hasSceneInstanceId)
+            {
+                if ((sceneInstanceField.Kind != 11)
+                    || sceneInstanceField.IsRequired
+                    || (sceneInstanceField.Count != 1)
+                    || (sceneInstanceField.Payload.Length != 16))
+                {
+                    throw new ArgumentException("A candidate ECS SceneInstanceId has an invalid wire shape.", nameof(ecsRecord));
+                }
+
+                var sceneInstanceId = new Guid(sceneInstanceField.Payload, bigEndian: true);
+
+                if ((sceneInstanceId == Guid.Empty)
+                    || !_identityLedger.TryGetLiveLocator(sceneInstanceId, IdentityKind.SceneInstance, out _))
+                {
+                    throw new ArgumentException("A candidate ECS Entity names no live SceneInstance identity.", nameof(ecsRecord));
+                }
             }
 
             for (var componentIndex = 0; componentIndex < archetypePlan.PersistentComponentCount; componentIndex++)
@@ -407,6 +426,8 @@ public sealed partial class World
                 throw new InvalidOperationException("The empty restore candidate has unexpected ECS storage reservations.");
             }
 
+            RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
+            RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
             _isRestoreEcsRowsRestored = true;
             _restoreEcsPlan = null;
             return;
@@ -715,6 +736,71 @@ public sealed partial class World
         RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
         _isRestoreEcsRowsRestored = true;
         _restoreEcsPlan = null;
+    }
+
+    internal void RestoreHierarchyLinks(
+        scoped ReadOnlySpan<Entity> entities,
+        scoped ReadOnlySpan<Entity> parents)
+    {
+        ThrowIfDisposed();
+        ThrowIfFaulted();
+        EnsureOwnerThread();
+
+        if (!_isRestoreCandidate || !_isCandidateInitialized || !_isRestoreEcsRowsRestored)
+        {
+            throw new InvalidOperationException("Hierarchy links can be restored only after ECS rows are installed in an initialized candidate.");
+        }
+
+        if (_isRestoreHierarchyInstalled)
+        {
+            throw new InvalidOperationException("Candidate hierarchy links can be restored only once.");
+        }
+
+        if (entities.Length != parents.Length)
+        {
+            throw new ArgumentException("The candidate hierarchy node and parent arrays must have equal lengths.");
+        }
+
+        for (var index = 0; index < entities.Length; index++)
+        {
+            var child = entities[index];
+
+            if (!child.IsValid
+                || (child.OwnerId != _ownerId)
+                || !_entitySlots.IsLive(child.Index, child.Generation)
+                || (_identityLedger.GetLiveOrdinal(IdentityKind.Entity, child.Index) == 0))
+            {
+                throw new ArgumentException("A candidate hierarchy node is not a live Entity in this exact restore map.", nameof(entities));
+            }
+
+            if (_entitySlots.TryGetParent(child.Index, child.Generation, out _, out _))
+            {
+                throw new InvalidOperationException("A candidate hierarchy node already has a parent before restoration.");
+            }
+
+            var parent = parents[index];
+
+            if (!parent.IsValid)
+            {
+                if (parent != default)
+                {
+                    throw new ArgumentException("A candidate hierarchy root must use the default Entity value.", nameof(parents));
+                }
+
+                continue;
+            }
+
+            if ((parent.OwnerId != _ownerId)
+                || !_entitySlots.IsLive(parent.Index, parent.Generation)
+                || (_identityLedger.GetLiveOrdinal(IdentityKind.Entity, parent.Index) == 0))
+            {
+                throw new ArgumentException("A candidate hierarchy parent is not a live Entity in this exact restore map.", nameof(parents));
+            }
+
+            _entitySlots.SetParent(child.Index, child.Generation, parent.Index, parent.Generation);
+        }
+
+        _isRestoreHierarchyInstalled = true;
     }
 
     private void RestoreResourceStateRecords(

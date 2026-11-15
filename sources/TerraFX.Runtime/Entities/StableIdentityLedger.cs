@@ -465,6 +465,12 @@ internal sealed class StableIdentityLedger
         return (int)(metadata & ((1u << 10) - 1));
     }
 
+    internal IdentityKind GetKindByOrdinal(uint ordinal)
+    {
+        ValidateOrdinal(ordinal, _state.AssignmentCount);
+        return GetKind(GetRecord(_state.LedgerPages, ordinal));
+    }
+
     internal uint GetLiveOrdinal(IdentityKind kind, uint locator)
     {
         ValidateLocator(kind, locator);

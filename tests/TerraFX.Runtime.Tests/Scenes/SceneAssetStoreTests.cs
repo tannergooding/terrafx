@@ -3241,7 +3241,7 @@ internal sealed partial class SceneAssetStoreTests
     {
         const int sceneAssetIdValue = 3;
         const int prefabAssetIdValue = 1;
-        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = CreateRendererRegistry();
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
         var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
         var placementId = new Guid("40000000-0000-4000-8000-000000000002");
@@ -3268,7 +3268,11 @@ internal sealed partial class SceneAssetStoreTests
             {
                 var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
                 _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
-                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var worldRegistration = worldRegistrationBuilder.Build();
+                using var loadDomain = new WorldAdmissionDomain(512L * 1024 * 1024);
+                using var world = World.Create(new WorldOptions(worldRegistration) {
+                    AdmissionDomain = loadDomain,
+                });
                 var loader = new SceneLoader(world, assets);
 
                 using var prepared = loader
@@ -3296,6 +3300,112 @@ internal sealed partial class SceneAssetStoreTests
                 var expectedEntityIds = new[] { world.GetEntityId(child) };
                 Assert.That(capturedEntityIds, Is.EqualTo(expectedEntityIds));
                 Assert.That(SceneInstanceRecordFixtureBuilder.Create(instance, lease), Is.Not.Empty);
+
+                var scanSchemas = CreatePersistenceScanSchemas(schemas);
+                var persistenceLimits = WorldPersistenceEbinLimits.Create(world.Options);
+                var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
+                    world,
+                    in lease,
+                    scanSchemas,
+                    [
+                        checked((uint)prefabAssetIdValue),
+                        checked((uint)sceneAssetIdValue),
+                    ]);
+                var identityScratch = new WorldPersistenceIdentityScratchEntry[
+                    WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, persistenceLimits)];
+                var lineageScratch = new Guid[
+                    WorldPersistenceWorldRecordReader.MeasureLineageMembershipScratchCapacity(worldRecord, persistenceLimits)];
+                var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+                var savedWorld = WorldPersistenceWorldRecordReader.Read(
+                    worldRecord,
+                    persistenceLimits,
+                    worldRegistration,
+                    identityScratch,
+                    lineageScratch,
+                    ref strictLayoutBuffers);
+                var identityHistory = savedWorld.Ecs.ValidatedIdentityHistory
+                    ?? throw new InvalidOperationException("The saved Scene World omitted its validated identity history.");
+                var restoreIdentityState = WorldRestoreIdentityState.CreateBranch(
+                    identityHistory,
+                    Guid.NewGuid(),
+                    new byte[32],
+                    savedWorld.Clock.NextTick,
+                    isStrictLocal: false,
+                    savedWorld.Configuration);
+                var restoreEcsPlan = WorldPersistenceEcsReader.CreateRestorePlan(
+                    savedWorld.EcsRecord,
+                    savedWorld.Ecs,
+                    worldRegistration,
+                    savedWorld.Configuration);
+                var targetBytes = world.MeasureRestoreWorldOwnedBytes(
+                    restoreIdentityState,
+                    savedWorld.Configuration,
+                    savedWorld.Clock.TickRate,
+                    savedWorld.Clock.TimeScale,
+                    restoreEcsPlan);
+                Assert.That(
+                    world.TryPrepareLoadReplacement(
+                        world.WorldGuid,
+                        sourceBytes: worldRecord.Length,
+                        targetBytes,
+                        dataBytes: checked(worldRecord.Length + restoreEcsPlan.OwnedByteReservation + 4096L),
+                        cleanupBytes: targetBytes,
+                        out var replacementPreparation,
+                        out var bindingRefusal,
+                        out var admissionRefusal),
+                    Is.True,
+                    $"{bindingRefusal.Code}/{admissionRefusal}");
+                Assert.That(bindingRefusal.IsNone, Is.True);
+                Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+                using var preparation = replacementPreparation
+                    ?? throw new InvalidOperationException("The Scene restore test did not retain its replacement preparation.");
+                Assert.That(
+                    world.TryPrepareRestoreConstructionPlan(
+                        restoreIdentityState,
+                        savedWorld.Configuration,
+                        preparation,
+                        savedWorld.Clock.TickRate,
+                        savedWorld.Clock.TimeScale,
+                        out var constructionPlan,
+                        out bindingRefusal,
+                        out admissionRefusal,
+                        restoreEcsPlan),
+                    Is.True,
+                    $"{bindingRefusal.Code}/{admissionRefusal}");
+                Assert.That(bindingRefusal.IsNone, Is.True);
+                Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+                var candidatePlan = constructionPlan
+                    ?? throw new InvalidOperationException("The Scene restore test did not produce its candidate plan.");
+
+                try
+                {
+                    using var candidate = World.CreateRestoreCandidate(candidatePlan);
+                    World.InitializeRestoreCandidate(candidate);
+                    candidate.RestoreEcsRows(savedWorld.EcsRecord, savedWorld.Ecs, CancellationToken.None);
+                    using var packageLease = assets.AcquirePackageLease();
+                    using var preparedRestore = ScenePersistenceRestorer.PrepareAsync(
+                        candidate,
+                        assets,
+                        packageLease,
+                        savedWorld.ScenesRecord,
+                        savedWorld.Scenes,
+                        CancellationToken.None).GetAwaiter().GetResult();
+                    ScenePersistenceRestorer.RestorePrepared(candidate, preparedRestore, CancellationToken.None);
+                    Assert.That(candidate.TryGetEntity(expectedEntityIds[0], out var restoredChild), Is.True);
+                    Assert.That(
+                        candidate.TryGetHierarchyParent(restoredChild, out _),
+                        Is.False);
+                    var candidateRegistry = candidate.Registration.SceneSupport?.GetParticipant(candidate) as SceneWorldRegistry
+                        ?? throw new InvalidOperationException("The restored candidate omitted its Scene registry.");
+                    Assert.That(candidateRegistry.TryGetInstance(instance.SceneInstanceId, out var restoredInstance), Is.True);
+                    Assert.That(restoredInstance, Is.Not.Null);
+                    Assert.That(restoredInstance!.TryGetEntity(childAddress, out var sceneChild), Is.True);
+                    Assert.That(sceneChild, Is.EqualTo(restoredChild));
+                }
+                finally
+                {
+                    candidatePlan.ReleaseUntransferredRestoreResources();
+                }
             }
             finally
             {

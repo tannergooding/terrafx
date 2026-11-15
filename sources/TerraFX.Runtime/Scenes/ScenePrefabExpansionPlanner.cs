@@ -50,6 +50,24 @@ internal static class ScenePrefabExpansionPlanner
     }
 
     internal static async Task<SceneExpansionPlan> PrepareAsync(
+        AssetPackageLease packageLease,
+        AssetId sceneId,
+        SceneExpansionLimits limits,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+
+        if (!sceneId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sceneId));
+        }
+
+        var sceneLease = await packageLease.LoadFromPackageAsync<SceneAsset>(sceneId, cancellationToken)
+            .ConfigureAwait(false);
+        return await PrepareTakingLeaseAsync(sceneLease, limits, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task<SceneExpansionPlan> PrepareAsync(
         AssetStore assets,
         AssetId sceneId,
         SceneExpansionLimits limits,

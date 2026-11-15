@@ -183,6 +183,12 @@ internal static class SceneActivationExecutor
         }
     }
 
+    internal static ImmutableArray<Diagnostic> ValidateRestoredRootBindings(
+        World world,
+        SceneExpansionPlan plan,
+        SceneLoadOptionsSnapshot options)
+        => ValidateRootBindings(world, plan, options);
+
     private static bool AreDependenciesRestored(
         IComponentRegistration registration,
         ImmutableArray<SceneAuthoredComponentRecord> records,

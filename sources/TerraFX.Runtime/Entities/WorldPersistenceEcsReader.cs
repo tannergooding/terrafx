@@ -37,10 +37,9 @@ internal static class WorldPersistenceEcsReader
         ArgumentNullException.ThrowIfNull(configuration);
 
         if ((contents.LiveEntityCount != contents.EntityCount)
-            || (contents.LiveSceneInstanceCount != 0)
             || (contents.AttachmentCount != 0))
         {
-            throw new NotSupportedException("The candidate restore slice does not support Scene identities or attachments.");
+            throw new NotSupportedException("The candidate restore slice does not support attachments.");
         }
 
         var record = new EbinRecordReadView(ecsRecord.Span);
@@ -60,11 +59,6 @@ internal static class WorldPersistenceEcsReader
         for (var entityIndex = 0; entityIndex < contents.EntityCount; entityIndex++)
         {
             var entity = record.GetRecordArrayElement(1, entityIndex);
-
-            if (entity.TryGetField(6, out _))
-            {
-                throw new NotSupportedException("The candidate restore slice does not support Scene-owned ECS Entities.");
-            }
 
             var signatureHash = GetArchetypeSignatureHash(entity, nameof(ecsRecord));
             var hashSlot = unchecked((int)((uint)signatureHash & (uint)hashMask));

@@ -62,6 +62,7 @@ public sealed partial class World : IDisposable
     private bool _isCandidateInitialized;
     private readonly bool _isRestoreCandidate;
     private bool _isRestoreEcsRowsRestored;
+    private bool _isRestoreHierarchyInstalled;
     private int _isStructuralOperationActive;
     private int _isSystemCleanupActive;
     private int _isTickActive;

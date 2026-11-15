@@ -95,9 +95,39 @@ public sealed class SceneLoader
         return PrepareCoreAsync(sceneId, snapshot, cancellationToken);
     }
 
+    internal Task<SceneExpansionPlan> PrepareRestorePlanAsync(
+        AssetPackageLease packageLease,
+        AssetId sceneId,
+        SceneLoadOptionsSnapshot options,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+
+        if (!sceneId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sceneId));
+        }
+
+        return PreparePlanCoreAsync(sceneId, options, packageLease, cancellationToken);
+    }
+
     private async Task<PreparedScene> PrepareCoreAsync(
         AssetId sceneId,
         SceneLoadOptionsSnapshot options,
+        CancellationToken cancellationToken)
+    {
+        var plan = await PreparePlanCoreAsync(
+            sceneId,
+            options,
+            packageLease: null,
+            cancellationToken).ConfigureAwait(false);
+        return new PreparedScene(_world, _assets, options, plan);
+    }
+
+    private async Task<SceneExpansionPlan> PreparePlanCoreAsync(
+        AssetId sceneId,
+        SceneLoadOptionsSnapshot options,
+        AssetPackageLease? packageLease,
         CancellationToken cancellationToken)
     {
         var limits = new SceneExpansionLimits(
@@ -109,11 +139,17 @@ public sealed class SceneLoader
             _world.MaximumOwnedStateBytes,
             bytes => _world.TryReserveSceneStorage(_registry, bytes),
             rootExternalBindingCount: options.ExternalBindings.Length);
-        var plan = await ScenePrefabExpansionPlanner.PrepareAsync(
-            _assets,
-            sceneId,
-            limits,
-            cancellationToken).ConfigureAwait(false);
+        var plan = (packageLease is null)
+            ? await ScenePrefabExpansionPlanner.PrepareAsync(
+                _assets,
+                sceneId,
+                limits,
+                cancellationToken).ConfigureAwait(false)
+            : await ScenePrefabExpansionPlanner.PrepareAsync(
+                packageLease,
+                sceneId,
+                limits,
+                cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -145,7 +181,7 @@ public sealed class SceneLoader
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            return new PreparedScene(_world, _assets, options, plan);
+            return plan;
         }
         catch
         {

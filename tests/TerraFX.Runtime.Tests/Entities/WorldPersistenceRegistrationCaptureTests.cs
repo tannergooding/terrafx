@@ -695,6 +695,154 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
     }
 
     [Test]
+    public void RestoresRegisteredSystemStateIntoAnEmptyCandidate()
+    {
+        var schemas = CreateWorldRootSchemas();
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        var systemSchemaReference = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("application/world-root-test/system-state/v1").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var systemSchema = WorldSystemSchema<RestoreProbeSystem>.FromRegistry(schemas, systemSchemaReference);
+        var systemSourcePath = new WorldSystemSourcePath(["Counter"]);
+        var systemField = WorldSystemFieldBinding<RestoreProbeSystem, RestoreProbeAuthor>.Scalar<
+            int,
+            RestoreProbeSystemCounterReader,
+            RestoreProbeAuthorCounterReader>(
+                systemSchema.GetField(new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)])),
+                [systemSourcePath],
+                [systemSourcePath],
+                default,
+                default);
+        var systemCodec = new RestoreProbeCodec(systemSchemaReference);
+        var systemFactory = WorldSystemFactoryBinding.Stateful<
+            RestoreProbeSystem,
+            RestoreProbeAuthor,
+            RestoreProbeCreate,
+            RestoreProbeDefaults,
+            RestoreProbeRelease>(
+                Guid.NewGuid(),
+                1,
+                systemSchema,
+                new WorldSystemSourceStateDeclaration(
+                    typeof(RestoreProbeSystem),
+                    [new WorldSystemSourceLeaf(systemSourcePath, typeof(int), WorldSystemSourcePurpose.Authoritative)]),
+                [systemField],
+                default,
+                default,
+                systemCodec,
+                default);
+        _ = registrationBuilder.RegisterSystem(
+            new SystemDescription(
+                Guid.NewGuid(),
+                0,
+                SimulationStage.Input,
+                [],
+                [],
+                [],
+                SystemThreadMode.OwnerThread),
+            new RestoreProbeFactory(systemFactory));
+        var registration = registrationBuilder.Build();
+
+        using var admissionDomain = new WorldAdmissionDomain(512L * 1024 * 1024);
+        using var world = World.Create(new WorldOptions(registration) {
+            AdmissionDomain = admissionDomain,
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
+            world,
+            in lease,
+            schemas,
+            []);
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var identityScratch = new WorldPersistenceIdentityScratchEntry[
+            WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits)];
+        var lineageScratch = new Guid[
+            WorldPersistenceWorldRecordReader.MeasureLineageMembershipScratchCapacity(worldRecord, limits)];
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        var savedWorld = WorldPersistenceWorldRecordReader.Read(
+            worldRecord,
+            limits,
+            registration,
+            identityScratch,
+            lineageScratch,
+            ref strictLayoutBuffers);
+        var identityHistory = savedWorld.Ecs.ValidatedIdentityHistory
+            ?? throw new InvalidOperationException("The saved World omitted its validated identity history.");
+        var restoreIdentityState = WorldRestoreIdentityState.CreateBranch(
+            identityHistory,
+            Guid.NewGuid(),
+            new byte[32],
+            savedWorld.Clock.NextTick,
+            isStrictLocal: false,
+            savedWorld.Configuration);
+        var restoreEcsPlan = WorldPersistenceEcsReader.CreateRestorePlan(
+            savedWorld.EcsRecord,
+            savedWorld.Ecs,
+            registration,
+            savedWorld.Configuration);
+        Assert.That(restoreEcsPlan.EntityCount, Is.Zero);
+        var targetBytes = world.MeasureRestoreWorldOwnedBytes(
+            restoreIdentityState,
+            savedWorld.Configuration,
+            savedWorld.Clock.TickRate,
+            savedWorld.Clock.TimeScale,
+            restoreEcsPlan);
+        Assert.That(
+            world.TryPrepareLoadReplacement(
+                world.WorldGuid,
+                sourceBytes: worldRecord.Length,
+                targetBytes,
+                dataBytes: checked(worldRecord.Length + restoreEcsPlan.OwnedByteReservation + 4096L),
+                cleanupBytes: targetBytes,
+                out var replacementPreparation,
+                out var bindingRefusal,
+                out var admissionRefusal),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        using var preparation = replacementPreparation
+            ?? throw new InvalidOperationException("The empty-candidate test did not retain its replacement preparation.");
+        Assert.That(
+            world.TryPrepareRestoreConstructionPlan(
+                restoreIdentityState,
+                savedWorld.Configuration,
+                preparation,
+                savedWorld.Clock.TickRate,
+                savedWorld.Clock.TimeScale,
+                out var constructionPlan,
+                out bindingRefusal,
+                out admissionRefusal,
+                restoreEcsPlan),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        var candidatePlan = constructionPlan
+            ?? throw new InvalidOperationException("The empty-candidate test did not produce its candidate plan.");
+
+        try
+        {
+            using var candidate = World.CreateRestoreCandidate(candidatePlan);
+            World.InitializeRestoreCandidate(candidate);
+            candidate.RestoreEcsRows(savedWorld.EcsRecord, savedWorld.Ecs, CancellationToken.None);
+            Assert.Multiple(() => {
+                Assert.That(savedWorld.Ecs.EntityCount, Is.Zero);
+                Assert.That(systemCodec.RestoreCount, Is.EqualTo(1));
+                Assert.That(systemCodec.RestoredCounter, Is.EqualTo(124));
+            });
+        }
+        finally
+        {
+            candidatePlan.ReleaseUntransferredRestoreResources();
+        }
+    }
+
+    [Test]
     public void WritesRegistrationRootUnderItsExactWorldReservation()
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
