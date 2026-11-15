@@ -372,10 +372,14 @@ internal sealed class WorldPersistenceAdmissionTests
             preparationScope = preparation
                 ?? throw new InvalidOperationException("The replacement preparation was not created.");
             Assert.That(
-                preparationScope.TryCommitWithCredits(out replacementGrant, out var credits),
+                preparationScope.TryCaptureCommit(out var captureBindingRefusal, out var captureCreditRefusal),
                 Is.True);
-            creditBundle = credits
-                ?? throw new InvalidOperationException("The replacement operation credits were not transferred.");
+            Assert.That(captureBindingRefusal.IsNone, Is.True);
+            Assert.That(captureCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            creditBundle = preparationScope.TransferCapturedCredits();
+            Assert.That(
+                preparationScope.TryCommitWithCredits(creditBundle, out replacementGrant),
+                Is.True);
             Assert.That(replacementGrant.WorldGuid, Is.EqualTo(replacementWorldGuid));
         }
         finally
@@ -418,21 +422,24 @@ internal sealed class WorldPersistenceAdmissionTests
         Assert.That(bindingRefusal.IsNone, Is.True);
         Assert.That(creditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
         Assert.That(
-            preparationScope.TryCommitWithCredits(out var replacementGrant, out var credits),
+            preparationScope.TryCaptureCommit(out var captureBindingRefusal, out var captureCreditRefusal),
+            Is.True);
+        Assert.That(captureBindingRefusal.IsNone, Is.True);
+        Assert.That(captureCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        using var creditBundle = preparationScope.TransferCapturedCredits();
+        Assert.That(
+            preparationScope.TryCommitWithCredits(creditBundle, out var replacementGrant),
             Is.True);
         Assert.That(replacementGrant.IsValid, Is.True);
-        using var creditBundle = credits!;
         var sourceUse = creditBundle.Source.AcquireRetainedUse(1024);
         var targetUse = creditBundle.Target.AcquireRetainedUse(2048);
         var dataUse = creditBundle.Data.AcquireRetainedUse(3072);
         var cleanupUse = creditBundle.Cleanup.AcquireRetainedUse(4096);
 
         Assert.That(
-            preparationScope.TryCommitWithCredits(out var repeatedGrant, out var repeatedCredits),
+            preparationScope.TryCommitWithCredits(creditBundle, out var repeatedGrant),
             Is.False);
         Assert.That(repeatedGrant.IsValid, Is.False);
-        Assert.That(repeatedCredits, Is.Null);
-        repeatedCredits?.Dispose();
         preparationScope.Dispose();
 
         domain.Dispose();

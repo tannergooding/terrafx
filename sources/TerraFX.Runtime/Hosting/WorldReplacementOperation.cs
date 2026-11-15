@@ -14,6 +14,7 @@ internal sealed partial class WorldReplacementOperation
     private int _isCaptured;
     private int _isExecuted;
     private int _isLoadEnded;
+    private WorldDomainOperationCreditBundle? _operationCredits;
     private readonly WorldPersistence _persistence;
     private readonly WorldLoadPlan _plan;
     private WorldLoadPreparedState? _preparedState;
@@ -60,7 +61,8 @@ internal sealed partial class WorldReplacementOperation
 
         World? candidate = null;
         WorldIdentityRemap? identityRemap = null;
-        WorldDomainOperationCreditBundle? operationCredits = null;
+        var operationCredits = _operationCredits
+            ?? throw new InvalidOperationException("The captured World replacement omitted its operation credits.");
         TaskCompletionSource retirement = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var publicationCommitted = false;
 
@@ -82,7 +84,7 @@ internal sealed partial class WorldReplacementOperation
                 _plan.SourcePayloadDigest,
                 sourceIdentityHistory.AssignmentsByOrdinal.AsSpan(),
                 targetIdentityHistory.AssignmentsByOrdinal.AsSpan(),
-                state.ReplacementPreparation.DataCredit);
+                operationCredits.Data);
             var restoredPublication = candidate.PrepareRestoredPublication();
             var hostTimestamp = host?.GetWorldReplacementHostTimestamp() ?? 0;
             var hostAdoption = host?.PrepareWorldReplacementAdoption(targetWorld, candidate, hostTimestamp);
@@ -100,7 +102,7 @@ internal sealed partial class WorldReplacementOperation
                     candidate,
                     restoredPublication,
                     state.ReplacementPreparation,
-                    out operationCredits,
+                    operationCredits,
                     out var bindingRefusal))
             {
                 candidate.Dispose();
@@ -158,13 +160,17 @@ internal sealed partial class WorldReplacementOperation
 
             try
             {
-                operationCredits?.Dispose();
+                operationCredits.Dispose();
             }
             catch (Exception exception)
             {
                 retirementFailure = (retirementFailure is null)
                     ? exception
                     : new AggregateException(retirementFailure, exception);
+            }
+            finally
+            {
+                _operationCredits = null;
             }
 
             _preparedState = null;
@@ -197,7 +203,6 @@ internal sealed partial class WorldReplacementOperation
                     finally
                     {
                         AbandonCapturedState();
-                        operationCredits?.Dispose();
                     }
                 }
             }

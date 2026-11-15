@@ -10,6 +10,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
     private readonly Lock _gate = new();
     private WorldDomainOperationCreditBundle? _credits;
     private readonly WorldGuidGrant _currentGrant;
+    private readonly WorldAdmissionDomain? _domain;
     private bool _isCaptured;
     private bool _isCommitted;
     private bool _isDisposed;
@@ -27,20 +28,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         _currentGrant = currentGrant;
         _replacementGrant = replacementGrant;
         _credits = credits;
-    }
-
-    internal WorldDomainOperationCredit DataCredit
-    {
-        get
-        {
-            lock (_gate)
-            {
-                ObjectDisposedException.ThrowIf(_isDisposed, this);
-                return (_credits
-                    ?? throw new InvalidOperationException("The replacement preparation has no load operation-credit bundle."))
-                    .Data;
-            }
-        }
+        _domain = credits?.Domain;
     }
 
     public void Dispose()
@@ -131,6 +119,22 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         return true;
     }
 
+    internal WorldDomainOperationCreditBundle TransferCapturedCredits()
+    {
+        lock (_gate)
+        {
+            if (_isDisposed || _isCommitted || !_isCaptured)
+            {
+                throw new InvalidOperationException("Only a captured replacement can transfer its operation credits.");
+            }
+
+            var credits = _credits
+                ?? throw new InvalidOperationException("The captured replacement has no remaining operation credits.");
+            _credits = null;
+            return credits;
+        }
+    }
+
     internal void TransferReplacementGrantToCandidate()
     {
         lock (_gate)
@@ -201,24 +205,29 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
     }
 
     internal bool TryCommitWithCredits(
+        WorldDomainOperationCreditBundle credits,
         out WorldGuidGrant replacementGrant,
-        out WorldDomainOperationCreditBundle? credits,
         WorldLineageGrant? replacementLineageGrant = null)
     {
+        ArgumentNullException.ThrowIfNull(credits);
         lock (_gate)
         {
-            if (_isDisposed || _isCommitted || (_credits is null))
+            if (_isDisposed || _isCommitted || !_isCaptured || (_credits is not null))
             {
                 replacementGrant = default;
-                credits = null;
                 return false;
+            }
+
+            if (!ReferenceEquals(_domain, credits.Domain))
+            {
+                throw new InvalidOperationException("The replacement operation credits belong to another admission domain.");
             }
 
             var replacementCommitted = (replacementLineageGrant is WorldLineageGrant lineageGrant)
                 ? _registry.TryCommitReplacementWithLineage(
                     _currentGrant,
                     _replacementGrant,
-                    _credits.Domain,
+                    credits.Domain,
                     lineageGrant)
                 : _registry.TryCommitReplacement(_currentGrant, _replacementGrant);
 
@@ -229,18 +238,13 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
                     throw new InvalidOperationException("The rejected WorldGuid successor grant could not be released.");
                 }
 
-                _credits.Dispose();
-                _credits = null;
                 _isDisposed = true;
                 replacementGrant = default;
-                credits = null;
                 return false;
             }
 
             _isCommitted = true;
             replacementGrant = _replacementGrant;
-            credits = _credits;
-            _credits = null;
             return true;
         }
     }

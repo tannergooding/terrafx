@@ -90,12 +90,13 @@ public sealed partial class World
         World replacementWorld,
         CommittedWorldPublication restoredPublication,
         WorldGuidReplacementPreparation preparation,
-        out WorldDomainOperationCreditBundle? credits,
+        WorldDomainOperationCreditBundle operationCredits,
         out WorldGuidRefusal bindingRefusal)
     {
         ArgumentNullException.ThrowIfNull(replacementWorld);
         ArgumentNullException.ThrowIfNull(restoredPublication);
         ArgumentNullException.ThrowIfNull(preparation);
+        ArgumentNullException.ThrowIfNull(operationCredits);
 
         lock (_sceneStorageGate)
         {
@@ -106,7 +107,6 @@ public sealed partial class World
                     if (Volatile.Read(ref _disposed) != 0
                         || !preparation.IsBoundTo(_registry, _worldGuidGrant))
                     {
-                        credits = null;
                         bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
                         return false;
                     }
@@ -134,10 +134,9 @@ public sealed partial class World
                     }
 
                     if (!preparation.TryCommitWithCredits(
+                            operationCredits,
                             out _,
-                            out credits,
-                            replacementWorld._lineageGrant)
-                        || (credits is null))
+                            replacementWorld._lineageGrant))
                     {
                         bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
                         return false;

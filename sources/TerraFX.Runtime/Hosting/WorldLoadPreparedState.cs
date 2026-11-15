@@ -172,11 +172,14 @@ internal sealed class WorldLoadPreparedState : IDisposable
     }
 
     internal bool TryCaptureCommit(
+        out WorldDomainOperationCreditBundle? operationCredits,
         out WorldGuidRefusal bindingRefusal,
         out WorldAdmissionRefusal admissionRefusal)
     {
         lock (_gate)
         {
+            operationCredits = null;
+
             if (_isAcquisitionClosed || _isDisposed || _isCaptured)
             {
                 bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
@@ -192,6 +195,7 @@ internal sealed class WorldLoadPreparedState : IDisposable
                 return false;
             }
 
+            operationCredits = ReplacementPreparation.TransferCapturedCredits();
             _isCaptured = true;
             return true;
         }

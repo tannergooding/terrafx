@@ -1,5 +1,6 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
+using System;
 using System.Threading;
 using TerraFX.Entities;
 
@@ -10,7 +11,16 @@ internal sealed partial class WorldReplacementOperation
     internal void AbandonCapturedState()
     {
         var state = Interlocked.Exchange(ref _preparedState, null);
-        state?.Dispose();
+        var operationCredits = Interlocked.Exchange(ref _operationCredits, null);
+
+        try
+        {
+            state?.Dispose();
+        }
+        finally
+        {
+            operationCredits?.Dispose();
+        }
     }
 
     internal void EndLoadOperation()
@@ -45,9 +55,9 @@ internal sealed partial class WorldReplacementOperation
 
         if (!_plan.TryCaptureCommit(
                 out var preparedState,
+                out var operationCredits,
                 out var bindingRefusal,
-                out var admissionRefusal)
-            || (preparedState is null))
+                out var admissionRefusal))
         {
             rejection = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)
                 ? WorldPersistence.CreateLoadRejectedReceipt(
@@ -64,6 +74,14 @@ internal sealed partial class WorldReplacementOperation
         }
 
         _preparedState = preparedState;
+        _operationCredits = operationCredits;
+
+        if ((_preparedState is null) || (_operationCredits is null))
+        {
+            AbandonCapturedState();
+            throw new InvalidOperationException("The captured World replacement omitted its state or operation credits.");
+        }
+
         Volatile.Write(ref _isCaptured, 1);
         return true;
     }
