@@ -1364,16 +1364,27 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             var restoreScenePlanStorageByteReservation =
                 await ScenePersistenceRestorer.MeasureRestoredScenePlanStorageBytesAsync(
+                    targetWorld,
                     packageLease
                         ?? throw new InvalidOperationException("The selected package lease was not retained."),
                     checkpointContents.WorldContents.ScenesRecord,
                     checkpointContents.WorldContents.Scenes,
+                    targetWorld.GetCpuExtractionParticipant<ISceneExpansionResourcePreparer>(),
                     checkpointContents.WorldContents.Configuration.SchedulingLimits.MaximumOwnedStateBytes,
                     cancellationToken).ConfigureAwait(false);
+
+            if (restoreScenePlanStorageByteReservation is not long scenePlanStorageBytes)
+            {
+                return CreateLoadRejected(
+                    "load-scene-storage-admission-rejected",
+                    "The target World cannot admit temporary Scene expansion/resource measurement storage.",
+                    targetWorldGuid);
+            }
+
             var restoreSceneHierarchyWorkspaceByteReservation = checked(
                 ScenePersistenceRestorer.MeasureHierarchyRestoreWorkspaceBytes(
                     checkpointContents.WorldContents.Scenes.HierarchyNodeCount)
-                + restoreScenePlanStorageByteReservation);
+                + scenePlanStorageBytes);
             long targetBytes;
 
             try

@@ -166,6 +166,11 @@ public sealed partial class Renderer
             return _sceneRegistry.TryGetInstance(sceneInstanceId, out instance);
         }
 
+        Task<long> ISceneExpansionResourcePreparer.MeasureStorageByteReservationAsync(
+            SceneExpansionPlan plan,
+            CancellationToken cancellationToken)
+            => RenderSceneAssetBundle.MeasureStorageByteReservationAsync(plan, cancellationToken);
+
         async Task<IDisposable?> ISceneExpansionResourcePreparer.PrepareAsync(
             SceneExpansionPlan plan,
             Func<long, WorldSceneStorageReservation?> reserveStorage,

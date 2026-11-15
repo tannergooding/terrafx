@@ -21,6 +21,35 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
+    internal static byte[] CreatePersistenceSpriteScenePackage(AssetId sceneAssetId, Guid frameId)
+    {
+        const uint TextureAssetId = 2;
+        const uint AtlasAssetId = 3;
+        var spriteRecord = CreateRenderSpriteRecord(
+            checked((int)AtlasAssetId),
+            frameId,
+            materialAssetId: null);
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
+            sceneAssetId,
+            additionalEntityComponents: [spriteRecord]);
+        var atlasRecord = CreateRenderAtlasRecord(
+            checked((int)TextureAssetId),
+            CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
+
+        return Package.CreatePackage(
+            new Package.Entry(
+                checked((uint)sceneAssetId.Value),
+                Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord)),
+            new Package.Entry(
+                TextureAssetId,
+                Package.CreateEnvelope(
+                    TextureAssetId,
+                    CreateRenderAtlasPageTextureRecord(17))),
+            new Package.Entry(
+                AtlasAssetId,
+                Package.CreateEnvelope(AtlasAssetId, atlasRecord)));
+    }
+
     private static byte[] CreateRenderSpriteAssetReferenceRecord(int assetId, Guid schemaId)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,

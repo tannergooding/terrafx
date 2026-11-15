@@ -9,6 +9,10 @@ namespace TerraFX.Scenes;
 
 internal interface ISceneExpansionResourcePreparer
 {
+    Task<long> MeasureStorageByteReservationAsync(
+        SceneExpansionPlan plan,
+        CancellationToken cancellationToken);
+
     Task<IDisposable?> PrepareAsync(
         SceneExpansionPlan plan,
         Func<long, WorldSceneStorageReservation?> reserveStorage,

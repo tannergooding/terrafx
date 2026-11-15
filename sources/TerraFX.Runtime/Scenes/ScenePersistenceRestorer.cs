@@ -37,13 +37,16 @@ internal static class ScenePersistenceRestorer
             : checked(128L + (2 * ArrayBytes(nodeCount, Unsafe.SizeOf<Entity>())));
     }
 
-    internal static async Task<long> MeasureRestoredScenePlanStorageBytesAsync(
+    internal static async Task<long?> MeasureRestoredScenePlanStorageBytesAsync(
+        World world,
         AssetPackageLease packageLease,
         ReadOnlyMemory<byte> scenesRecord,
         WorldPersistenceScenesContents contents,
+        ISceneExpansionResourcePreparer? resourcePreparer,
         long maximumExpandedBytes,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(packageLease);
         ArgumentNullException.ThrowIfNull(contents);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumExpandedBytes);
@@ -86,13 +89,56 @@ internal static class ScenePersistenceRestorer
                 defaultLimits.MaximumHierarchyDepth,
                 maximumExpandedBytes,
                 rootExternalBindingCount: ReadArrayCount(instance, 5));
-            requiredBytes = checked(
-                requiredBytes
-                + await ScenePrefabExpansionPlanner.MeasureRequiredByteReservationAsync(
+
+            if (resourcePreparer is null)
+            {
+                requiredBytes = checked(
+                    requiredBytes
+                    + await ScenePrefabExpansionPlanner.MeasureRequiredByteReservationAsync(
+                        packageLease,
+                        sceneId,
+                        limits,
+                        cancellationToken).ConfigureAwait(false));
+            }
+            else
+            {
+                var planRequiredBytes = await ScenePrefabExpansionPlanner.MeasureRequiredByteReservationAsync(
                     packageLease,
                     sceneId,
                     limits,
-                    cancellationToken).ConfigureAwait(false));
+                    cancellationToken).ConfigureAwait(false);
+
+                WorldPersistenceAdmissionReservation? planWorkspaceReservation = null;
+
+                try
+                {
+                    if (!world.TryReservePersistenceAdmissionBytes(planRequiredBytes, out planWorkspaceReservation)
+                        || (planWorkspaceReservation is null))
+                    {
+                        return null;
+                    }
+
+                    using var plan = await ScenePrefabExpansionPlanner.PrepareAsync(
+                        packageLease,
+                        sceneId,
+                        limits,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (plan.RequiredByteReservation != planRequiredBytes)
+                    {
+                        throw new InvalidOperationException("Scene expansion measurement changed between preflight and preparation.");
+                    }
+
+                    var resourceStorageBytes = await resourcePreparer.MeasureStorageByteReservationAsync(
+                        plan,
+                        cancellationToken).ConfigureAwait(false);
+                    requiredBytes = checked(requiredBytes + planRequiredBytes + resourceStorageBytes);
+                }
+                finally
+                {
+                    planWorkspaceReservation?.Dispose();
+                }
+            }
         }
 
         return requiredBytes;

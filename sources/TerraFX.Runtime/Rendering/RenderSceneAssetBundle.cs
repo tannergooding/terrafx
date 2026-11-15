@@ -47,6 +47,71 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         _storageReservation = storageReservation;
     }
 
+    internal static async Task<long> MeasureStorageByteReservationAsync(
+        SceneExpansionPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        cancellationToken.ThrowIfCancellationRequested();
+        var spriteCount = CountSprites(plan);
+        var meshComponentCount = CountMeshes(plan);
+
+        if ((spriteCount == 0) && (meshComponentCount == 0))
+        {
+            return 0;
+        }
+
+        var atlasIds = new int[spriteCount];
+        var spriteMaterialIds = new int[spriteCount];
+        var meshIds = new int[meshComponentCount];
+        var spriteMaterialIdCount = 0;
+        FillAssetIds(
+            plan,
+            atlasIds,
+            spriteMaterialIds,
+            ref spriteMaterialIdCount,
+            meshIds,
+            cancellationToken);
+        Array.Sort(atlasIds);
+        Array.Sort(spriteMaterialIds, 0, spriteMaterialIdCount);
+        Array.Sort(meshIds);
+        var atlasCount = CompactDistinct(atlasIds, atlasIds.Length);
+        var meshCount = CompactDistinct(meshIds, meshIds.Length);
+        var meshMaterialSlots = new ImmutableArray<AssetId>[meshCount];
+        var meshMaterialReferenceCount = 0;
+
+        for (var index = 0; index < meshCount; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var meshLease = await plan.LoadFromPackageAsync<RenderMeshAsset>(
+                new AssetId(meshIds[index]),
+                cancellationToken).ConfigureAwait(false);
+            var materialSlots = meshLease.Value.MaterialSlots;
+            meshMaterialSlots[index] = materialSlots;
+            meshMaterialReferenceCount = checked(meshMaterialReferenceCount + materialSlots.Length);
+        }
+
+        var materialReferenceCount = checked(spriteMaterialIdCount + meshMaterialReferenceCount);
+        var materialIds = new int[materialReferenceCount];
+        spriteMaterialIds.AsSpan(0, spriteMaterialIdCount).CopyTo(materialIds);
+        var materialIdIndex = spriteMaterialIdCount;
+
+        foreach (var materialSlots in meshMaterialSlots)
+        {
+            foreach (var materialAssetId in materialSlots)
+            {
+                materialIds[materialIdIndex++] = materialAssetId.Value;
+            }
+        }
+
+        Array.Sort(materialIds);
+        var materialCount = CompactDistinct(materialIds, materialIds.Length);
+        return checked(
+            GetScratchByteReservation(spriteCount, meshComponentCount)
+            + GetMaterialScratchByteReservation(spriteMaterialIdCount, meshMaterialReferenceCount)
+            + GetRequiredByteReservation(atlasCount, materialCount, meshCount));
+    }
+
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",

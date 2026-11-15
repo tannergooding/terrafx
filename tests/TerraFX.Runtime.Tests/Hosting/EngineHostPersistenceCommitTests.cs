@@ -95,7 +95,8 @@ internal sealed class WorldPersistenceCommitTests
 
     private static WorldRegistration CreateDomainClosureRegistration(
         CompiledContentSchemaRegistry schemas,
-        DomainClosureState state)
+        DomainClosureState state,
+        bool includeRendererSupport = false)
     {
         var binding = WorldSystemFactoryBinding.Stateless<
             DomainClosureSystem,
@@ -108,6 +109,12 @@ internal sealed class WorldPersistenceCommitTests
             new DomainClosureSystemRelease(state));
         var builder = new WorldRegistrationBuilder(schemas);
         _ = builder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+
+        if (includeRendererSupport)
+        {
+            _ = builder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+        }
+
         _ = builder.RegisterSystem(
             new SystemDescription(
                 Guid.NewGuid(),
@@ -463,13 +470,9 @@ internal sealed class WorldPersistenceCommitTests
     {
         var schemas = CreateCommitSchemas();
         var sceneAssetId = new AssetId(1);
+        var spriteFrameId = new Guid("30000000-0000-4000-8000-000000000001");
         var packageBytes = includeActiveScene
-            ? SceneAssetStoreTests.Package.CreatePackage(
-                new SceneAssetStoreTests.Package.Entry(
-                    checked((uint)sceneAssetId.Value),
-                    SceneAssetStoreTests.Package.CreateEnvelope(
-                        checked((uint)sceneAssetId.Value),
-                        SceneAssetReaderTests.Fixtures.CreateScene(sceneAssetId))))
+            ? SceneAssetStoreTests.CreatePersistenceSpriteScenePackage(sceneAssetId, spriteFrameId)
             : SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
         var savePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.captured-closed-domain.state");
@@ -488,6 +491,7 @@ internal sealed class WorldPersistenceCommitTests
             if (includeActiveScene)
             {
                 _ = SceneSupport.RegisterAssetCodecs(assetRegistrationBuilder);
+                _ = Renderer.RegisterAssetCodecs(assetRegistrationBuilder);
             }
 
             var assetRegistration = assetRegistrationBuilder.Build();
@@ -495,7 +499,10 @@ internal sealed class WorldPersistenceCommitTests
                 packagePath,
                 SHA256.HashData(packageBytes),
                 assetRegistration)).GetAwaiter().GetResult();
-            world = World.Create(new WorldOptions(CreateDomainClosureRegistration(schemas, closureState)) {
+            world = World.Create(new WorldOptions(CreateDomainClosureRegistration(
+                schemas,
+                closureState,
+                includeRendererSupport: includeActiveScene)) {
                 AdmissionDomain = domain,
                 CpuWorkerCount = 0,
                 InitialReplayLineageId = Guid.NewGuid(),
