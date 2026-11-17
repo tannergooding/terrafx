@@ -12,6 +12,13 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     bool HasUncertainSubmission => false;
 
+    IGraphicsBackendBufferReadback BeginBufferReadback(
+        IGraphicsBackendBuffer source,
+        GraphResourceState sourceState,
+        long sourceOffset,
+        nint byteLength)
+        => throw new NotSupportedException("The selected backend does not support asynchronous buffer readback.");
+
     IGraphicsBackendBuffer CreateBuffer(
         BufferDescription description,
         IGraphicsBackendBufferAllocation allocation)
@@ -53,12 +60,6 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     GraphicsResourceAllocationInfo GetTransientTextureAllocationInfo(TextureDescription description)
         => GetTextureAllocationInfo(description);
-
-    OwnedBuffer<byte> ReadbackBuffer(
-        IGraphicsBackendBuffer source,
-        GraphResourceState sourceState,
-        long sourceOffset,
-        nint byteLength);
 
     TextureReadback ReadbackTexture(
         IGraphicsBackendTexture source,

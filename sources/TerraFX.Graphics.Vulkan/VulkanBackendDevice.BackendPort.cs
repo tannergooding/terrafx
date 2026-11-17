@@ -10,6 +10,19 @@ internal sealed unsafe partial class VulkanBackendDevice
 {
     bool IGraphicsBackendDevice.HasUncertainSubmission => _hasUncertainSubmission;
 
+    IGraphicsBackendBufferReadback IGraphicsBackendDevice.BeginBufferReadback(
+        IGraphicsBackendBuffer source,
+        GraphResourceState sourceState,
+        long sourceOffset,
+        nint byteLength)
+    {
+        return BeginBufferReadback(
+            RequireBuffer(source, nameof(source)),
+            sourceState,
+            sourceOffset,
+            byteLength);
+    }
+
     IGraphicsBackendBuffer IGraphicsBackendDevice.CreateBuffer(
         BufferDescription description,
         IGraphicsBackendBufferAllocation allocation)
@@ -75,16 +88,6 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     GraphicsResourceAllocationInfo IGraphicsBackendDevice.GetTransientTextureAllocationInfo(TextureDescription description)
         => GetTransientTextureAllocationInfo(description);
-
-    OwnedBuffer<byte> IGraphicsBackendDevice.ReadbackBuffer(
-        IGraphicsBackendBuffer source,
-        GraphResourceState sourceState,
-        long sourceOffset,
-        nint byteLength)
-    {
-        _ = sourceState;
-        return ReadbackBuffer(RequireBuffer(source, nameof(source)), sourceOffset, byteLength);
-    }
 
     TextureReadback IGraphicsBackendDevice.ReadbackTexture(
         IGraphicsBackendTexture source,

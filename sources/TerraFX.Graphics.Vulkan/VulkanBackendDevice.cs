@@ -1473,6 +1473,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             throw new InvalidOperationException("The Vulkan device cannot release storage while submission completion is uncertain.");
         }
 
+        if (_activeBufferReadbacks.Count != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has active buffer-readback owners.");
+        }
+
         if (_liveSurfaceCount != 0)
         {
             throw new InvalidOperationException("The Vulkan device still has live presentation surfaces.");
