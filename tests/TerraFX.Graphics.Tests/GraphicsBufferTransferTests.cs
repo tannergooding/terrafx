@@ -939,6 +939,176 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
+    [TestCase(0, true, 0)]
+    [TestCase(1, false, 0)]
+    [TestCase(4, true, 0)]
+    [TestCase(8, true, 0)]
+    [TestCase(2, true, 1)]
+    [TestCase(2, true, 2)]
+    [TestCase(2, true, 3)]
+    public async Task GraphPreflightColorFormatsBorrowAttachmentOrderWithoutScratch(
+        int colorCount,
+        bool includeDepth,
+        int mismatch)
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+
+        try
+        {
+            var resources = new GraphResourceRegistry(device, graphOwnerId: 301);
+            var attachments = ImmutableArray.CreateBuilder<GraphicsGraphSubmissionAttachment>();
+            var formats = ImmutableArray.CreateBuilder<TextureFormat>();
+
+            for (var index = 0; index < colorCount; index++)
+            {
+                var format = (index % 2 == 0) ? TextureFormat.Rgba8Unorm : TextureFormat.Rgba16Float;
+                var version = resources.CreateTransientTexture(new TextureDescription(
+                    TextureDimension.Dimension2D, 4, 4, 1, 1, 1, format, TextureUsage.ColorAttachment, "preflight-color"));
+                attachments.Add(new GraphicsGraphSubmissionAttachment(
+                    version, version.Range, AttachmentLoadAction.Clear, AttachmentStoreAction.Store, default, 1.0f, false));
+                formats.Add(format);
+            }
+
+            if (includeDepth)
+            {
+                var version = resources.CreateTransientTexture(new TextureDescription(
+                    TextureDimension.Dimension2D, 4, 4, 1, 1, 1, TextureFormat.D32Float, TextureUsage.DepthAttachment, "preflight-depth"));
+                attachments.Insert(colorCount / 2, new GraphicsGraphSubmissionAttachment(
+                    version, version.Range, AttachmentLoadAction.Clear, AttachmentStoreAction.Store, default, 1.0f, true));
+            }
+
+            if (mismatch == 1)
+            {
+                (formats[0], formats[1]) = (formats[1], formats[0]);
+            }
+            else if (mismatch == 2)
+            {
+                formats.RemoveAt(formats.Count - 1);
+            }
+            else if (mismatch == 3)
+            {
+                formats.Add(TextureFormat.Rgba8Unorm);
+            }
+
+            var frozenFormats = formats.ToImmutable();
+            var frozenAttachments = attachments.ToImmutable();
+            var expected = mismatch == 0;
+            Assert.That(GraphicsGraphSubmission.MatchesColorTargetFormats(frozenFormats, frozenAttachments), Is.EqualTo(expected));
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var matches = GraphicsGraphSubmission.MatchesColorTargetFormats(frozenFormats, frozenAttachments);
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.That(matches, Is.EqualTo(expected));
+            Assert.That(allocated, Is.Zero);
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(false, 0, true)]
+    [TestCase(false, 1, false)]
+    [TestCase(false, 2, false)]
+    [TestCase(false, 3, false)]
+    [TestCase(false, 4, false)]
+    [TestCase(false, 5, false)]
+    [TestCase(true, 0, true)]
+    [TestCase(true, 1, false)]
+    [TestCase(true, 2, false)]
+    public async Task GraphPriorStorageHazardBorrowsFrozenAccessesWithoutScratch(
+        bool texture,
+        int scenario,
+        bool expected)
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+
+        try
+        {
+            var earlierPass = new RenderPassId(302, 2);
+            var currentPass = new RenderPassId(302, 0);
+            var laterPass = new RenderPassId(302, 1);
+            var bufferDescription = new BufferDescription(64, BufferUsage.Storage, GpuMemoryKind.DeviceLocal, 16, "hazard-buffer");
+            var bufferVersion = new GraphBufferVersion(device.DeviceEpoch, 2, 0, bufferDescription, new GraphBufferRange(0, 64));
+            var otherBufferVersion = new GraphBufferVersion(device.DeviceEpoch, 3, 0, bufferDescription, new GraphBufferRange(0, 64));
+            var textureDescription = new TextureDescription(
+                TextureDimension.Dimension2D, 4, 4, 1, 1, 2, TextureFormat.Rgba16Float, TextureUsage.Storage, "hazard-texture");
+            var textureVersion = new GraphTextureVersion(
+                device.DeviceEpoch, 2, 0, textureDescription, new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color));
+            var otherTextureVersion = new GraphTextureVersion(
+                device.DeviceEpoch, 3, 0, textureDescription, new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color));
+
+            GraphResourceAccess CreateAccess(RenderPassId pass, bool write, ulong pairId, bool currentRange, bool otherResource = false)
+            {
+                if (texture)
+                {
+                    return new GraphResourceAccess(
+                        pass,
+                        otherResource ? otherTextureVersion : textureVersion,
+                        new GraphTextureRange(currentRange && (scenario == 1) ? 1 : 0, 1, 0, 1, TextureAspect.Color),
+                        write ? GraphTextureUsage.StorageWrite : GraphTextureUsage.StorageRead,
+                        write,
+                        storageReadWritePairId: pairId);
+                }
+
+                return new GraphResourceAccess(
+                    pass,
+                    otherResource ? otherBufferVersion : bufferVersion,
+                    new GraphBufferRange(currentRange ? (scenario == 1 ? 16 : 8) : 0, 16),
+                    write ? GraphBufferUsage.StorageWrite : GraphBufferUsage.StorageRead,
+                    write,
+                    storageReadWritePairId: pairId);
+            }
+
+            var outputVersion = new GraphTextureVersion(
+                device.DeviceEpoch, 1, 0, target.Description, new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+            var submission = new GraphicsGraphSubmission(
+                device.DeviceEpoch,
+                target,
+                surfaceTarget: null,
+                outputVersion,
+                surfaceEpoch: 0,
+                swapchainEpoch: 0,
+                [earlierPass, currentPass, laterPass],
+                [],
+                [],
+                [],
+                [],
+                [
+                    CreateAccess(currentPass, false, scenario == 5 ? 0UL : 2UL, true),
+                    CreateAccess(earlierPass, true, 3, true, otherResource: true),
+                    CreateAccess(laterPass, true, 4, true),
+                    CreateAccess(scenario == 2 ? laterPass : earlierPass, scenario != 3, scenario == 4 ? 0UL : 1UL, false),
+                ],
+                [],
+                [new GraphTextureImportRecord(
+                    target,
+                    outputVersion,
+                    new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle))],
+                []);
+            Assert.That(submission.HasPriorStorageWriteHazard(currentPass, 2), Is.EqualTo(expected));
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var hazard = submission.HasPriorStorageWriteHazard(currentPass, 2);
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.That(hazard, Is.EqualTo(expected));
+            Assert.That(allocated, Is.Zero);
+            Assert.That(submission.HasPriorStorageWriteHazard(earlierPass, 2), Is.False);
+            Assert.That(submission.HasPriorStorageWriteHazard(currentPass, 4), Is.False);
+
+            if (!texture && (scenario == 0))
+            {
+                var exception = Assert.Throws<ArgumentException>(
+                    () => submission.HasPriorStorageWriteHazard(new RenderPassId(302, 3), 2));
+                Assert.That(exception?.ParamName, Is.EqualTo("passId"));
+            }
+        }
+        finally
+        {
+            target.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     [Test]
     public async Task GraphResourceRegistryRejectsConflictingExplicitAndInferredDependencies()
     {
@@ -2095,10 +2265,11 @@ internal sealed class GraphicsBufferTransferTests
                 target.Description,
                 new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
             var passId = new RenderPassId(300, 0);
+            var bindings = new BindingSet([], [], []);
             using var recorded = new RecordedPassCommandList(
                 passId,
                 CommandRecorderPassKind.Compute,
-                [new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: new BindingSet([], [], []))],
+                [new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: bindings)],
                 []);
             var submission = new GraphicsGraphSubmission(
                 device.DeviceEpoch,
@@ -2120,6 +2291,9 @@ internal sealed class GraphicsBufferTransferTests
                     new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle))],
                 [recorded]);
             Assert.That(submission.Passes[0].Commands == recorded.Commands, Is.True);
+            var retainedPassArray = submission.Passes;
+            var retainedPass = retainedPassArray[0];
+            var retainedCommands = recorded.Commands;
 
             if (quarantine)
             {
@@ -2131,6 +2305,10 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(recorded.Commands.IsEmpty, Is.EqualTo(!quarantine));
             Assert.That(submission.Passes.IsEmpty, Is.EqualTo(!quarantine));
             Assert.That(submission.RecordedPassCommandLists.IsEmpty, Is.EqualTo(!quarantine));
+            Assert.That(retainedPass.Commands == retainedCommands, Is.True);
+            Assert.That(retainedCommands.Length, Is.EqualTo(1));
+            Assert.That(retainedPassArray[0].Commands[0].Bindings, Is.SameAs(bindings));
+            Assert.That(retainedCommands[0].Bindings, Is.SameAs(bindings));
             _ = Assert.Throws<ObjectDisposedException>(submission.ValidateNativeRasterSubmission);
         }
         finally

@@ -164,6 +164,31 @@ internal sealed class GraphicsGraphSubmission
             ?? throw new InvalidOperationException("The recorded pipeline lost its backend resource.");
     }
 
+    internal static bool MatchesColorTargetFormats(
+        ImmutableArray<TextureFormat> formats,
+        ImmutableArray<GraphicsGraphSubmissionAttachment> attachments)
+    {
+        var colorIndex = 0;
+
+        foreach (var attachment in attachments)
+        {
+            if (attachment.IsDepth)
+            {
+                continue;
+            }
+
+            if ((colorIndex >= formats.Length)
+                || (formats[colorIndex] != attachment.Version.Description.Format))
+            {
+                return false;
+            }
+
+            colorIndex++;
+        }
+
+        return colorIndex == formats.Length;
+    }
+
     internal void DisposeRecordedPassCommandLists()
     {
         if (Interlocked.CompareExchange(ref _recordingOwnershipState, 1, 0) != 0)
@@ -233,46 +258,48 @@ internal sealed class GraphicsGraphSubmission
 
     internal bool HasPriorStorageWriteHazard(RenderPassId passId, ulong resourceId)
     {
-        var priorWrites = new List<GraphResourceAccess>();
+        var priorPassCount = 0;
 
-        foreach (var orderedPass in OrderedPasses)
+        while ((priorPassCount < OrderedPasses.Length) && (OrderedPasses[priorPassCount] != passId))
         {
-            if (orderedPass == passId)
+            priorPassCount++;
+        }
+
+        if (priorPassCount == OrderedPasses.Length)
+        {
+            throw new ArgumentException("The pass is not part of this ordered graph.", nameof(passId));
+        }
+
+        // Both backends query this after queue acceptance; borrow the frozen
+        // accesses rather than creating a new managed scratch owner.
+        foreach (var currentAccess in Accesses)
+        {
+            if ((currentAccess.PassId != passId)
+                || (currentAccess.ResourceId != resourceId)
+                || !currentAccess.IsStorageReadWritePair)
             {
-                foreach (var currentAccess in Accesses)
-                {
-                    if ((currentAccess.PassId != passId)
-                        || (currentAccess.ResourceId != resourceId)
-                        || !currentAccess.IsStorageReadWritePair)
-                    {
-                        continue;
-                    }
-
-                    foreach (var priorWrite in priorWrites)
-                    {
-                        if (priorWrite.Overlaps(currentAccess))
-                        {
-                            return true;
-                        }
-                    }
-                }
-
-                return false;
+                continue;
             }
 
-            foreach (var access in Accesses)
+            for (var passIndex = 0; passIndex < priorPassCount; passIndex++)
             {
-                if ((access.PassId == orderedPass)
-                    && (access.ResourceId == resourceId)
-                    && access.IsStorageReadWritePair
-                    && access.IsWrite)
+                var priorPass = OrderedPasses[passIndex];
+
+                foreach (var priorWrite in Accesses)
                 {
-                    priorWrites.Add(access);
+                    if ((priorWrite.PassId == priorPass)
+                        && (priorWrite.ResourceId == resourceId)
+                        && priorWrite.IsStorageReadWritePair
+                        && priorWrite.IsWrite
+                        && priorWrite.Overlaps(currentAccess))
+                    {
+                        return true;
+                    }
                 }
             }
         }
 
-        throw new ArgumentException("The pass is not part of this ordered graph.", nameof(passId));
+        return false;
     }
 
     internal void RecordSubmittedOwnerStates()
@@ -1014,7 +1041,6 @@ internal sealed class GraphicsGraphSubmission
             }
 
             TextureFormat? passDepthTargetFormat = null;
-            var passColorTargetFormats = new List<TextureFormat>();
 
             if (pass.Kind == CommandRecorderPassKind.Presentation)
             {
@@ -1131,7 +1157,6 @@ internal sealed class GraphicsGraphSubmission
                             throw new NotSupportedException("Native graph color attachments must be distinct mip-0/layer-0 color textures within the device attachment limit.");
                         }
 
-                        passColorTargetFormats.Add(description.Format);
                         hasOutputColorAttachment |= isOutputTarget;
                         _ = colorAttachmentPassResourcePairs.Add((pass.PassId, resourceId));
                     }
@@ -1191,12 +1216,7 @@ internal sealed class GraphicsGraphSubmission
                             throw new NotSupportedException("Native graph submission requires a same-device pipeline matching the pass kind.");
                         }
 
-                        var colorTargetFormatsMatch = layout.ColorTargetFormats.Length == passColorTargetFormats.Count;
-
-                        for (var index = 0; colorTargetFormatsMatch && (index < passColorTargetFormats.Count); index++)
-                        {
-                            colorTargetFormatsMatch = layout.ColorTargetFormats[index] == passColorTargetFormats[index];
-                        }
+                        var colorTargetFormatsMatch = MatchesColorTargetFormats(layout.ColorTargetFormats, pass.Attachments);
 
                         if (isComputePass
                             ? (layout.DepthTargetFormat.HasValue || !layout.ColorTargetFormats.IsEmpty)
