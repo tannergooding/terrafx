@@ -398,7 +398,8 @@ public sealed class WorldAdmissionDomain : IDisposable
             if ((interest.Generation != interestGeneration)
                 || (interest.State != StateOccupied)
                 || (interest.Kind != InterestKindWorld)
-                || (interest.Bytes != bytes))
+                || (interest.Bytes != bytes)
+                || !ReferenceEquals(interest.Reservation, reservation))
             {
                 throw new InvalidOperationException("The World admission-domain interest does not match its issued generation.");
             }
@@ -1470,12 +1471,19 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         try
         {
-            reservation = new WorldDomainReservation(
+            var worldReservation = new WorldDomainReservation(
                 this,
                 bytes,
                 maximumAdditionalBytes,
                 interestIndex,
                 interestGeneration);
+
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                _interests[interestIndex].Reservation = worldReservation;
+            }
+
+            reservation = worldReservation;
             return true;
         }
         catch (OutOfMemoryException)

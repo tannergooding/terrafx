@@ -1,6 +1,8 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using NUnit.Framework;
 using TerraFX.Entities;
@@ -10,6 +12,28 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldAdmissionDomainTests
 {
+    [SuppressMessage(
+        "Usage",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The active domain interest owns the reservation; this test deliberately drops the caller reference to verify that root.")]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<WorldDomainReservation> CreateWeakWorldReservation(
+        WorldAdmissionDomain domain,
+        out long bytes,
+        out int interestIndex,
+        out uint interestGeneration)
+    {
+        if (!domain.TryReserveWorld(4096, 4096, out var reservation) || reservation is null)
+        {
+            throw new InvalidOperationException("The World reservation was unexpectedly refused.");
+        }
+
+        bytes = reservation.Bytes;
+        interestIndex = reservation.InterestIndex;
+        interestGeneration = reservation.InterestGeneration;
+        return new WeakReference<WorldDomainReservation>(reservation);
+    }
+
     [Test]
     public void DomainGrowthRequiresTheCompleteOldAndNewPeak()
     {
@@ -27,6 +51,34 @@ internal sealed class WorldAdmissionDomainTests
         overBudgetReservation?.Dispose();
         overBudgetDomain.Dispose();
         Assert.That(overBudgetDomain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void DomainInterestRootsWorldReservationUntilRelease()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var weakReservation = CreateWeakWorldReservation(
+            domain,
+            out var bytes,
+            out var interestIndex,
+            out var interestGeneration);
+
+        domain.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        if (!weakReservation.TryGetTarget(out var reservation))
+        {
+            domain.ReleaseWorld(bytes, interestIndex, interestGeneration, null);
+            throw new InvalidOperationException("The active World interest did not retain its exact reservation.");
+        }
+
+        using var retainedReservation = reservation;
+        retainedReservation.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
     }
 
     [Test]
