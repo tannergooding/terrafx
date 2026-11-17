@@ -67,7 +67,8 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
                 maximumIndexCount: 0,
                 meshAssetCount: 0,
                 maximumWorkBytes: 0,
-                resultByteLength: 0),
+                resultByteLength: 0,
+                pendingGraphSubmissionBackingByteCharge: 64 + (4 * IntPtr.Size)),
             Is.Zero);
     }
 
@@ -79,7 +80,27 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             maximumIndexCount: 1,
             meshAssetCount: 1,
             maximumWorkBytes: long.MaxValue,
-            resultByteLength: 1));
+            resultByteLength: 1,
+            pendingGraphSubmissionBackingByteCharge: 64 + (4 * IntPtr.Size)));
+    }
+
+    [Test]
+    public void KnownMinimumRejectsNegativeOrOverflowingOwnerBackingCharge()
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderMeshC0NormalDiagnosticWork.CalculateKnownMinimumCpuBytesForWorstCaseGeometry(
+            drawCount: 1,
+            maximumIndexCount: 1,
+            meshAssetCount: 1,
+            maximumWorkBytes: 1,
+            resultByteLength: 1,
+            pendingGraphSubmissionBackingByteCharge: -1));
+        _ = Assert.Throws<OutOfMemoryException>(() => RenderMeshC0NormalDiagnosticWork.CalculateKnownMinimumCpuBytesForWorstCaseGeometry(
+            drawCount: 1,
+            maximumIndexCount: 1,
+            meshAssetCount: 1,
+            maximumWorkBytes: 1,
+            resultByteLength: 1,
+            pendingGraphSubmissionBackingByteCharge: long.MaxValue));
     }
 
     [Test]
@@ -100,7 +121,8 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             + Charge(1, IntPtr.Size)
             + 80
             + 192
-            + Charge(256, IntPtr.Size));
+            + Charge(256, IntPtr.Size)
+            + Charge(4, IntPtr.Size));
 
         Assert.That(
             RenderMeshC0NormalDiagnosticWork.CalculateKnownMinimumCpuBytesForWorstCaseGeometry(
@@ -108,7 +130,8 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
                 maximumIndexCount: 1,
                 meshAssetCount: 1,
                 maximumWorkBytes: 1,
-                resultByteLength: 1),
+                resultByteLength: 1,
+                pendingGraphSubmissionBackingByteCharge: 64 + (4 * IntPtr.Size)),
             Is.EqualTo(expected));
     }
 
@@ -169,7 +192,8 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             maximumIndexCount: 1,
             meshAssetCount: 1,
             maximumWorkBytes: checked(32L * drawCount),
-            resultByteLength: checked(16L * drawCount));
+            resultByteLength: checked(16L * drawCount),
+            pendingGraphSubmissionBackingByteCharge: 64 + (4 * IntPtr.Size));
         Assert.That(knownMinimum, Is.GreaterThan(minimumMutableAndFrozenCommands));
         Assert.That(knownMinimum, Is.GreaterThan(32L * 1024 * 1024));
     }

@@ -63,13 +63,15 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
         int maximumIndexCount,
         int meshAssetCount,
         long maximumWorkBytes,
-        long resultByteLength)
+        long resultByteLength,
+        long pendingGraphSubmissionBackingByteCharge)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(drawCount);
         ArgumentOutOfRangeException.ThrowIfNegative(maximumIndexCount);
         ArgumentOutOfRangeException.ThrowIfNegative(meshAssetCount);
         ArgumentOutOfRangeException.ThrowIfNegative(maximumWorkBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(resultByteLength);
+        ArgumentOutOfRangeException.ThrowIfNegative(pendingGraphSubmissionBackingByteCharge);
 
         if (drawCount == 0)
         {
@@ -88,7 +90,8 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
                 + ArrayCharge(resultByteLength, sizeof(byte))
                 + CommandRecorderRecordingCapacity.CalculateKnownBackingArrayBytes(maximumCommandCount, drawCount)
                 + GraphicsRecordingUseAdmission.CalculateByteAllowance(drawCount)
-                + GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge);
+                + GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge
+                + pendingGraphSubmissionBackingByteCharge);
         }
         catch (OverflowException exception)
         {
@@ -108,7 +111,8 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
         int[] meshGeometryIndices,
         System.Collections.Generic.List<RenderMeshAsset> meshAssets,
         int[] bonePaletteOffsets,
-        long storageBufferOffsetAlignment)
+        long storageBufferOffsetAlignment,
+        long pendingGraphSubmissionBackingByteCharge)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(selectedDraws);
@@ -116,6 +120,7 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
         ArgumentNullException.ThrowIfNull(meshAssets);
         ArgumentNullException.ThrowIfNull(bonePaletteOffsets);
         ArgumentOutOfRangeException.ThrowIfZero(storageBufferOffsetAlignment);
+        ArgumentOutOfRangeException.ThrowIfNegative(pendingGraphSubmissionBackingByteCharge);
 
         if ((selectedDraws.Length != snapshot.MeshDraws.Length)
             || (meshGeometryIndices.Length != snapshot.MeshDraws.Length)
@@ -217,7 +222,8 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
             maximumIndexCount,
             meshAssets.Count,
             maximumWorkBytes,
-            resultByteLength);
+            resultByteLength,
+            pendingGraphSubmissionBackingByteCharge);
 
         if ((maximumWorkBytes > int.MaxValue)
             || (resultByteLength > int.MaxValue)

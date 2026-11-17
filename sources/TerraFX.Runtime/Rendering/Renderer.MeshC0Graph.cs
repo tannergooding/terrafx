@@ -1032,12 +1032,15 @@ public sealed partial class Renderer
 
         for (var meshIndex = 0; meshIndex < meshAssets.Count; meshIndex++)
         {
+            var skinned = !meshAssets[meshIndex].JointIndices.IsDefault;
             vertexBuffers[meshIndex] = graph.CreateInitializedTransientBuffer(
                 new BufferDescription(
                     vertexBytesByMesh[meshIndex].Length,
-                    BufferUsage.Vertex | BufferUsage.CopyDestination,
+                    BufferUsage.Vertex
+                        | BufferUsage.CopyDestination
+                        | (skinned ? BufferUsage.Storage : BufferUsage.None),
                     GpuMemoryKind.DeviceLocal,
-                    structuredStride: null,
+                    structuredStride: skinned ? RenderMeshC0VertexBufferBuilder.VertexStride : null,
                     $"mesh-vertices-{meshIndex}"),
                 vertexBytesByMesh[meshIndex]);
             indexBuffers[meshIndex] = graph.CreateInitializedTransientBuffer(
@@ -1050,6 +1053,14 @@ public sealed partial class Renderer
                 indexBytesByMesh[meshIndex]);
         }
 
+        var normalDiagnosticWork = RenderMeshC0NormalDiagnosticWork.Create(
+            meshSnapshot,
+            selectedDraws,
+            meshGeometryIndices,
+            meshAssets,
+            bonePaletteOffsets,
+            device.Capabilities.Limits.StorageBufferOffsetAlignment,
+            device.PendingGraphSubmissionBackingByteCharge);
         var meshPassCount = 0;
         colorState ??= new RenderGraphBuiltInColorState(
             graph.CreateTransientTexture(new TextureDescription(
@@ -1110,6 +1121,79 @@ public sealed partial class Renderer
             TextureFormat.D32Float,
             TextureUsage.DepthAttachment | TextureUsage.Sampled,
             hasShadowData ? "mesh-shadow-atlas" : "mesh-unshadowed-depth"));
+
+        if (normalDiagnosticWork is RenderMeshC0NormalDiagnosticWork diagnosticWork)
+        {
+            var workBuffer = graph.CreateInitializedTransientBuffer(
+                new BufferDescription(
+                    diagnosticWork.WorkBytes.Length,
+                    BufferUsage.Storage | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: 16,
+                    "mesh-normal-diagnostic-work"),
+                diagnosticWork.WorkBytes);
+            var resultBuffer = graph.CreateInitializedTransientBuffer(
+                new BufferDescription(
+                    diagnosticWork.ResultBytes.Length,
+                    BufferUsage.Storage | BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: 16,
+                    "mesh-normal-diagnostic-results"),
+                diagnosticWork.ResultBytes);
+            var diagnosticPassId = graph.AddBuiltInMeshNormalDiagnosticComputePass(
+                new RenderPassDescription(
+                    "TerraFX.MeshC0.SkinnedNormalDiagnostics",
+                    passIndex++,
+                    hasPreviousPass ? [previousPass] : [],
+                    hasExternalSideEffects: true));
+
+            for (var meshIndex = 0; meshIndex < diagnosticWork.MeshBuffersUsed.Length; meshIndex++)
+            {
+                if (!diagnosticWork.MeshBuffersUsed[meshIndex])
+                {
+                    continue;
+                }
+
+                var vertexBuffer = vertexBuffers[meshIndex];
+                vertexBuffers[meshIndex] = graph.ReadWriteBuffer(
+                    diagnosticPassId,
+                    vertexBuffer,
+                    new GraphBufferRange(0, vertexBuffer.Description.ByteLength));
+            }
+
+            var sourceBonePaletteBuffer = currentBonePaletteBuffer
+                ?? throw new InvalidOperationException("The graph has diagnostic draws without a bone-palette buffer.");
+            currentBonePaletteBuffer = graph.ReadWriteBuffer(
+                diagnosticPassId,
+                sourceBonePaletteBuffer,
+                new GraphBufferRange(0, sourceBonePaletteBuffer.Description.ByteLength));
+            var workBufferVersion = graph.ReadWriteBuffer(
+                diagnosticPassId,
+                workBuffer,
+                new GraphBufferRange(0, workBuffer.Description.ByteLength));
+            var resultBufferVersion = graph.ReadWriteBuffer(
+                diagnosticPassId,
+                resultBuffer,
+                new GraphBufferRange(0, resultBuffer.Description.ByteLength));
+            graph.ExportBufferForReadback(
+                resultBufferVersion,
+                new GraphBufferRange(0, resultBuffer.Description.ByteLength));
+            var diagnosticPass = new RenderMeshC0NormalDiagnosticGraphPass(
+                meshSnapshot.SnapshotId,
+                meshSnapshot.WorldGuid,
+                meshSnapshot.TickIndex,
+                diagnosticWork.Draws,
+                vertexBuffers,
+                currentBonePaletteBuffer,
+                workBufferVersion,
+                resultBufferVersion,
+                diagnosticWork.MeshBufferCount,
+                diagnosticWork.StorageBufferOffsetAlignment);
+            graph.SetBuiltInMeshNormalDiagnosticComputePass(diagnosticPassId, diagnosticPass);
+            previousPass = diagnosticPassId;
+            hasPreviousPass = true;
+        }
+
         var shadowAtlasClearArea = new RenderArea(0, 0, shadowAtlasResolution, shadowAtlasResolution);
         var shadowAtlasClearPass = graph.AddRasterPass(new RenderPassDescription(
             "TerraFX.MeshC0.ShadowAtlas.Clear",

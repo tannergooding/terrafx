@@ -100,6 +100,10 @@ public sealed partial class GraphicsDevice
 
     internal uint OwnerId => _ownerId;
 
+    // Startup capacity is retained; pending-submission admission never grows this list.
+    internal long PendingGraphSubmissionBackingByteCharge
+        => checked(64 + ((checked(_pendingGraphSubmissions.Capacity * (long)IntPtr.Size) + 15) & ~15L));
+
     internal static Task<GraphicsDevice> CreateAsync(
         uint ownerId,
         GraphicsBackendRegistration registration,

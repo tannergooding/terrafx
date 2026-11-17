@@ -35,6 +35,50 @@ internal sealed class GraphicsOwnerRequestQueueTests
         Assert.That(observed, Is.SameAs(work));
     }
 
+    [TestCase(false, false)]
+    [TestCase(true, false)]
+    [TestCase(false, true)]
+    public async Task DiagnosticRequestRefusalAllocatesNoWaiterOrQueueStorage(bool full, bool closed)
+    {
+        using var queue = new GraphicsOwnerRequestQueue();
+        var retained = new TestWork[full ? 256 : 0];
+
+        for (var index = 0; index < retained.Length; index++)
+        {
+            retained[index] = new TestWork();
+            await queue.WriteRequestAsync(retained[index], CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (closed)
+        {
+            queue.CompleteRequests();
+        }
+
+        var work = new TestWork();
+        var maximumBackingBytes = (full || closed) ? queue.RequestBackingByteCharge : queue.RequestBackingByteCharge - 1;
+        Assert.That(queue.TryWriteDiagnosticRequest(work, maximumBackingBytes), Is.False);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var accepted = queue.TryWriteDiagnosticRequest(work, maximumBackingBytes);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.That(accepted, Is.False);
+        Assert.That(allocated, Is.Zero);
+
+        foreach (var name in new[] { "_pendingRequestHead", "_pendingRequestTail" })
+        {
+            var field = typeof(GraphicsOwnerRequestQueue).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The queue's pending-writer owner field was not found.");
+            Assert.That(field.GetValue(queue), Is.Null);
+        }
+
+        for (var index = 0; index < retained.Length; index++)
+        {
+            Assert.That(queue.TryReadRequest(out var observed), Is.True);
+            Assert.That(observed, Is.SameAs(retained[index]));
+        }
+
+        Assert.That(queue.TryReadRequest(out _), Is.False);
+    }
+
     [Test]
     public async Task DiagnosticRequestRefusalCannotOvertakePendingOrdinaryWriters()
     {
@@ -88,9 +132,18 @@ internal sealed class GraphicsOwnerRequestQueueTests
 
         try
         {
-            var attempt = Task.Run(() => queue.TryWriteDiagnosticRequest(work, queue.RequestBackingByteCharge));
+            var attempt = Task.Run(() => {
+                var firstAccepted = queue.TryWriteDiagnosticRequest(work, queue.RequestBackingByteCharge);
+                var before = GC.GetAllocatedBytesForCurrentThread();
+                var accepted = queue.TryWriteDiagnosticRequest(work, queue.RequestBackingByteCharge);
+                var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+                return (FirstAccepted: firstAccepted, Accepted: accepted, Allocated: allocated);
+            });
             Assert.That(attempt.Wait(TimeSpan.FromSeconds(5)), Is.True);
-            Assert.That(attempt.GetAwaiter().GetResult(), Is.False);
+            var (firstResult, acceptedResult, allocatedBytes) = attempt.GetAwaiter().GetResult();
+            Assert.That(firstResult, Is.False);
+            Assert.That(acceptedResult, Is.False);
+            Assert.That(allocatedBytes, Is.Zero);
         }
         finally
         {

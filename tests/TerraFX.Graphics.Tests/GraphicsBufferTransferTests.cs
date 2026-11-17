@@ -834,25 +834,35 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
-    [Test]
-    public async Task GraphFrameSlotAdmissionWaitsAtCapacityAndRecoversAfterRelease()
+    [TestCase(1)]
+    [TestCase(2)]
+    [TestCase(3)]
+    [TestCase(4)]
+    public async Task GraphFrameSlotAdmissionWaitsAtCapacityAndRecoversAfterRelease(int frameSlotCount)
     {
         var graphicsDevice = await CreateGraphicsDeviceAsync(
             new FakeBackendDevice(),
-            frameSlotCount: 2).ConfigureAwait(false);
+            frameSlotCount).ConfigureAwait(false);
+        var reservations = new GraphicsDevice.GraphFrameSlotReservation?[frameSlotCount];
+        var retainedBackingCharge = 64 + (4 * IntPtr.Size);
 
         try
         {
-            using var firstReservation = await graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(5))
-                .ConfigureAwait(false);
-            using var secondReservation = await graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(5))
-                .ConfigureAwait(false);
+            Assert.That(graphicsDevice.PendingGraphSubmissionBackingByteCharge, Is.EqualTo(retainedBackingCharge));
+
+            for (var index = 0; index < reservations.Length; index++)
+            {
+                reservations[index] = await graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+            }
+
             var waitingReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None);
             Assert.That(waitingReservation.IsCompleted, Is.False);
+            Assert.That(graphicsDevice.PendingGraphSubmissionBackingByteCharge, Is.EqualTo(retainedBackingCharge));
 
-            firstReservation.Dispose();
+            reservations[0]?.Dispose();
+            reservations[0] = null;
             using var recoveredReservation = await waitingReservation
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
@@ -864,9 +874,15 @@ internal sealed class GraphicsBufferTransferTests
             using var replacementReservation = await nextWaitingReservation
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
+            Assert.That(graphicsDevice.PendingGraphSubmissionBackingByteCharge, Is.EqualTo(retainedBackingCharge));
         }
         finally
         {
+            foreach (var reservation in reservations)
+            {
+                reservation?.Dispose();
+            }
+
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
