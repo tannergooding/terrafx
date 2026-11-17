@@ -310,13 +310,62 @@ internal sealed class GraphicsPipelineRequestTests
         try
         {
             var recording = StartRecordingWithCapture(device);
+            TestContext.WriteLine(
+                $"Runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; "
+                + $"RecordPassTask={recording.Task.GetType().FullName}; "
+                + $"StatusBeforeCompletion={recording.Task.Status}");
             using var result = await recording.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(recording.Task.Status, Is.EqualTo(TaskStatus.RanToCompletion));
             result.Dispose();
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
             Assert.That(recording.Capture.TryGetTarget(out _), Is.False);
             GC.KeepAlive(recording.Task);
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task CompletedRecordingTaskPreservesCallbackCancellation()
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            32,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        using var cancellationSource = new CancellationTokenSource();
+        var cancellationToken = cancellationSource.Token;
+        var callbackException = new OperationCanceledException("The recording callback canceled.", cancellationToken);
+
+        void CancelRecording(scoped ref CommandRecorder recorder)
+        {
+            throw callbackException;
+        }
+
+        try
+        {
+            var returnedTask = device.RecordPassAsync(
+                new RenderPassId(200, 1),
+                CommandRecorderPassKind.Copy,
+                [],
+                [],
+                depthTargetFormat: null,
+                CancelRecording);
+            var exception = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await returnedTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            Assert.That(returnedTask.Status, Is.EqualTo(TaskStatus.Canceled));
+            Assert.That(returnedTask.IsCanceled, Is.True);
+            Assert.That(exception?.CancellationToken, Is.EqualTo(cancellationToken));
+            GC.KeepAlive(returnedTask);
         }
         finally
         {

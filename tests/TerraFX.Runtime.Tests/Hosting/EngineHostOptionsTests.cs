@@ -848,11 +848,17 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(compiledPlan.OffscreenColorTarget, Is.SameAs(target));
             Assert.That(compiledPlan.SurfaceEpoch, Is.Zero);
             Assert.That(compiledPlan.SwapchainEpoch, Is.Zero);
-            var recordedPasses = compiledPlan.RecordPassCallbacksAsync(builtInResources: null).GetAwaiter().GetResult();
+            var recordingTask = compiledPlan.RecordPassCallbacksAsync(builtInResources: null);
+            TestContext.WriteLine(
+                $"Runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; "
+                + $"PlanRecordingTask={recordingTask.GetType().FullName}; "
+                + $"StatusBeforeCompletion={recordingTask.Status}");
+            var recordedPasses = recordingTask.GetAwaiter().GetResult();
 
             try
             {
                 Assert.That(recordedPasses.Length, Is.EqualTo(1));
+                Assert.That(recordingTask.Status, Is.EqualTo(TaskStatus.RanToCompletion));
                 Assert.That(callbackThreadId, Is.Not.EqualTo(Environment.CurrentManagedThreadId));
                 var commandReadState = 0;
                 using var commandRead = recordedPasses[0].ReadCommands(ref commandReadState);

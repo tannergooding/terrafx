@@ -5293,6 +5293,11 @@ internal sealed partial class EngineHostOptionsTests
                 var secondSubmissionTask = renderer.SubmitAsync(
                     renderSnapshot,
                     delayedTransientTexturePlan ?? plan);
+                TestContext.WriteLine(
+                    $"Runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; "
+                    + $"Architecture={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; "
+                    + $"RendererTask={submissionTask.GetType().FullName}; "
+                    + $"StatusBeforeCompletion={submissionTask.Status}");
 
                 var twoGraphWaitsStarted = twoFenceWaitsEntered.Wait(TimeSpan.FromSeconds(5));
                 Assert.That(
@@ -5347,8 +5352,10 @@ internal sealed partial class EngineHostOptionsTests
                 await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
                 Assert.That(cancelledSubmissionTask.IsCompleted, Is.False);
                 await slotWaitCancellation.CancelAsync().ConfigureAwait(false);
-                _ = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                var cancellationException = Assert.ThrowsAsync<OperationCanceledException>(async () =>
                     await cancelledSubmissionTask.ConfigureAwait(false));
+                Assert.That(cancelledSubmissionTask.Status, Is.EqualTo(TaskStatus.Canceled));
+                Assert.That(cancellationException?.CancellationToken, Is.EqualTo(slotWaitCancellation.Token));
 
                 var submittedTarget = target
                     ?? throw new InvalidOperationException("The delayed graph test has no imported color target.");
@@ -5362,6 +5369,8 @@ internal sealed partial class EngineHostOptionsTests
                 continueFenceWait.Set();
                 receipt = await submissionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 var queuedReceipt = await secondSubmissionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(submissionTask.Status, Is.EqualTo(TaskStatus.RanToCompletion));
+                Assert.That(secondSubmissionTask.Status, Is.EqualTo(TaskStatus.RanToCompletion));
                 Assert.That(receipt.CompletedFence, Is.GreaterThan(0));
                 Assert.That(queuedReceipt.CompletedFence, Is.GreaterThan(0));
                 Assert.That(queuedReceipt.CompletedFence, Is.Not.EqualTo(receipt.CompletedFence));
