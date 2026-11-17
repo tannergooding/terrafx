@@ -26,6 +26,36 @@ internal sealed class GraphicsPipelineRequestTests
         return (new WeakReference<GraphicsResourceOwner.UseLease>(use), new WeakReference<GraphicsRecordingUseAdmission>(admission));
     }
 
+    private static void AssertBorrowedResourceSequence(
+        PipelineBindingLayout layout,
+        ImmutableArray<ShaderResourceSignature> expected)
+    {
+        var index = 0;
+
+        foreach (var resource in layout.EnumerateDistinctResources())
+        {
+            Assert.That(index, Is.LessThan(expected.Length));
+            Assert.That(resource, Is.EqualTo(expected[index]));
+            index++;
+        }
+
+        Assert.That(index, Is.EqualTo(expected.Length));
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var count = 0;
+        var matches = true;
+
+        foreach (var resource in layout.EnumerateDistinctResources())
+        {
+            matches &= (count < expected.Length) && (resource == expected[count]);
+            count++;
+        }
+
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.That(count, Is.EqualTo(expected.Length));
+        Assert.That(matches, Is.True);
+        Assert.That(allocated, Is.Zero);
+    }
+
     private static GraphicsCapabilities CreateCapabilities(GraphicsLimits? limits = null)
     {
         var features = ImmutableArray.Create(
@@ -1823,6 +1853,93 @@ internal sealed class GraphicsPipelineRequestTests
             bufferOwner.Dispose();
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task PreflightDistinctResourcesBorrowPipelineMetadataWithoutAllocation(bool compute)
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            31,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        using var bytecodeOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        using var bytecode = bytecodeOwner.AcquireRead(0, 4);
+
+        try
+        {
+            var shared = new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1);
+            var vertexOnly = new ShaderResourceSignature(ShaderBindingGroup.ObjectData, 1, ShaderResourceKind.UniformBuffer, 1);
+            var pixelOnly = new ShaderResourceSignature(ShaderBindingGroup.Material, 2, ShaderResourceKind.UniformBuffer, 1);
+            ImmutableArray<ShaderResourceSignature> computeResources = [
+                new(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
+                new(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageBuffer, 1),
+                new(ShaderBindingGroup.Frame, 2, ShaderResourceKind.StorageBuffer, 1),
+                new(ShaderBindingGroup.Frame, 3, ShaderResourceKind.StorageBuffer, 1),
+            ];
+            PipelineDescription description = compute
+                ? CreateComputePipelineDescription(bytecode, computeResources)
+                : CreatePipelineDescription(bytecode, [vertexOnly, shared], [pixelOnly, shared]);
+            using var pipeline = await device.CreatePipelineAsync(description).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            AssertBorrowedResourceSequence(
+                pipeline.BindingLayout,
+                compute ? computeResources : [shared, vertexOnly, pixelOnly]);
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(0)]
+    [TestCase(1)]
+    [TestCase(2)]
+    public void PreflightDistinctResourcesHandleEmptyStageMetadata(int scenario)
+    {
+        using var bytecodeOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        using var bytecode = bytecodeOwner.AcquireRead(0, 4);
+        var resource = new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1);
+        PipelineDescription description = scenario switch {
+            0 => CreateComputePipelineDescription(bytecode, []),
+            1 => CreatePipelineDescription(bytecode, [], [resource]),
+            _ => CreatePipelineDescription(bytecode, [resource], []),
+        };
+        var layout = new PipelineBindingLayout(description);
+        AssertBorrowedResourceSequence(layout, scenario == 0 ? [] : [resource]);
+    }
+
+    [TestCase(0)]
+    [TestCase(1)]
+    [TestCase(2)]
+    public void PreflightSharedMetadataConflictsAreRejectedBeforeBorrow(int difference)
+    {
+        using var bytecodeOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        using var bytecode = bytecodeOwner.AcquireRead(0, 4);
+        var original = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32UInt,
+            TextureDimension.Dimension2D,
+            false);
+        var changed = new ShaderResourceSignature(
+            original.Group,
+            original.Binding,
+            original.Kind,
+            difference == 0 ? 2 : original.ArrayCount,
+            difference == 1 ? ShaderResourceAccess.Write : original.Access,
+            original.StorageImageFormat,
+            original.ImageDimension,
+            difference == 2);
+        var exception = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(bytecode, [original], [changed]));
+        Assert.That(exception?.ParamName, Is.EqualTo("pixelReflection"));
     }
 
     [Test]

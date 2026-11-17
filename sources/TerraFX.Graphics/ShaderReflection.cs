@@ -161,7 +161,7 @@ public sealed class ShaderReflection
 
     internal static int CompareResourceIdentity(ShaderResourceSignature left, ShaderResourceSignature right)
     {
-        var groupComparison = left.Group.CompareTo(right.Group);
+        var groupComparison = ((int)left.Group).CompareTo((int)right.Group);
 
         if (groupComparison != 0)
         {

@@ -1227,7 +1227,6 @@ internal sealed class GraphicsGraphSubmission
                             throw new NotSupportedException("Native graph submission requires attachment-free compute pipelines and triangle-list graphics pipelines matching its color and optional depth attachments.");
                         }
 
-                        var reflectedResources = new HashSet<ShaderResourceSignature>();
                         currentPipelineRequiresVertexBuffer = !isComputePass && (layout.VertexStride != 0);
                         currentVertexBufferImport = null;
                         currentIndexBufferImport = null;
@@ -1275,12 +1274,10 @@ internal sealed class GraphicsGraphSubmission
                                     throw new NotSupportedException(
                                         "Native graph submission supports all four groups for graphics resources and Frame compute-stage storage bindings.");
                                 }
-
-                                _ = reflectedResources.Add(resource);
                             }
                         }
 
-                        foreach (var resource in reflectedResources)
+                        foreach (var resource in layout.EnumerateDistinctResources())
                         {
                             switch (resource.Kind)
                             {
