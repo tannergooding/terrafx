@@ -283,12 +283,21 @@ internal sealed partial class EngineHostOptionsTests
         Task<RenderSubmissionReceipt>? returnedTask = null;
         WeakReference<RenderSnapshot>? snapshotReference = null;
         WeakReference<RenderGraphPlan>? planReference = null;
+        WeakReference<Renderer>? rendererReference = null;
+        WeakReference<GraphicsDevice>? deviceReference = null;
 
-        void ObserveReturnedTask(Task<RenderSubmissionReceipt> task, RenderSnapshot snapshot, RenderGraphPlan plan)
+        void ObserveReturnedTask(
+            Task<RenderSubmissionReceipt> task,
+            RenderSnapshot snapshot,
+            RenderGraphPlan plan,
+            Renderer renderer,
+            GraphicsDevice device)
         {
             returnedTask = task;
             snapshotReference = new WeakReference<RenderSnapshot>(snapshot);
             planReference = new WeakReference<RenderGraphPlan>(plan);
+            rendererReference = new WeakReference<Renderer>(renderer);
+            deviceReference = new WeakReference<GraphicsDevice>(device);
         }
 
         var helperTask = RunOffscreenGraphAsync(
@@ -315,16 +324,27 @@ internal sealed partial class EngineHostOptionsTests
             ?? throw new InvalidOperationException("The graph task-retention probe captured no snapshot.");
         var retainedPlan = planReference
             ?? throw new InvalidOperationException("The graph task-retention probe captured no plan.");
+        var retainedRenderer = rendererReference
+            ?? throw new InvalidOperationException("The graph task-retention probe captured no Renderer.");
+        var retainedDevice = deviceReference
+            ?? throw new InvalidOperationException("The graph task-retention probe captured no GraphicsDevice.");
         Assert.That(completedTask.Status, Is.EqualTo(TaskStatus.RanToCompletion));
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
         var snapshotRetainedWhileTaskHeld = retainedSnapshot.TryGetTarget(out _);
         var planRetainedWhileTaskHeld = retainedPlan.TryGetTarget(out _);
+        var rendererRetainedWhileTaskHeld = retainedRenderer.TryGetTarget(out _);
+        var deviceRetainedWhileTaskHeld = retainedDevice.TryGetTarget(out _);
         TestContext.WriteLine(
-            $"CallerTaskRetainsSnapshot={snapshotRetainedWhileTaskHeld}; CallerTaskRetainsPlan={planRetainedWhileTaskHeld}");
+            $"CallerTaskRetainsSnapshot={snapshotRetainedWhileTaskHeld}; "
+            + $"CallerTaskRetainsPlan={planRetainedWhileTaskHeld}; "
+            + $"CallerTaskRetainsRenderer={rendererRetainedWhileTaskHeld}; "
+            + $"CallerTaskRetainsDevice={deviceRetainedWhileTaskHeld}");
         Assert.That(snapshotRetainedWhileTaskHeld, Is.False);
         Assert.That(planRetainedWhileTaskHeld, Is.False);
+        Assert.That(rendererRetainedWhileTaskHeld, Is.False);
+        Assert.That(deviceRetainedWhileTaskHeld, Is.False);
         GC.KeepAlive(completedTask);
         returnedTask = null;
         completedTask = null;
@@ -333,6 +353,8 @@ internal sealed partial class EngineHostOptionsTests
         GC.Collect();
         Assert.That(retainedSnapshot.TryGetTarget(out _), Is.False);
         Assert.That(retainedPlan.TryGetTarget(out _), Is.False);
+        Assert.That(retainedRenderer.TryGetTarget(out _), Is.False);
+        Assert.That(retainedDevice.TryGetTarget(out _), Is.False);
     }
 
     [Test]
@@ -1620,7 +1642,7 @@ internal sealed partial class EngineHostOptionsTests
         bool useManyBufferCopyDestinations = false,
         bool useRenderAreaClear = false,
         bool useAttachmentScopedRenderArea = false,
-        Action<Task<RenderSubmissionReceipt>, RenderSnapshot, RenderGraphPlan>? observeReturnedTask = null)
+        Action<Task<RenderSubmissionReceipt>, RenderSnapshot, RenderGraphPlan, Renderer, GraphicsDevice>? observeReturnedTask = null)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -5334,7 +5356,7 @@ internal sealed partial class EngineHostOptionsTests
                 _ = Interlocked.Exchange(ref holdFenceWaitCount, 2);
                 _ = Interlocked.Exchange(ref holdCompletedGraphFenceValue, 1);
                 var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
-                observeReturnedTask?.Invoke(submissionTask, renderSnapshot, plan);
+                observeReturnedTask?.Invoke(submissionTask, renderSnapshot, plan, renderer, graphicsDevice);
                 var secondSubmissionTask = renderer.SubmitAsync(
                     renderSnapshot,
                     delayedTransientTexturePlan ?? plan);
