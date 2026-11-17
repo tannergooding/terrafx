@@ -50,6 +50,9 @@ public sealed partial class RenderGraphPlan
                 RenderMeshC0GraphPass? meshPass = null;
                 RenderMeshC0ShadowGraphPass? meshShadowPass = null;
                 RenderSpriteToneMapGraphPass? toneMapPass = null;
+                var meshNormalDiagnosticPass = builtInSpriteState?.MeshNormalDiagnosticPassId == passId
+                    ? builtInSpriteState.MeshNormalDiagnosticPass
+                    : null;
                 var hasSpritePass = (builtInSpriteState is not null)
                     && builtInSpriteState.Passes.TryGetValue(passId, out spritePass);
                 var hasMeshPass = (builtInSpriteState is not null)
@@ -59,7 +62,12 @@ public sealed partial class RenderGraphPlan
                 var hasToneMapPass = (builtInSpriteState is not null)
                     && builtInSpriteState.ToneMapPasses.TryGetValue(passId, out toneMapPass);
 
-                if ((callback is null) && !hasSpritePass && !hasMeshPass && !hasMeshShadowPass && !hasToneMapPass)
+                if ((callback is null)
+                    && !hasSpritePass
+                    && !hasMeshPass
+                    && !hasMeshShadowPass
+                    && !hasToneMapPass
+                    && !meshNormalDiagnosticPass.HasValue)
                 {
                     continue;
                 }
@@ -111,6 +119,7 @@ public sealed partial class RenderGraphPlan
                 try
                 {
                     var selectedCallback = callback;
+                    var diagnosticPipeline = default(GpuPipelineHandle);
 
                     if (hasSpritePass)
                     {
@@ -168,15 +177,44 @@ public sealed partial class RenderGraphPlan
 
                         selectedCallback = RecordToneMapPass;
                     }
+                    else if (meshNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass selectedDiagnosticPass)
+                    {
+                        var selectedResources = builtInResources
+                            ?? throw new InvalidOperationException("The built-in Mesh diagnostic pass has no submission resources.");
+                        diagnosticPipeline = selectedResources.SkinnedNormalDiagnosticComputePipeline
+                            ?.Handle
+                            ?? throw new InvalidOperationException("The built-in Mesh diagnostic pass has no compute pipeline.");
+
+                        void RecordDiagnosticPass(scoped ref CommandRecorder recorder)
+                        {
+                            selectedDiagnosticPass.Record(ref recorder, selectedResources);
+                        }
+
+                        selectedCallback = RecordDiagnosticPass;
+                    }
+
+                    var declaredAccesses = accesses.ToImmutable();
+                    var diagnosticRecipe = meshNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass selectedDiagnosticPassForRecipe
+                        ? selectedDiagnosticPassForRecipe.CreateRecordingRecipe(
+                            passId,
+                            device.DeviceEpoch,
+                            declaredAccesses,
+                            diagnosticPipeline)
+                        : null;
 
                     commandList = await device.RecordPassAsync(
                         passId,
                         commandRecorderPassKind,
-                        accesses.ToImmutable(),
+                        declaredAccesses,
                         colorTargetFormats.ToImmutable(),
                         depthTargetFormat,
                         selectedCallback
-                            ?? throw new InvalidOperationException("The graph pass has no recording callback."))
+                            ?? throw new InvalidOperationException("The graph pass has no recording callback."),
+                        meshNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass diagnosticPass
+                            ? diagnosticPass.RecordingCapacity
+                            : default,
+                        diagnosticRecipe,
+                        requiresDiagnosticQueueAdmission: builtInSpriteState?.MeshNormalDiagnosticPass.HasValue == true)
                         .ConfigureAwait(false);
                     commandLists.Add(commandList);
                     commandList = null;

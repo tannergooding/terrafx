@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +30,14 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    [DoesNotReturn]
+    [SuppressMessage(
+        "Usage",
+        "CA2201:Do not raise reserved exception types",
+        Justification = "A diagnostic queue handoff that cannot fit immediately refuses the whole unsubmitted graph.")]
+    private static void ThrowDiagnosticQueueUnavailable()
+        => throw new OutOfMemoryException("The diagnostic owner-queue backing or immediate admission is unavailable.");
+
     internal async Task<RecordedPassCommandList> RecordPassAsync(
         RenderPassId passId,
         CommandRecorderPassKind passKind,
@@ -37,7 +46,8 @@ public sealed partial class GraphicsDevice
         TextureFormat? depthTargetFormat,
         RenderPassCallback? callback,
         CommandRecorderRecordingCapacity recordingCapacity = default,
-        SkinnedNormalDiagnosticRecordingRecipe? diagnosticRecipe = null)
+        SkinnedNormalDiagnosticRecordingRecipe? diagnosticRecipe = null,
+        bool requiresDiagnosticQueueAdmission = false)
     {
         RecordPassRequest? request = null;
         var queued = false;
@@ -48,6 +58,7 @@ public sealed partial class GraphicsDevice
             CommandRecorderState.ValidatePassInputs(
                 this, passId, passKind, declaredAccesses, colorTargetFormats, depthTargetFormat, requireOwnerThread: false);
             recordingCapacity.ValidateKnownBackingArrayMinimum();
+            requiresDiagnosticQueueAdmission |= diagnosticRecipe is not null;
             request = new RecordPassRequest(
                 this,
                 passId,
@@ -59,7 +70,19 @@ public sealed partial class GraphicsDevice
                 recordingCapacity,
                 diagnosticRecipe);
             ClearRecordPassInputs(ref callback, ref declaredAccesses, ref colorTargetFormats, ref diagnosticRecipe, releaseRecipe: false);
-            await _ownerQueue.WriteRequestAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+            if (requiresDiagnosticQueueAdmission)
+            {
+                if (!_ownerQueue.TryWriteDiagnosticRequest(request, GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge))
+                {
+                    ThrowDiagnosticQueueUnavailable();
+                }
+            }
+            else
+            {
+                await _ownerQueue.WriteRequestAsync(request, CancellationToken.None).ConfigureAwait(false);
+            }
+
             queued = true;
             return await request.Task.ConfigureAwait(false);
         }

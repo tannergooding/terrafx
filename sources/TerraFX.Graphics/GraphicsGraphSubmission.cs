@@ -128,6 +128,22 @@ internal sealed class GraphicsGraphSubmission
 
     internal ImmutableArray<RecordedPassCommandList> RecordedPassCommandLists { get; private set; }
 
+    internal bool RequiresDiagnosticQueueAdmission
+    {
+        get
+        {
+            foreach (var pass in Passes)
+            {
+                if (pass.DiagnosticRecipe is not null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
 
     internal uint SurfaceEpoch { get; }

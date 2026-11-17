@@ -87,7 +87,8 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
                 + ArrayCharge(maximumWorkBytes, sizeof(byte))
                 + ArrayCharge(resultByteLength, sizeof(byte))
                 + CommandRecorderRecordingCapacity.CalculateKnownBackingArrayBytes(maximumCommandCount, drawCount)
-                + GraphicsRecordingUseAdmission.CalculateByteAllowance(drawCount));
+                + GraphicsRecordingUseAdmission.CalculateByteAllowance(drawCount)
+                + GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge);
         }
         catch (OverflowException exception)
         {

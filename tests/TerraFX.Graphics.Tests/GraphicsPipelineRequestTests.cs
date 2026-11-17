@@ -443,6 +443,77 @@ internal sealed class GraphicsPipelineRequestTests
         }
     }
 
+    [Test]
+    public async Task DiagnosticRecordingQueueRefusesRatherThanWaitingBehindAFullOwner()
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        using var callbackEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseCallback = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            31,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        Task<RecordedPassCommandList>? blocker = null;
+        var pending = new Task<RecordedPassCommandList>?[256];
+
+        try
+        {
+            void Block(scoped ref CommandRecorder recorder)
+            {
+                callbackEntered.Set();
+                releaseCallback.Wait();
+            }
+
+            blocker = device.RecordPassAsync(new RenderPassId(500, 0), CommandRecorderPassKind.Copy, [], [], null, Block);
+            Assert.That(callbackEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+
+            for (var index = 0; index < pending.Length; index++)
+            {
+                pending[index] = device.RecordPassAsync(
+                    new RenderPassId(501, index),
+                    CommandRecorderPassKind.Copy,
+                    [],
+                    [],
+                    null,
+                    static (scoped ref CommandRecorder recorder) => { });
+            }
+
+            var refused = device.RecordPassAsync(
+                new RenderPassId(502, 0),
+                CommandRecorderPassKind.Copy,
+                [],
+                [],
+                null,
+                static (scoped ref CommandRecorder recorder) => { },
+                requiresDiagnosticQueueAdmission: true);
+            Assert.That(refused.IsCompleted, Is.True);
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(async () => await refused.ConfigureAwait(false));
+        }
+        finally
+        {
+            releaseCallback.Set();
+
+            if (blocker is not null)
+            {
+                using var result = await blocker.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+
+            foreach (var task in pending)
+            {
+                if (task is not null)
+                {
+                    using var result = await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+            }
+
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     [TestCase(ShaderCapability.Float16)]
     [TestCase(ShaderCapability.DoublePrecision)]
     [TestCase(ShaderCapability.WaveOperations)]

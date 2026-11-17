@@ -99,7 +99,8 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             + Charge(4, IntPtr.Size)
             + Charge(1, IntPtr.Size)
             + 80
-            + 192);
+            + 192
+            + Charge(256, IntPtr.Size));
 
         Assert.That(
             RenderMeshC0NormalDiagnosticWork.CalculateKnownMinimumCpuBytesForWorstCaseGeometry(

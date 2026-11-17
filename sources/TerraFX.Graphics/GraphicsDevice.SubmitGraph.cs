@@ -163,7 +163,19 @@ public sealed partial class GraphicsDevice
 
             try
             {
-                await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+                if (submission.RequiresDiagnosticQueueAdmission)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (!_ownerQueue.TryWriteDiagnosticRequest(request, GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge))
+                    {
+                        ThrowDiagnosticQueueUnavailable();
+                    }
+                }
+                else
+                {
+                    await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch
             {
