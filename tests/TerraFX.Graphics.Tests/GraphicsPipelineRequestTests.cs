@@ -281,6 +281,37 @@ internal sealed class GraphicsPipelineRequestTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (Task<RecordedPassCommandList> Task, WeakReference<GraphicsDevice> Device) StartCompletedRecordingAndDropDevice()
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = GraphicsDevice.CreateAsync(
+            33,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).GetAwaiter().GetResult();
+        var weak = new WeakReference<GraphicsDevice>(device);
+
+        static void Record(scoped ref CommandRecorder recorder)
+        {
+        }
+
+        var task = device.RecordPassAsync(
+            new RenderPassId(200, 2),
+            CommandRecorderPassKind.Copy,
+            [],
+            [],
+            depthTargetFormat: null,
+            Record);
+        var commandList = task.GetAwaiter().GetResult();
+        commandList.Dispose();
+        device.ShutdownAsync().GetAwaiter().GetResult();
+        return (task, weak);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static (Task<RecordedPassCommandList> Task, WeakReference<byte[]> Capture) StartRecordingWithCapture(GraphicsDevice device)
     {
         var payload = new byte[4096];
@@ -292,6 +323,17 @@ internal sealed class GraphicsPipelineRequestTests
         }
 
         return (device.RecordPassAsync(new RenderPassId(200, 0), CommandRecorderPassKind.Copy, [], [], null, Record), weak);
+    }
+
+    [Test]
+    public void CompletedRecordingTaskDoesNotRetainGraphicsDevice()
+    {
+        var recording = StartCompletedRecordingAndDropDevice();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Assert.That(recording.Device.TryGetTarget(out _), Is.False);
+        GC.KeepAlive(recording.Task);
     }
 
     [Test]
