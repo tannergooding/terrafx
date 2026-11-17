@@ -854,7 +854,9 @@ internal sealed partial class EngineHostOptionsTests
             {
                 Assert.That(recordedPasses.Length, Is.EqualTo(1));
                 Assert.That(callbackThreadId, Is.Not.EqualTo(Environment.CurrentManagedThreadId));
-                Assert.That(recordedPasses[0].Commands, Is.Empty);
+                var commandReadState = 0;
+                using var commandRead = recordedPasses[0].ReadCommands(ref commandReadState);
+                Assert.That(commandRead.Commands.IsEmpty, Is.True);
             }
             finally
             {

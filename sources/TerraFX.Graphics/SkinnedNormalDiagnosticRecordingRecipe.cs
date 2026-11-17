@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Threading;
 
 namespace TerraFX.Graphics;
 
@@ -16,10 +17,12 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
     private readonly int _expectedBarrierCount;
     private readonly int _expectedCommandCount;
     private readonly int _expectedPendingWriteCount;
+    private readonly Lock _gate = new();
     private readonly int _geometryCount;
     private bool[] _geometrySeenScratch;
     private readonly RenderPassId _passId;
     private readonly GpuPipelineHandle _pipeline;
+    private RecordedPassCommandList? _recordedOwner;
     private readonly GraphicsRecordingUseAdmission _recordingUseAdmission;
     private DiagnosticResourceEntry[] _resourceEntries;
     private ImmutableArray<RecordedGraphicsCommand> _verifiedCommands;
@@ -213,6 +216,29 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
         }
     }
 
+    internal void BindRecordedOwner(RecordedPassCommandList owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        var commandReadState = 0;
+        using var commands = owner.ReadCommands(ref commandReadState);
+
+        lock (_gate)
+        {
+            EnsureAvailable();
+
+            if ((_recordedOwner is not null)
+                || _verifiedCommands.IsDefaultOrEmpty
+                || !ReferenceEquals(commands.DiagnosticRecipe, this)
+                || !commands.Matches(owner, _verifiedCommands))
+            {
+                throw new InvalidOperationException("The diagnostic recipe can bind only once to its exact completed command backing.");
+            }
+
+            _recordedOwner = owner;
+            _verifiedCommands = [];
+        }
+    }
+
     internal bool IsExpectedWorkWrite(int drawIndex, StorageResourceUse workUse)
     {
         EnsureAvailable();
@@ -227,14 +253,29 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
             && (workUse.BufferRange == binding.Range);
     }
 
-    internal void Release()
+    internal void Release(RecordedPassCommandList? recordedOwner = null)
     {
-        _bindingSets = [];
-        _declaredAccesses = [];
-        _verifiedCommands = [];
-        _resourceEntries = [];
-        _accessIndexScratch = [];
-        _geometrySeenScratch = [];
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_recordedOwner, recordedOwner))
+            {
+                if (recordedOwner is null)
+                {
+                    // A request failure cannot release a recipe already transferred to a recording.
+                    return;
+                }
+
+                throw new InvalidOperationException("Only the bound command owner can release this diagnostic recipe.");
+            }
+
+            _bindingSets = [];
+            _declaredAccesses = [];
+            _recordedOwner = null;
+            _verifiedCommands = [];
+            _resourceEntries = [];
+            _accessIndexScratch = [];
+            _geometrySeenScratch = [];
+        }
     }
 
     internal int ValidateBufferBinding(BufferBinding binding)
@@ -274,49 +315,63 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
         RenderPassId passId,
         uint deviceEpoch,
         ImmutableArray<GraphResourceAccess> submissionAccesses,
-        ImmutableArray<RecordedGraphicsCommand> commands)
+        RecordedPassCommandList commandList)
     {
-        EnsureAvailable();
+        ArgumentNullException.ThrowIfNull(commandList);
+        var commandReadState = 0;
+        using var commands = commandList.ReadCommands(ref commandReadState);
+        ValidateNativeSubmission(passId, deviceEpoch, submissionAccesses, in commands);
+    }
 
-        if ((passId != _passId)
-            || (deviceEpoch != _deviceEpoch)
-            || submissionAccesses.IsDefault
-            || commands.IsDefault
-            || _verifiedCommands.IsDefaultOrEmpty
-            || (commands != _verifiedCommands))
+    internal void ValidateNativeSubmission(
+        RenderPassId passId,
+        uint deviceEpoch,
+        ImmutableArray<GraphResourceAccess> submissionAccesses,
+        scoped in RecordedPassCommandList.CommandRead commands)
+    {
+        lock (_gate)
         {
-            throw new InvalidOperationException("The native diagnostic witness does not match its completed recording.");
-        }
+            EnsureAvailable();
 
-        var selectedAccessCount = 0;
-
-        for (var accessIndex = 0; accessIndex < submissionAccesses.Length; accessIndex++)
-        {
-            if (submissionAccesses[accessIndex].PassId != passId)
+            if ((passId != _passId)
+                || (deviceEpoch != _deviceEpoch)
+                || submissionAccesses.IsDefault
+                || (_recordedOwner is null)
+                || !commands.MatchesVerifiedOwner(_recordedOwner))
             {
-                continue;
+                throw new InvalidOperationException("The native diagnostic witness does not match its completed recording.");
             }
 
-            if (selectedAccessCount >= _accessIndexScratch.Length)
+            var selectedAccessCount = 0;
+
+            for (var accessIndex = 0; accessIndex < submissionAccesses.Length; accessIndex++)
             {
-                throw new InvalidOperationException("The native diagnostic pass has unexpected graph accesses.");
+                if (submissionAccesses[accessIndex].PassId != passId)
+                {
+                    continue;
+                }
+
+                if (selectedAccessCount >= _accessIndexScratch.Length)
+                {
+                    throw new InvalidOperationException("The native diagnostic pass has unexpected graph accesses.");
+                }
+
+                _accessIndexScratch[selectedAccessCount++] = accessIndex;
             }
 
-            _accessIndexScratch[selectedAccessCount++] = accessIndex;
-        }
+            if (selectedAccessCount != _accessIndexScratch.Length)
+            {
+                throw new InvalidOperationException("The native diagnostic pass lost one or more graph accesses.");
+            }
 
-        if (selectedAccessCount != _accessIndexScratch.Length)
-        {
-            throw new InvalidOperationException("The native diagnostic pass lost one or more graph accesses.");
+            Array.Sort(_accessIndexScratch, new GraphResourceAccessIndexComparer(submissionAccesses));
+            ValidateAccessPairs(
+                submissionAccesses,
+                _accessIndexScratch,
+                requireDiagnosticPass: true,
+                assignWitnesses: false);
+            ValidateCompletedCommands(commands.Commands);
         }
-
-        Array.Sort(_accessIndexScratch, new GraphResourceAccessIndexComparer(submissionAccesses));
-        ValidateAccessPairs(
-            submissionAccesses,
-            _accessIndexScratch,
-            requireDiagnosticPass: true,
-            assignWitnesses: false);
-        ValidateCompletedCommands(commands);
     }
 
     internal void ValidatePipeline(
@@ -363,7 +418,9 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
     {
         EnsureAvailable();
 
-        if ((passId != _passId)
+        if ((_recordedOwner is not null)
+            || !_verifiedCommands.IsEmpty
+            || (passId != _passId)
             || (deviceEpoch != _deviceEpoch)
             || (commandCount != _expectedCommandCount)
             || (useLeaseCount != _drawCount)
@@ -378,7 +435,7 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
             throw new InvalidOperationException("The diagnostic recording did not match its frozen command, use, hazard, and resource counts.");
         }
 
-        ValidateCompletedCommands(commands);
+        ValidateCompletedCommands(commands.AsSpan());
         _recordingUseAdmission.ValidateComplete();
         _verifiedCommands = commands;
     }
@@ -391,7 +448,9 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
     {
         EnsureAvailable();
 
-        if ((passId != _passId)
+        if ((_recordedOwner is not null)
+            || !_verifiedCommands.IsEmpty
+            || (passId != _passId)
             || (deviceEpoch != _deviceEpoch)
             || (declaredAccesses != _declaredAccesses)
             || (recordingCapacity.CommandCount != _expectedCommandCount)
@@ -643,7 +702,7 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
         }
     }
 
-    private void ValidateCompletedCommands(ImmutableArray<RecordedGraphicsCommand> commands)
+    private void ValidateCompletedCommands(ReadOnlySpan<RecordedGraphicsCommand> commands)
     {
         if (commands.Length != _expectedCommandCount)
         {

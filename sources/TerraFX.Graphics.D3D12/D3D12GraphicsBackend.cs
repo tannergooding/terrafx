@@ -1911,7 +1911,10 @@ public static unsafe class D3D12GraphicsBackend
 
                 foreach (var pass in submission.Passes)
                 {
-                    foreach (var command in pass.Commands)
+                    var commandReadState = 0;
+                    using var commandRead = pass.ReadCommands(ref commandReadState);
+
+                    foreach (var command in commandRead.Commands)
                     {
                         if (command.Kind == GraphicsCommandKind.SetBindings)
                         {
@@ -2008,6 +2011,9 @@ public static unsafe class D3D12GraphicsBackend
 
                     foreach (var pass in submission.Passes)
                     {
+                        var commandReadState = 0;
+                        using var commandRead = pass.ReadCommands(ref commandReadState);
+                        var commands = commandRead.Commands;
                         viewport.TopLeftX = 0.0f;
                         viewport.TopLeftY = 0.0f;
                         viewport.Width = target.Description.Width;
@@ -2221,7 +2227,7 @@ public static unsafe class D3D12GraphicsBackend
 
                         if (pass.Kind == CommandRecorderPassKind.Copy)
                         {
-                            foreach (var command in pass.Commands)
+                            foreach (var command in commands)
                             {
                                 if (command.Kind == GraphicsCommandKind.CopyBuffer)
                                 {
@@ -2295,7 +2301,7 @@ public static unsafe class D3D12GraphicsBackend
                         {
                             ID3D12BackendPipelineDescriptorOwner? currentPipeline = null;
 
-                            foreach (var command in pass.Commands)
+                            foreach (var command in commands)
                             {
                                 switch (command.Kind)
                                 {
@@ -2458,7 +2464,7 @@ public static unsafe class D3D12GraphicsBackend
                                 hasDepthAttachment ? &depthStencilView : null);
                             ID3D12BackendPipelineDescriptorOwner? currentPipeline = null;
 
-                            foreach (var command in pass.Commands)
+                            foreach (var command in commands)
                             {
                                 switch (command.Kind)
                                 {

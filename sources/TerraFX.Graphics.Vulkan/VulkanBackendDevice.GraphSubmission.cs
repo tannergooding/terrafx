@@ -76,12 +76,14 @@ internal sealed unsafe partial class VulkanBackendDevice
         return texture.DepthAttachmentImageView;
     }
 
-    private static VkPipelineStageFlags2 GetShaderStageMask(GraphicsGraphSubmissionPass pass, ulong resourceId)
+    private static VkPipelineStageFlags2 GetShaderStageMask(
+        ReadOnlySpan<RecordedGraphicsCommand> commands,
+        ulong resourceId)
     {
         var stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         GpuPipeline? pipeline = null;
 
-        foreach (var command in pass.Commands)
+        foreach (var command in commands)
         {
             if (command.Kind == GraphicsCommandKind.SetPipeline)
             {
@@ -197,7 +199,10 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         foreach (var pass in submission.Passes)
         {
-            foreach (var command in pass.Commands)
+            var commandReadState = 0;
+            using var commandRead = pass.ReadCommands(ref commandReadState);
+
+            foreach (var command in commandRead.Commands)
             {
                 if (command.Kind == GraphicsCommandKind.SetBindings)
                 {
@@ -519,6 +524,9 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         foreach (var pass in submission.Passes)
         {
+            var commandReadState = 0;
+            using var commandRead = pass.ReadCommands(ref commandReadState);
+
             foreach (var access in submission.Accesses)
             {
                 if (access.PassId != pass.PassId)
@@ -526,7 +534,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
-                var shaderStages = GetShaderStageMask(pass, access.ResourceId);
+                var shaderStages = GetShaderStageMask(commandRead.Commands, access.ResourceId);
 
                 if (access.IsTexture)
                 {
@@ -714,6 +722,10 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             foreach (var pass in submission.Passes)
             {
+                var commandReadState = 0;
+                using var commandRead = pass.ReadCommands(ref commandReadState);
+                var commands = commandRead.Commands;
+
                 foreach (var aliasingBarrier in submission.AliasingBarriers)
                 {
                     if (aliasingBarrier.PassId != pass.PassId)
@@ -777,7 +789,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                     var buffer = submission.GetBuffer(resourceId) as VulkanBackendBuffer
                         ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan buffer.");
-                    var shaderStages = GetShaderStageMask(pass, resourceId);
+                    var shaderStages = GetShaderStageMask(commands, resourceId);
                     var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
                     var sourceStage = initialUseNeedsBarrier ? buffer.LastStageMask : shaderStages;
                     var sourceAccess = initialUseNeedsBarrier ? buffer.LastAccessMask : storageAccess;
@@ -813,7 +825,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                     var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
                         ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan texture.");
-                    var shaderStages = GetShaderStageMask(pass, resourceId);
+                    var shaderStages = GetShaderStageMask(commands, resourceId);
                     var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
                     var (_, _, storageLayout, storageLastStageMask, storageLastAccessMask, _, _)
                         = storageTextureScopes[resourceId];
@@ -860,7 +872,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                         if (transition.ResourceId == targetResourceId)
                         {
                             RecordGraphImageBarrier(
-                                pass,
+                                commands,
                                 target,
                                 transition,
                                 ref currentLayout,
@@ -889,7 +901,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 colorStageMask,
                                 colorAccessMask) = colorTextureScope;
                             RecordGraphImageBarrier(
-                                pass,
+                                commands,
                                 colorTexture,
                                 transition,
                                 ref colorLayout,
@@ -926,7 +938,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 depthStageMask,
                                 depthAccessMask) = depthTextureScope;
                             RecordGraphImageBarrier(
-                                pass,
+                                commands,
                                 depthTexture,
                                 transition,
                                 ref depthLayout,
@@ -952,7 +964,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 sampledStageMask,
                                 sampledAccessMask) = sampledTextureScope;
                             RecordGraphImageBarrier(
-                                pass,
+                                commands,
                                 sampledTexture,
                                 transition,
                                 ref sampledLayout,
@@ -978,7 +990,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 storageStageMask,
                                 storageAccessMask) = storageTextureScope;
                             RecordGraphImageBarrier(
-                                pass,
+                                commands,
                                 storageTexture,
                                 transition,
                                 ref storageLayout,
@@ -999,7 +1011,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                             var copyTextureStageMask = copyTextureScope.StageMask;
                             var copyTextureAccessMask = copyTextureScope.AccessMask;
                             RecordGraphImageBarrier(
-                                pass,
+                                commands,
                                 copyTextureScope.Texture,
                                 transition,
                                 ref copyTextureLayout,
@@ -1024,7 +1036,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                             ?? throw new InvalidOperationException("The graph transition lost its Vulkan buffer.");
                         var (bufferScopeStageMask, bufferScopeAccessMask) = currentBufferScopes[transition.ResourceId];
                         currentBufferScopes[transition.ResourceId] = RecordGraphBufferBarrier(
-                            pass,
+                            commands,
                             buffer,
                             transition,
                             bufferScopeStageMask,
@@ -1034,7 +1046,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (pass.Kind == CommandRecorderPassKind.Copy)
                 {
-                    foreach (var command in pass.Commands)
+                    foreach (var command in commands)
                     {
                         if (command.Kind == GraphicsCommandKind.CopyBuffer)
                         {
@@ -1124,7 +1136,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     VulkanBackendPipeline? currentComputePipeline = null;
 
-                    foreach (var command in pass.Commands)
+                    foreach (var command in commands)
                     {
                         switch (command.Kind)
                         {
@@ -1200,7 +1212,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                             case GraphicsCommandKind.StorageBarrier:
                             {
-                                RecordGraphStorageBarrier(pass, submission, command);
+                                RecordGraphStorageBarrier(commands, submission, command);
                                 break;
                             }
 
@@ -1233,8 +1245,15 @@ internal sealed unsafe partial class VulkanBackendDevice
                 var depthAttachment = default(GraphicsGraphSubmissionAttachment);
                 var colorAttachmentCount = 0;
                 var hasDepthAttachment = false;
-                var remainingStorageBarrierCount = pass.Commands.Count(
-                    static command => command.Kind == GraphicsCommandKind.StorageBarrier);
+                var remainingStorageBarrierCount = 0;
+
+                foreach (var command in commands)
+                {
+                    if (command.Kind == GraphicsCommandKind.StorageBarrier)
+                    {
+                        remainingStorageBarrierCount++;
+                    }
+                }
 
                 foreach (var attachment in pass.Attachments)
                 {
@@ -1331,7 +1350,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 VulkanBackendPipeline? currentPipeline = null;
 
-                foreach (var command in pass.Commands)
+                foreach (var command in commands)
                 {
                     switch (command.Kind)
                     {
@@ -1470,7 +1489,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 depthRenderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
                             }
 
-                            RecordGraphStorageBarrier(pass, submission, command);
+                            RecordGraphStorageBarrier(commands, submission, command);
                             remainingStorageBarrierCount--;
 
                             if (hasDepthAttachment)
@@ -1994,7 +2013,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     }
 
     private (VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask) RecordGraphBufferBarrier(
-        GraphicsGraphSubmissionPass pass,
+        ReadOnlySpan<RecordedGraphicsCommand> commands,
         VulkanBackendBuffer buffer,
         GraphResourceStateTransition transition,
         VkPipelineStageFlags2 currentStageMask,
@@ -2039,7 +2058,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new NotSupportedException($"Vulkan graph submission does not support a transition from {transition.BeforeState} for buffers.");
         }
 
-        var shaderStages = GetShaderStageMask(pass, transition.ResourceId);
+        var shaderStages = GetShaderStageMask(commands, transition.ResourceId);
         var destinationStage = VulkanGraphResourceStateMapper.GetStageMask(
             transition.AfterState,
             shaderStages);
@@ -2056,7 +2075,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     }
 
     private void RecordGraphImageBarrier(
-        GraphicsGraphSubmissionPass pass,
+        ReadOnlySpan<RecordedGraphicsCommand> commands,
         VulkanBackendTexture texture,
         GraphResourceStateTransition transition,
         ref VkImageLayout currentLayout,
@@ -2119,7 +2138,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             case GraphResourceState.StorageWrite:
             case GraphResourceState.StorageReadWrite:
             {
-                var shaderStages = GetShaderStageMask(pass, transition.ResourceId);
+                var shaderStages = GetShaderStageMask(commands, transition.ResourceId);
                 barrier.dstStageMask = VulkanGraphResourceStateMapper.GetStageMask(
                     transition.AfterState,
                     shaderStages);
@@ -2129,7 +2148,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             case GraphResourceState.ShaderSampledRead:
             {
-                var shaderStages = GetShaderStageMask(pass, transition.ResourceId);
+                var shaderStages = GetShaderStageMask(commands, transition.ResourceId);
                 barrier.dstStageMask = VulkanGraphResourceStateMapper.GetStageMask(
                     transition.AfterState,
                     shaderStages);
@@ -2196,7 +2215,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     }
 
     private void RecordGraphStorageBarrier(
-        GraphicsGraphSubmissionPass pass,
+        ReadOnlySpan<RecordedGraphicsCommand> commands,
         GraphicsGraphSubmission submission,
         RecordedGraphicsCommand command)
     {
@@ -2228,7 +2247,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             var buffer = submission.GetBuffer(bufferVersion.ResourceId) as VulkanBackendBuffer
                 ?? throw new InvalidOperationException("The graph storage barrier lost its Vulkan buffer.");
-            var shaderStages = GetShaderStageMask(pass, bufferVersion.ResourceId);
+            var shaderStages = GetShaderStageMask(commands, bufferVersion.ResourceId);
             var barrier = default(VkBufferMemoryBarrier2);
             barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             barrier.srcStageMask = shaderStages;
@@ -2253,7 +2272,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             ?? throw new InvalidOperationException("The graph storage barrier has no Vulkan texture.");
         var texture = submission.GetTexture(textureVersion.ResourceId) as VulkanBackendTexture
             ?? throw new InvalidOperationException("The graph storage barrier lost its Vulkan texture.");
-        var textureStages = GetShaderStageMask(pass, textureVersion.ResourceId);
+        var textureStages = GetShaderStageMask(commands, textureVersion.ResourceId);
         var imageBarrier = default(VkImageMemoryBarrier2);
         imageBarrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         imageBarrier.srcStageMask = textureStages;

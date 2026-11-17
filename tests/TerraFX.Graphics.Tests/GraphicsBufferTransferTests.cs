@@ -2258,6 +2258,41 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public void RecordedCommandReadCopiesShareOneReleaseBoundary()
+    {
+        var owner = new RecordedPassCommandList(
+            new RenderPassId(300, 0),
+            CommandRecorderPassKind.Compute,
+            [new RecordedGraphicsCommand(GraphicsCommandKind.Dispatch)],
+            []);
+        var firstReadState = 0;
+        var firstRead = owner.ReadCommands(ref firstReadState);
+        var copiedRead = firstRead;
+        firstRead.Dispose();
+
+        var secondReadState = 0;
+        var secondRead = owner.ReadCommands(ref secondReadState);
+        owner.Dispose();
+        copiedRead.Dispose();
+        Assert.That(secondRead.Commands.Length, Is.EqualTo(1));
+        secondRead.Dispose();
+
+        var refusedReadState = 0;
+        var refusedRead = false;
+
+        try
+        {
+            using var read = owner.ReadCommands(ref refusedReadState);
+        }
+        catch (ObjectDisposedException)
+        {
+            refusedRead = true;
+        }
+
+        Assert.That(refusedRead, Is.True);
+    }
+
+    [Test]
     public async Task ResourceUseWaitersObserveOnlyTheirCapturedSequence()
     {
         var backendDevice = new FakeBackendDevice();
@@ -2499,29 +2534,50 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
-    [TestCase(false)]
-    [TestCase(true)]
-    public async Task SubmissionRecordingRootsDetachOnlyAfterSafeRelease(bool quarantine)
+    [TestCase(false, false)]
+    [TestCase(false, true)]
+    [TestCase(true, false)]
+    [TestCase(true, true)]
+    public async Task SubmissionRecordingRootsDetachOnlyAfterSafeRelease(bool quarantine, bool readThrows)
     {
         var backend = new FakeBackendDevice();
         var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
         using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        using var buffer = await device.CreateBufferAsync(new BufferDescription(
+            64, BufferUsage.Storage, GpuMemoryKind.DeviceLocal, 16, "recorded-binding")).ConfigureAwait(false);
+        using var readEntered = new ManualResetEventSlim(initialState: false);
+        using var continueRead = new ManualResetEventSlim(initialState: false);
+        using var lastReadEntered = new ManualResetEventSlim(initialState: false);
+        using var continueLastRead = new ManualResetEventSlim(initialState: false);
+        GraphicsResourceOwner.UseLease? fixtureUse = null;
+        RecordedPassCommandList? recorded = null;
+        Task? readerTask = null;
+        Task? lastReaderTask = null;
 
         try
         {
-            var version = new GraphTextureVersion(
-                device.DeviceEpoch,
-                1,
-                0,
-                target.Description,
-                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
-            var passId = new RenderPassId(300, 0);
-            var bindings = new BindingSet([], [], []);
-            using var recorded = new RecordedPassCommandList(
+            var resources = new GraphResourceRegistry(device, graphOwnerId: 300);
+            var passId = resources.AddPass(new RenderPassDescription("recorded-owner", 0, [], false));
+            var version = resources.ImportTexture(
+                target,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle));
+            var bufferVersion = resources.ImportBuffer(
+                buffer,
+                new GraphBufferRange(0, buffer.ByteLength),
+                new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle));
+            var binding = new BufferBinding(
+                ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, bufferVersion, bufferVersion.Range);
+            var bindings = new BindingSet([binding], [], []);
+            ImmutableArray<RecordedGraphicsCommand> backing = [
+                new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: bindings),
+            ];
+            fixtureUse = buffer.ResourceOwner.AcquireUse("recorded command owner");
+            recorded = new RecordedPassCommandList(
                 passId,
                 CommandRecorderPassKind.Compute,
-                [new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: bindings)],
-                []);
+                backing,
+                [fixtureUse]);
             var submission = new GraphicsGraphSubmission(
                 device.DeviceEpoch,
                 target,
@@ -2530,42 +2586,177 @@ internal sealed class GraphicsBufferTransferTests
                 surfaceEpoch: 0,
                 swapchainEpoch: 0,
                 [passId],
-                [new GraphicsGraphSubmissionPass(passId, CommandRecorderPassKind.Compute, null, recorded.Commands, [])],
+                [new GraphicsGraphSubmissionPass(passId, CommandRecorderPassKind.Compute, null, recorded, [])],
                 [],
                 [],
                 [],
                 [],
-                [],
-                [new GraphTextureImportRecord(
-                    target,
-                    version,
-                    new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle))],
+                resources.BufferImports,
+                resources.TextureImports,
                 [recorded]);
-            Assert.That(submission.Passes[0].Commands == recorded.Commands, Is.True);
             var retainedPassArray = submission.Passes;
             var retainedPass = retainedPassArray[0];
-            var retainedCommands = recorded.Commands;
+            var retainedOwners = submission.RecordedPassCommandLists;
+            var retainedOwner = retainedOwners[0];
+            Assert.That(retainedPass.CommandList, Is.SameAs(recorded));
+            Assert.That(retainedOwner, Is.SameAs(recorded));
+            RecordedGraphicsCommand retainedCommand;
 
-            if (quarantine)
+            var initialReadState = 0;
+            using (var commandRead = retainedPass.ReadCommands(ref initialReadState))
             {
-                submission.RetainRecordingForUncertainSubmission();
+                Assert.That(commandRead.Matches(retainedOwner, backing), Is.True);
+                retainedCommand = commandRead.Commands[0];
             }
 
-            submission.DisposeRecordedPassCommandLists();
-            recorded.Dispose();
-            Assert.That(recorded.Commands.IsEmpty, Is.EqualTo(!quarantine));
+            var retainedBindings = retainedCommand.Bindings
+                ?? throw new InvalidOperationException("The recorded binding command lost its binding set.");
+            var retainedBuffers = retainedBindings.Buffers;
+            var retainedBinding = retainedBuffers[0];
+            var wrongPass = retainedPass with { PassId = new RenderPassId(301, 0) };
+            var wrongKind = retainedPass with { Kind = CommandRecorderPassKind.Copy };
+            var terminalPass = retainedPass with { Kind = CommandRecorderPassKind.Presentation };
+            _ = Assert.Throws<InvalidOperationException>(() => {
+                var readState = 0;
+                using var commandRead = wrongPass.ReadCommands(ref readState);
+            });
+            _ = Assert.Throws<InvalidOperationException>(() => {
+                var readState = 0;
+                using var commandRead = wrongKind.ReadCommands(ref readState);
+            });
+            _ = Assert.Throws<InvalidOperationException>(() => {
+                var readState = 0;
+                using var commandRead = terminalPass.ReadCommands(ref readState);
+            });
+
+            readerTask = Task.Run(() => {
+                var readState = 0;
+                using var commandRead = retainedPass.ReadCommands(ref readState);
+                readEntered.Set();
+                Assert.That(continueRead.Wait(TimeSpan.FromSeconds(30)), Is.True);
+                Assert.That(commandRead.Matches(retainedOwner, backing), Is.True);
+                Assert.That(commandRead.Commands[0].Bindings, Is.SameAs(bindings));
+                Assert.That(fixtureUse.IsOwnedBy(buffer.ResourceOwner), Is.True);
+
+                if (readThrows)
+                {
+                    throw new InvalidOperationException("Synchronous command reader failed.");
+                }
+            });
+            Assert.That(readEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            lastReaderTask = Task.Run(() => {
+                var readState = 0;
+                using var commandRead = retainedOwner.ReadCommands(ref readState);
+                lastReadEntered.Set();
+                Assert.That(continueLastRead.Wait(TimeSpan.FromSeconds(30)), Is.True);
+                Assert.That(commandRead.Matches(retainedOwner, backing), Is.True);
+                Assert.That(commandRead.Commands[0].Bindings, Is.SameAs(bindings));
+                Assert.That(fixtureUse.IsOwnedBy(buffer.ResourceOwner), Is.True);
+            });
+            Assert.That(lastReadEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+
+            void CloseOnOwner(scoped ref CommandRecorder recorder)
+            {
+                if (quarantine)
+                {
+                    submission.RetainRecordingForUncertainSubmission();
+                    submission.RetainRecordingForUncertainSubmission();
+                }
+
+                submission.DisposeRecordedPassCommandLists();
+                recorded.Dispose();
+                submission.DisposeRecordedPassCommandLists();
+                retainedOwner.Dispose();
+            }
+
+            using var closeRecording = await device.RecordPassAsync(
+                new RenderPassId(301, 1), CommandRecorderPassKind.Copy, [], [], null, CloseOnOwner)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(readerTask.IsCompleted, Is.False);
+            Assert.That(buffer.ResourceOwner.HasActiveUses, Is.True);
             Assert.That(submission.Passes.IsEmpty, Is.EqualTo(!quarantine));
             Assert.That(submission.RecordedPassCommandLists.IsEmpty, Is.EqualTo(!quarantine));
-            Assert.That(retainedPass.Commands == retainedCommands, Is.True);
-            Assert.That(retainedCommands.Length, Is.EqualTo(1));
-            Assert.That(retainedPassArray[0].Commands[0].Bindings, Is.SameAs(bindings));
-            Assert.That(retainedCommands[0].Bindings, Is.SameAs(bindings));
+            _ = Assert.Throws<ObjectDisposedException>(() => {
+                var readState = 0;
+                using var commandRead = retainedOwner.ReadCommands(ref readState);
+            });
+            _ = Assert.Throws<ObjectDisposedException>(() => {
+                var readState = 0;
+                using var commandRead = retainedPass.ReadCommands(ref readState);
+            });
+            _ = Assert.Throws<ObjectDisposedException>(() => {
+                var readState = 0;
+                using var commandRead = retainedPassArray[0].ReadCommands(ref readState);
+            });
+
+            if (!quarantine)
+            {
+                _ = Assert.Throws<ObjectDisposedException>(submission.RetainRecordingForUncertainSubmission);
+                _ = Assert.Throws<ObjectDisposedException>(retainedOwner.RetainForUncertainSubmission);
+            }
+
+            continueRead.Set();
+
+            if (readThrows)
+            {
+                var exception = Assert.ThrowsAsync<InvalidOperationException>(
+                    async () => await readerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                Assert.That(exception?.Message, Is.EqualTo("Synchronous command reader failed."));
+            }
+            else
+            {
+                await readerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+
+            Assert.That(lastReaderTask.IsCompleted, Is.False);
+            Assert.That(buffer.ResourceOwner.HasActiveUses, Is.True);
+            continueLastRead.Set();
+            await lastReaderTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(buffer.ResourceOwner.HasActiveUses, Is.EqualTo(quarantine));
+            Assert.That(fixtureUse.IsOwnedBy(buffer.ResourceOwner), Is.EqualTo(quarantine));
+            var backingField = typeof(RecordedPassCommandList).GetField("_commands", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The private command backing was not found.");
+            var remainingBacking = (ImmutableArray<RecordedGraphicsCommand>)(backingField.GetValue(retainedOwner)
+                ?? throw new InvalidOperationException("The command backing was uninitialized."));
+            Assert.That(remainingBacking.IsEmpty, Is.EqualTo(!quarantine));
+            Assert.That(remainingBacking == backing, Is.EqualTo(quarantine));
+            Assert.That(retainedPass.CommandList, Is.SameAs(retainedOwner));
+            Assert.That(retainedPassArray[0].CommandList, Is.SameAs(retainedOwner));
+            Assert.That(retainedOwners[0], Is.SameAs(retainedOwner));
+            Assert.That(retainedCommand.Bindings, Is.SameAs(bindings));
+            Assert.That(retainedBindings, Is.SameAs(bindings));
+            Assert.That(retainedBuffers == bindings.Buffers, Is.True);
+            Assert.That(retainedBuffers.Length, Is.EqualTo(1));
+            Assert.That(retainedBinding, Is.SameAs(binding));
+            Assert.That(retainedBinding.Resource, Is.SameAs(bufferVersion));
+            retainedOwner.Dispose();
+            submission.DisposeRecordedPassCommandLists();
+            _ = Assert.Throws<ObjectDisposedException>(() => {
+                var readState = 0;
+                using var commandRead = retainedOwner.ReadCommands(ref readState);
+            });
             _ = Assert.Throws<ObjectDisposedException>(submission.ValidateNativeRasterSubmission);
         }
         finally
         {
+            continueRead.Set();
+            continueLastRead.Set();
+
+            if (readerTask is not null)
+            {
+                await readerTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
+
+            if (lastReaderTask is not null)
+            {
+                await lastReaderTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
+
+            recorded?.Dispose();
+            fixtureUse?.Dispose();
+            buffer.Dispose();
             target.Dispose();
-            await device.ShutdownAsync().ConfigureAwait(false);
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
 

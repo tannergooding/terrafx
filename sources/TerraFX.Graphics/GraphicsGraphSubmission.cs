@@ -96,7 +96,7 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var pass in passes)
         {
-            if (pass.DiagnosticRecipe is not null)
+            if (pass.CommandList?.HasDiagnosticRecipe == true)
             {
                 maximumBufferImportIndexBytes = Math.Min(maximumBufferImportIndexBytes, 32L * 1024 * 1024);
                 break;
@@ -153,7 +153,7 @@ internal sealed class GraphicsGraphSubmission
         {
             foreach (var pass in Passes)
             {
-                if (pass.DiagnosticRecipe is not null)
+                if (pass.CommandList?.HasDiagnosticRecipe == true)
                 {
                     return true;
                 }
@@ -1164,21 +1164,26 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var pass in Passes)
         {
-            if (pass.DiagnosticRecipe is SkinnedNormalDiagnosticRecordingRecipe diagnosticRecipe)
+            var commandReadState = 0;
+            using var commandRead = pass.ReadCommands(ref commandReadState);
+            var commands = commandRead.Commands;
+            var diagnosticRecipe = commandRead.DiagnosticRecipe;
+
+            if (diagnosticRecipe is not null)
             {
                 if (pass.Kind != CommandRecorderPassKind.Compute)
                 {
                     throw new InvalidOperationException("The skinned-normal diagnostic witness must belong to a compute pass.");
                 }
 
-                diagnosticRecipe.ValidateNativeSubmission(pass.PassId, DeviceEpoch, Accesses, pass.Commands);
+                diagnosticRecipe.ValidateNativeSubmission(pass.PassId, DeviceEpoch, Accesses, in commandRead);
             }
 
             TextureFormat? passDepthTargetFormat = null;
 
             if (pass.Kind == CommandRecorderPassKind.Presentation)
             {
-                if (!pass.Commands.IsEmpty || !pass.Attachments.IsEmpty)
+                if (!commands.IsEmpty || !pass.Attachments.IsEmpty)
                 {
                     throw new InvalidOperationException("A synthetic terminal-output pass cannot record commands or attachments.");
                 }
@@ -1326,7 +1331,7 @@ internal sealed class GraphicsGraphSubmission
             var hasBufferCopy = false;
             var hasTextureCopy = false;
 
-            foreach (var command in pass.Commands)
+            foreach (var command in commands)
             {
                 switch (command.Kind)
                 {
@@ -1721,7 +1726,7 @@ internal sealed class GraphicsGraphSubmission
                                     }
                                     else
                                     {
-                                        if (pass.DiagnosticRecipe is null)
+                                        if (diagnosticRecipe is null)
                                         {
                                             GraphResourceAccess? storageReadAccess = null;
                                             GraphResourceAccess? storageWriteAccess = null;
@@ -2202,17 +2207,17 @@ internal sealed class GraphicsGraphSubmission
                 }
             }
 
-            if ((pass.Kind == CommandRecorderPassKind.Raster) && !pass.Commands.IsEmpty && !hasDraw)
+            if ((pass.Kind == CommandRecorderPassKind.Raster) && !commands.IsEmpty && !hasDraw)
             {
                 throw new NotSupportedException("Native graph submission requires at least one nonempty draw in a command-bearing raster pass.");
             }
 
-            if ((pass.Kind == CommandRecorderPassKind.Compute) && !pass.Commands.IsEmpty && !hasDispatch)
+            if ((pass.Kind == CommandRecorderPassKind.Compute) && !commands.IsEmpty && !hasDispatch)
             {
                 throw new NotSupportedException("Native graph compute passes require a nonempty dispatch.");
             }
 
-            if ((pass.Kind == CommandRecorderPassKind.Copy) && !pass.Commands.IsEmpty && !hasBufferCopy && !hasTextureCopy)
+            if ((pass.Kind == CommandRecorderPassKind.Copy) && !commands.IsEmpty && !hasBufferCopy && !hasTextureCopy)
             {
                 throw new NotSupportedException("Native graph copy passes require a supported buffer or texture copy command.");
             }

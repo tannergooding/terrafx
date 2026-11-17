@@ -110,7 +110,6 @@ public sealed partial class RenderGraphPlan
                     => CommandRecorderPassKind.Presentation,
                 _ => throw new InvalidOperationException("The graph plan contains an unsupported pass kind."),
             };
-            var commands = ImmutableArray<RecordedGraphicsCommand>.Empty;
 
             if (commandListsByPass.TryGetValue(passId, out var commandList))
             {
@@ -119,7 +118,6 @@ public sealed partial class RenderGraphPlan
                     throw new ArgumentException("A recorded pass command list has the wrong pass kind.", nameof(recordedPassCommandLists));
                 }
 
-                commands = commandList.Commands;
                 _ = commandListsByPass.Remove(passId);
             }
 
@@ -144,7 +142,7 @@ public sealed partial class RenderGraphPlan
                 passId,
                 passKind,
                 passNode.Description.RenderArea,
-                commands,
+                commandList,
                 attachments.ToImmutable()));
         }
 

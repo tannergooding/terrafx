@@ -137,6 +137,9 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
 
     [TestCase(3, 1, 4, 4)]
     [TestCase(9, 2, 9, 4)]
+    [TestCase(8, 2, 8, 4)]
+    [TestCase(15, 3, 15, 4)]
+    [TestCase(13, 3, 13, 4)]
     [TestCase(14, 3, 14, 4)]
     public void RecordingArrayComponentIncludesSmallListCapacityAndBothFreezeCopies(
         int commandCount,

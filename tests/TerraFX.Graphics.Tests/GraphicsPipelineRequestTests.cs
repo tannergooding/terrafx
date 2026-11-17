@@ -954,10 +954,12 @@ internal sealed class GraphicsPipelineRequestTests
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false))
             {
+                var commandReadState = 0;
+                using var commandRead = commandList.ReadCommands(ref commandReadState);
                 Assert.That(callbackThreadId, Is.Not.EqualTo(callerThreadId));
-                Assert.That(commandList.Commands.Length, Is.EqualTo(2));
-                Assert.That(commandList.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.SetPipeline));
-                Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+                Assert.That(commandRead.Commands.Length, Is.EqualTo(2));
+                Assert.That(commandRead.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.SetPipeline));
+                Assert.That(commandRead.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
             }
 
             void DispatchBeyondLimit(scoped ref CommandRecorder recorder)
@@ -1119,9 +1121,13 @@ internal sealed class GraphicsPipelineRequestTests
                 RecordUniformDispatch)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-            Assert.That(commandList.Commands.Length, Is.EqualTo(3));
-            Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
-            Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            var uniformCommandReadState = 0;
+            using (var commandRead = commandList.ReadCommands(ref uniformCommandReadState))
+            {
+                Assert.That(commandRead.Commands.Length, Is.EqualTo(3));
+                Assert.That(commandRead.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
+                Assert.That(commandRead.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            }
 
             var broadBindingSet = new BindingSet(
                 [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, version1, range)],
@@ -1176,17 +1182,21 @@ internal sealed class GraphicsPipelineRequestTests
                     RecordStorageReadWrite)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-            Assert.That(storageCommandList.Commands.Length, Is.EqualTo(5));
-            Assert.That(storageCommandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
-            Assert.That(storageCommandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
-            Assert.That(storageCommandList.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.StorageBarrier));
-            Assert.That(storageCommandList.Commands[3].StorageBarrierBuffer, Is.SameAs(readWriteVersion));
-            Assert.That(storageCommandList.Commands[3].StorageBarrierBufferRange, Is.EqualTo(readWriteVersion.Range));
-            Assert.That(storageCommandList.Commands[3].StorageBarrierSourceReads, Is.True);
-            Assert.That(storageCommandList.Commands[3].StorageBarrierSourceWrites, Is.True);
-            Assert.That(storageCommandList.Commands[3].StorageBarrierDestinationReads, Is.True);
-            Assert.That(storageCommandList.Commands[3].StorageBarrierDestinationWrites, Is.True);
-            Assert.That(storageCommandList.Commands[4].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            var storageCommandReadState = 0;
+            using (var commandRead = storageCommandList.ReadCommands(ref storageCommandReadState))
+            {
+                Assert.That(commandRead.Commands.Length, Is.EqualTo(5));
+                Assert.That(commandRead.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
+                Assert.That(commandRead.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+                Assert.That(commandRead.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.StorageBarrier));
+                Assert.That(commandRead.Commands[3].StorageBarrierBuffer, Is.SameAs(readWriteVersion));
+                Assert.That(commandRead.Commands[3].StorageBarrierBufferRange, Is.EqualTo(readWriteVersion.Range));
+                Assert.That(commandRead.Commands[3].StorageBarrierSourceReads, Is.True);
+                Assert.That(commandRead.Commands[3].StorageBarrierSourceWrites, Is.True);
+                Assert.That(commandRead.Commands[3].StorageBarrierDestinationReads, Is.True);
+                Assert.That(commandRead.Commands[3].StorageBarrierDestinationWrites, Is.True);
+                Assert.That(commandRead.Commands[4].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            }
 
             var writeOnlyBindingSet = new BindingSet(
                 [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, version1, declaredRange)],
@@ -1304,17 +1314,19 @@ internal sealed class GraphicsPipelineRequestTests
                     RecordStorageImageReadWrite)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-            Assert.That(commandList.Commands.Length, Is.EqualTo(5));
-            Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
-            Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
-            Assert.That(commandList.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.StorageBarrier));
-            Assert.That(commandList.Commands[3].StorageBarrierTexture, Is.SameAs(version2));
-            Assert.That(commandList.Commands[3].StorageBarrierTextureRange, Is.EqualTo(version2.Range));
-            Assert.That(commandList.Commands[3].StorageBarrierSourceReads, Is.True);
-            Assert.That(commandList.Commands[3].StorageBarrierSourceWrites, Is.True);
-            Assert.That(commandList.Commands[3].StorageBarrierDestinationReads, Is.True);
-            Assert.That(commandList.Commands[3].StorageBarrierDestinationWrites, Is.True);
-            Assert.That(commandList.Commands[4].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            var commandReadState = 0;
+            using var commandRead = commandList.ReadCommands(ref commandReadState);
+            Assert.That(commandRead.Commands.Length, Is.EqualTo(5));
+            Assert.That(commandRead.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
+            Assert.That(commandRead.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            Assert.That(commandRead.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.StorageBarrier));
+            Assert.That(commandRead.Commands[3].StorageBarrierTexture, Is.SameAs(version2));
+            Assert.That(commandRead.Commands[3].StorageBarrierTextureRange, Is.EqualTo(version2.Range));
+            Assert.That(commandRead.Commands[3].StorageBarrierSourceReads, Is.True);
+            Assert.That(commandRead.Commands[3].StorageBarrierSourceWrites, Is.True);
+            Assert.That(commandRead.Commands[3].StorageBarrierDestinationReads, Is.True);
+            Assert.That(commandRead.Commands[3].StorageBarrierDestinationWrites, Is.True);
+            Assert.That(commandRead.Commands[4].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
         }
         finally
         {
@@ -1472,14 +1484,16 @@ internal sealed class GraphicsPipelineRequestTests
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false))
             {
-                Assert.That(commandList.Commands.Length, Is.EqualTo(3));
-                Assert.That(commandList.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.CopyBuffer));
-                Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
-                Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
-                Assert.That(commandList.Commands[2].CopyTextureRegion.SourceX, Is.Zero);
-                Assert.That(commandList.Commands[2].CopyTextureRegion.SourceY, Is.Zero);
-                Assert.That(commandList.Commands[2].CopyTextureRegion.Width, Is.EqualTo(2));
-                Assert.That(commandList.Commands[2].CopyTextureRegion.Height, Is.EqualTo(2));
+                var commandReadState = 0;
+                using var commandRead = commandList.ReadCommands(ref commandReadState);
+                Assert.That(commandRead.Commands.Length, Is.EqualTo(3));
+                Assert.That(commandRead.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.CopyBuffer));
+                Assert.That(commandRead.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
+                Assert.That(commandRead.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
+                Assert.That(commandRead.Commands[2].CopyTextureRegion.SourceX, Is.Zero);
+                Assert.That(commandRead.Commands[2].CopyTextureRegion.SourceY, Is.Zero);
+                Assert.That(commandRead.Commands[2].CopyTextureRegion.Width, Is.EqualTo(2));
+                Assert.That(commandRead.Commands[2].CopyTextureRegion.Height, Is.EqualTo(2));
             }
 
             void RecordOutOfBoundsTextureCopy(scoped ref CommandRecorder recorder)
@@ -1694,8 +1708,13 @@ internal sealed class GraphicsPipelineRequestTests
                 RecordIndexedDraw)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-            Assert.That(commandList.Commands.Length, Is.EqualTo(4));
-            Assert.That(commandList.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.DrawIndexed));
+            var commandReadState = 0;
+            using (var commandRead = commandList.ReadCommands(ref commandReadState))
+            {
+                Assert.That(commandRead.Commands.Length, Is.EqualTo(4));
+                Assert.That(commandRead.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.DrawIndexed));
+            }
+
             commandList.Dispose();
             commandList = null;
 
@@ -2164,13 +2183,13 @@ internal sealed class GraphicsPipelineRequestTests
         var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
         var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
         GpuPipeline? pipeline = null;
-        char[][] schedules = [
-            ['A'],
-            ['A', 'A'],
-            ['A', 'B'],
-            ['A', 'A', 'A'],
-            ['A', 'B', 'C'],
-            ['A', 'B', 'A'],
+        (string Geometry, int Commands, int Barriers, int PendingWrites)[] schedules = [
+            ("A", 3, 0, 4),
+            ("AA", 9, 3, 5),
+            ("AB", 8, 2, 6),
+            ("AAA", 15, 6, 6),
+            ("ABC", 13, 4, 8),
+            ("ABA", 14, 5, 7),
         ];
 
         try
@@ -2188,7 +2207,7 @@ internal sealed class GraphicsPipelineRequestTests
 
             for (var scheduleIndex = 0; scheduleIndex < schedules.Length; scheduleIndex++)
             {
-                var schedule = schedules[scheduleIndex];
+                var (schedule, expectedCommandCount, expectedBarrierCount, pendingWriteCount) = schedules[scheduleIndex];
                 var geometryCount = 0;
 
                 foreach (var geometryLabel in schedule)
@@ -2304,9 +2323,6 @@ internal sealed class GraphicsPipelineRequestTests
 
                 var declaredAccesses = declaredAccessesBuilder.ToImmutable();
                 var nativeAccesses = nativeAccessesBuilder.ToImmutable();
-                var expectedBarrierCount = checked((3 * schedule.Length) - geometryCount - 2);
-                var expectedCommandCount = checked((6 * schedule.Length) - geometryCount - 2);
-                var pendingWriteCount = checked(schedule.Length + geometryCount + 2);
                 var capacity = new CommandRecorderRecordingCapacity(
                     expectedCommandCount,
                     schedule.Length,
@@ -2387,78 +2403,181 @@ internal sealed class GraphicsPipelineRequestTests
                 var dispatchCommandCount = 0;
                 var barrierCommandCount = 0;
 
-                foreach (var command in commandList.Commands)
+                var initialCommandReadState = 0;
+                using (var commandRead = commandList.ReadCommands(ref initialCommandReadState))
                 {
-                    switch (command.Kind)
+                    foreach (var command in commandRead.Commands)
                     {
-                        case GraphicsCommandKind.SetPipeline:
+                        switch (command.Kind)
                         {
-                            pipelineCommandCount++;
-                            break;
-                        }
-
-                        case GraphicsCommandKind.SetBindings:
-                        {
-                            bindingCommandCount++;
-                            break;
-                        }
-
-                        case GraphicsCommandKind.Dispatch:
-                        {
-                            dispatchCommandCount++;
-                            break;
-                        }
-
-                        case GraphicsCommandKind.StorageBarrier:
-                        {
-                            barrierCommandCount++;
-
-                            if (command.StorageBarrierBuffer is not GraphBufferVersion barrierBuffer)
+                            case GraphicsCommandKind.SetPipeline:
                             {
-                                Assert.Fail("A diagnostic storage barrier must target a graph buffer.");
+                                pipelineCommandCount++;
                                 break;
                             }
 
-                            Assert.That(command.StorageBarrierBufferRange, Is.EqualTo(barrierBuffer.Range));
-                            Assert.That(command.StorageBarrierSourceReads, Is.True);
-                            Assert.That(command.StorageBarrierSourceWrites, Is.True);
-                            Assert.That(command.StorageBarrierDestinationReads, Is.True);
-                            Assert.That(command.StorageBarrierDestinationWrites, Is.True);
-                            break;
-                        }
+                            case GraphicsCommandKind.SetBindings:
+                            {
+                                Assert.That(command.Bindings, Is.SameAs(bindingSets[bindingCommandCount]));
+                                var buffers = (command.Bindings
+                                    ?? throw new InvalidOperationException("The diagnostic binding command lost its binding set.")).Buffers;
+                                Assert.That(buffers.Length, Is.EqualTo(4));
+                                Assert.That(buffers[2].Range, Is.EqualTo(new GraphBufferRange(32L * bindingCommandCount, 16)));
+                                bindingCommandCount++;
+                                break;
+                            }
 
-                        default:
-                        {
-                            Assert.Fail($"Unexpected diagnostic command kind {command.Kind}.");
-                            break;
+                            case GraphicsCommandKind.Dispatch:
+                            {
+                                dispatchCommandCount++;
+                                break;
+                            }
+
+                            case GraphicsCommandKind.StorageBarrier:
+                            {
+                                barrierCommandCount++;
+
+                                if (command.StorageBarrierBuffer is not GraphBufferVersion barrierBuffer)
+                                {
+                                    Assert.Fail("A diagnostic storage barrier must target a graph buffer.");
+                                    break;
+                                }
+
+                                Assert.That(command.StorageBarrierBufferRange, Is.EqualTo(barrierBuffer.Range));
+                                Assert.That(command.StorageBarrierSourceReads, Is.True);
+                                Assert.That(command.StorageBarrierSourceWrites, Is.True);
+                                Assert.That(command.StorageBarrierDestinationReads, Is.True);
+                                Assert.That(command.StorageBarrierDestinationWrites, Is.True);
+                                break;
+                            }
+
+                            default:
+                            {
+                                Assert.Fail($"Unexpected diagnostic command kind {command.Kind}.");
+                                break;
+                            }
                         }
                     }
+
+                    Assert.That(commandRead.Commands.Length, Is.EqualTo(expectedCommandCount), $"schedule {schedule}");
                 }
 
-                Assert.That(commandList.Commands.Length, Is.EqualTo(expectedCommandCount), $"schedule {scheduleIndex}");
                 Assert.That(pipelineCommandCount, Is.EqualTo(schedule.Length), $"schedule {scheduleIndex}");
                 Assert.That(bindingCommandCount, Is.EqualTo(schedule.Length), $"schedule {scheduleIndex}");
                 Assert.That(dispatchCommandCount, Is.EqualTo(schedule.Length), $"schedule {scheduleIndex}");
                 Assert.That(barrierCommandCount, Is.EqualTo(expectedBarrierCount), $"schedule {scheduleIndex}");
+                Assert.That(recipe.ExpectedPendingWriteCount, Is.EqualTo(pendingWriteCount));
                 recipe.ValidateNativeSubmission(
                     diagnosticPassId,
                     graphicsDevice.DeviceEpoch,
                     nativeAccesses,
-                    commandList.Commands);
+                    commandList);
+                recipe.ValidateNativeSubmission(
+                    diagnosticPassId,
+                    graphicsDevice.DeviceEpoch,
+                    nativeAccesses,
+                    commandList);
                 _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
                     diagnosticPassId,
                     checked(graphicsDevice.DeviceEpoch + 1),
                     nativeAccesses,
-                    commandList.Commands));
+                    commandList));
+                _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
+                    initializationPass,
+                    graphicsDevice.DeviceEpoch,
+                    nativeAccesses,
+                    commandList));
+
+                var backingField = typeof(RecordedPassCommandList).GetField("_commands", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("The private command backing was not found.");
+                var originalBacking = (ImmutableArray<RecordedGraphicsCommand>)(backingField.GetValue(commandList)
+                    ?? throw new InvalidOperationException("The completed command owner lost its backing."));
+                var recipeBackingField = typeof(SkinnedNormalDiagnosticRecordingRecipe)
+                    .GetField("_verifiedCommands", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("The recipe lost its recorded-command verification state.");
+                var recipeBacking = (ImmutableArray<RecordedGraphicsCommand>)(recipeBackingField.GetValue(recipe)
+                    ?? throw new InvalidOperationException("The recorded-command verification state was uninitialized."));
+                Assert.That(recipeBacking.IsEmpty, Is.True);
+                var replacementBacking = ImmutableCollectionsMarshal.AsImmutableArray(originalBacking.AsSpan().ToArray());
+                Assert.That(replacementBacking, Is.EqualTo(originalBacking));
+                Assert.That(replacementBacking == originalBacking, Is.False);
+                using var replacementOwner = new RecordedPassCommandList(
+                    diagnosticPassId, CommandRecorderPassKind.Compute, replacementBacking, []);
+                using var sameBackingOwner = new RecordedPassCommandList(
+                    diagnosticPassId, CommandRecorderPassKind.Compute, originalBacking, []);
                 _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
                     diagnosticPassId,
                     graphicsDevice.DeviceEpoch,
                     nativeAccesses,
-                    []));
-                commandList.Dispose();
-                Assert.That(commandList.Commands.IsEmpty, Is.True);
-                Assert.That(commandList.DiagnosticRecipe, Is.Null);
+                    replacementOwner));
+                _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
+                    diagnosticPassId,
+                    graphicsDevice.DeviceEpoch,
+                    nativeAccesses,
+                    sameBackingOwner));
+                _ = Assert.Throws<InvalidOperationException>(() => recipe.BindRecordedOwner(sameBackingOwner));
+                _ = Assert.Throws<InvalidOperationException>(() => recipe.BindRecordedOwner(commandList));
+                _ = Assert.Throws<InvalidOperationException>(() => new RecordedPassCommandList(
+                    diagnosticPassId, CommandRecorderPassKind.Compute, originalBacking, [], recipe));
+
+                using (var uncohortedUse = pipeline.ResourceOwner.AcquireUse("counterfeit recording"))
+                {
+                    _ = Assert.Throws<InvalidOperationException>(() => new RecordedPassCommandList(
+                        diagnosticPassId, CommandRecorderPassKind.Compute, originalBacking, [uncohortedUse], recipe));
+                    Assert.That(uncohortedUse.IsOwnedBy(pipeline.ResourceOwner), Is.True);
+                }
+
+                backingField.SetValue(commandList, replacementBacking);
+
+                try
+                {
+                    _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
+                        diagnosticPassId,
+                        graphicsDevice.DeviceEpoch,
+                        nativeAccesses,
+                        commandList));
+                }
+                finally
+                {
+                    backingField.SetValue(commandList, originalBacking);
+                }
+
+                _ = Assert.ThrowsAsync<InvalidOperationException>(async () => await graphicsDevice.RecordPassAsync(
+                    diagnosticPassId,
+                    CommandRecorderPassKind.Compute,
+                    declaredAccesses,
+                    [],
+                    depthTargetFormat: null,
+                    RecordDiagnostic,
+                    capacity,
+                    recipe)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+                Assert.That(recipe.RecordingUseAdmission.ClaimedUseCount, Is.EqualTo(schedule.Length));
+                recipe.ValidateNativeSubmission(diagnosticPassId, graphicsDevice.DeviceEpoch, nativeAccesses, commandList);
+
+                var cleanupCommandReadState = 0;
+                using (var commandRead = commandList.ReadCommands(ref cleanupCommandReadState))
+                {
+                    commandList.Dispose();
+                    Assert.That(commandList.HasDiagnosticRecipe, Is.True);
+                    Assert.That(commandRead.Matches(commandList, originalBacking), Is.True);
+                    Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.True);
+                    recipe.ValidateNativeSubmission(diagnosticPassId, graphicsDevice.DeviceEpoch, nativeAccesses, in commandRead);
+                    _ = Assert.Throws<ObjectDisposedException>(() => {
+                        var refusedReadState = 0;
+                        using var refusedRead = commandList.ReadCommands(ref refusedReadState);
+                    });
+                }
+
+                Assert.That(commandList.HasDiagnosticRecipe, Is.False);
+                Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.False);
+                _ = Assert.Throws<ObjectDisposedException>(() => recipe.ValidateNativeSubmission(
+                    diagnosticPassId, graphicsDevice.DeviceEpoch, nativeAccesses, commandList));
+                _ = Assert.Throws<ObjectDisposedException>(() => recipe.ValidateNativeSubmission(
+                    diagnosticPassId, graphicsDevice.DeviceEpoch, nativeAccesses, sameBackingOwner));
                 Assert.That(recipe.RecordingUseAdmission.ManagedByteCharge, Is.GreaterThan(0));
+                TestContext.WriteLine($"Schedule {schedule}: {expectedCommandCount} commands, {expectedBarrierCount} barriers, {pendingWriteCount} pending writes.");
             }
         }
         finally
