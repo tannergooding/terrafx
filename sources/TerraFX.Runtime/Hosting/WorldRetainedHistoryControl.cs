@@ -44,18 +44,6 @@ internal sealed class WorldRetainedHistoryControl : IDisposable, IWorldHistoryRe
         }
     }
 
-    internal byte[] FileRecord
-    {
-        get
-        {
-            lock (s_gate)
-            {
-                return _fileRecord
-                    ?? throw new InvalidOperationException("The retained World history has not received its source file record.");
-            }
-        }
-    }
-
     public void Dispose()
     {
         IDisposable? sourceUse;
@@ -71,11 +59,25 @@ internal sealed class WorldRetainedHistoryControl : IDisposable, IWorldHistoryRe
             _isDisposed = true;
             sourceUse = _sourceUse;
             playbackSourceCredit = _playbackSourceCredit;
+            _checkpoint = null;
+            _fileRecord = null;
         }
 
-        sourceUse?.Dispose();
-        _historyInterest.Dispose();
-        playbackSourceCredit?.Dispose();
+        try
+        {
+            sourceUse?.Dispose();
+        }
+        finally
+        {
+            try
+            {
+                _historyInterest.Dispose();
+            }
+            finally
+            {
+                playbackSourceCredit?.Dispose();
+            }
+        }
 
         lock (s_gate)
         {
@@ -84,8 +86,6 @@ internal sealed class WorldRetainedHistoryControl : IDisposable, IWorldHistoryRe
                 throw new InvalidOperationException("The retained World history lost its quarantine anchor.");
             }
 
-            _checkpoint = null;
-            _fileRecord = null;
             _sourceUse = null;
             _playbackSourceCredit = null;
         }

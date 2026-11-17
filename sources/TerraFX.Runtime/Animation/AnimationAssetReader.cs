@@ -17,6 +17,35 @@ internal static class AnimationAssetReader
     private static readonly Guid s_localTransformSchemaId = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
     private static readonly Guid s_skeletonSchemaId = new ContentSchemaIdentityAssignment("native/skeleton").SchemaId;
 
+    internal static (Vector3 Translation, Quaternion Rotation, Vector3 Scale) ReadLocalTransform(EbinRecordReadView record)
+    {
+        ValidateHeader(record, s_localTransformSchemaId, fieldCounts: [3]);
+        var translation = ReadVector3(record, tag: 1);
+        var rotation = ReadQuaternion(record, tag: 2);
+        var scale = ReadVector3(record, tag: 3);
+
+        if (!translation.IsFinite().All())
+        {
+            throw new InvalidDataException("A Skeleton bind-local translation must be finite.");
+        }
+
+        var rotationLengthSquared = Quaternion.Dot(rotation, rotation);
+
+        if (!rotation.IsFinite().All()
+            || !float.IsFinite(rotationLengthSquared)
+            || (rotationLengthSquared <= 1.0e-12f))
+        {
+            throw new InvalidDataException("A Skeleton bind-local rotation must have a finite nonzero norm.");
+        }
+
+        if (!AnimationScaleRules.IsScaleValid(scale))
+        {
+            throw new InvalidDataException("A Skeleton bind-local scale must be finite with magnitudes in [0.0001,1000].");
+        }
+
+        return (translation, Quaternion.Normalize(rotation), scale);
+    }
+
     internal static SkeletonAsset ReadSkeleton(scoped EbinRecordReadView record, AssetCodecContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -136,15 +165,6 @@ internal static class AnimationAssetReader
         return field;
     }
 
-    private static bool IsScaleValid(Vector3 scale)
-        => scale.IsFinite().All()
-        && (float.Abs(scale.X) >= 0.0001f)
-        && (float.Abs(scale.X) <= 1000.0f)
-        && (float.Abs(scale.Y) >= 0.0001f)
-        && (float.Abs(scale.Y) <= 1000.0f)
-        && (float.Abs(scale.Z) >= 0.0001f)
-        && (float.Abs(scale.Z) <= 1000.0f);
-
     private static Guid ReadGuid(EbinRecordReadView record, uint tag)
     {
         var field = GetRequiredField(record, tag, kind: 11);
@@ -167,35 +187,6 @@ internal static class AnimationAssetReader
         }
 
         return BinaryPrimitives.ReadInt32LittleEndian(field.Payload);
-    }
-
-    private static (Vector3 Translation, Quaternion Rotation, Vector3 Scale) ReadLocalTransform(EbinRecordReadView record)
-    {
-        ValidateHeader(record, s_localTransformSchemaId, fieldCounts: [3]);
-        var translation = ReadVector3(record, tag: 1);
-        var rotation = ReadQuaternion(record, tag: 2);
-        var scale = ReadVector3(record, tag: 3);
-
-        if (!translation.IsFinite().All())
-        {
-            throw new InvalidDataException("A Skeleton bind-local translation must be finite.");
-        }
-
-        var rotationLengthSquared = Quaternion.Dot(rotation, rotation);
-
-        if (!rotation.IsFinite().All()
-            || !float.IsFinite(rotationLengthSquared)
-            || (rotationLengthSquared <= 1.0e-12f))
-        {
-            throw new InvalidDataException("A Skeleton bind-local rotation must have a finite nonzero norm.");
-        }
-
-        if (!IsScaleValid(scale))
-        {
-            throw new InvalidDataException("A Skeleton bind-local scale must be finite with magnitudes in [0.0001,1000].");
-        }
-
-        return (translation, Quaternion.Normalize(rotation), scale);
     }
 
     private static Matrix4x4 ReadMatrix4x4(EbinRecordReadView record, uint tag)

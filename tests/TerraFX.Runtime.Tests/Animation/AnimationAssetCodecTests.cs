@@ -26,6 +26,7 @@ internal sealed partial class SceneAssetStoreTests
             .. SceneSchemaCatalogue.Schemas,
             .. RenderingSchemaCatalogue.Schemas,
             .. AnimationSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.PlaybackSchemas,
         ]);
 
     private static EbinRecord CreateAnimationClipRecord(
@@ -34,11 +35,12 @@ internal sealed partial class SceneAssetStoreTests
         EbinField? skeletonReference = null,
         EbinField? rootMotion = null,
         EbinField? sceneReference = null,
-        uint schemaMinor = 0)
+        uint schemaMinor = 0,
+        long durationTicks = 100)
     {
         var fields = new List<EbinField>
         {
-            EbinPrimitives.Int64(1, 100),
+            EbinPrimitives.Int64(1, durationTicks),
             EbinPrimitives.RecordArray(2, tracks),
             EbinPrimitives.RecordArray(3, events),
             EbinPrimitives.UInt8(4, 0),
@@ -679,6 +681,78 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(clipLease.Value.Tracks[0].Channel, Is.Zero);
             Assert.That(clipLease.Value.Tracks[0].Vector3Keys, Has.Length.EqualTo(2));
             Assert.That(clipLease.Value.Tracks[0].Vector3Keys[1].Value, Is.EqualTo(new Vector3(1.0f, 0.0f, 0.0f)));
+        }
+        finally
+        {
+            try
+            {
+                if (assets is { } selectedAssets)
+                {
+                    await selectedAssets.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Test]
+    public async Task AnimationClipCodecLoadsScaleAndRejectsInvalidInterpolatedValue()
+    {
+        var schemas = CreateAnimationAssetRegistry();
+        var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = SceneSupport.RegisterAssetCodecs(registrationBuilder);
+        _ = AnimationSupport.RegisterAssetCodecs(registrationBuilder);
+        const uint clipAssetId = 92;
+        const uint sceneAssetId = 93;
+        var targetId = new Guid("30000000-0000-4000-8000-000000000092");
+        var clipRecord = EbinPrimitives.Encode(CreateAnimationClipRecord(
+            [
+                CreateTransformTrack(
+                    targetId,
+                    channel: 2,
+                    interpolation: 2,
+                    keys:
+                    [
+                        CreateVector3Key(
+                            0,
+                            Vector3.One,
+                            inTangent: Vector3.Zero,
+                            outTangent: new Vector3(-4.0f, 0.0f, 0.0f)),
+                        CreateVector3Key(
+                            TimeSpan.TicksPerSecond,
+                            Vector3.One,
+                            inTangent: new Vector3(4.0f, 0.0f, 0.0f),
+                            outTangent: Vector3.Zero),
+                    ],
+                    targetDomain: 0),
+            ],
+            [],
+            sceneReference: CreateSceneReference(sceneAssetId),
+            durationTicks: TimeSpan.TicksPerSecond));
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(checked((int)sceneAssetId)));
+        var packageBytes = Package.CreatePackage(
+            new Package.Entry(clipAssetId, Package.CreateEnvelope(clipAssetId, clipRecord)),
+            new Package.Entry(sceneAssetId, Package.CreateEnvelope(sceneAssetId, sceneRecord)));
+        var packagePath = Package.WritePackage(packageBytes);
+        AssetStore? assets = null;
+
+        try
+        {
+            assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), registrationBuilder.Build()))
+                .ConfigureAwait(false);
+            using var clipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)clipAssetId)))
+                .ConfigureAwait(false);
+
+            Assert.That(clipLease.Value.Tracks, Has.Length.EqualTo(1));
+            Assert.That(clipLease.Value.Tracks[0].Vector3Keys, Has.Length.EqualTo(2));
+            _ = Assert.Throws<InvalidDataException>(() => AnimationClipSamplingKernels.SampleVector3(
+                clipLease.Value,
+                clipLease.Value.Tracks[0],
+                TimeSpan.TicksPerSecond / 2));
         }
         finally
         {

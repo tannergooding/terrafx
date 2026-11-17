@@ -75,7 +75,8 @@ internal static class AnimationClipAssetBinding
                             sceneAssetId,
                             cancellationToken).ConfigureAwait(false),
                         SceneExpansionLimits.Default,
-                        cancellationToken).ConfigureAwait(false);
+                        useControl: null,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
                     ValidateSceneTargets(clip, scenePlan, cancellationToken);
                 }
                 finally

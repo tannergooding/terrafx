@@ -13,17 +13,32 @@ internal sealed class WorldPlaybackControl : IDisposable
     private bool _isDisposed;
     private AssetPackageLease? _packageLease;
     private WorldRetainedHistoryControl? _retainedHistory;
+    private IDisposable? _sourceBudget;
+    private IDisposable? _sourceOwnership;
 
-    internal WorldPlaybackControl(AssetPackageLease packageLease)
+    internal WorldPlaybackControl(
+        AssetPackageLease packageLease,
+        IDisposable? sourceOwnership = null,
+        IDisposable? sourceBudget = null)
     {
         ArgumentNullException.ThrowIfNull(packageLease);
+
+        if ((sourceOwnership is null) != (sourceBudget is null))
+        {
+            throw new ArgumentException("Retained source ownership and its candidate budget interest must transfer together.", nameof(sourceOwnership));
+        }
+
         _packageLease = packageLease;
+        _sourceOwnership = sourceOwnership;
+        _sourceBudget = sourceBudget;
     }
 
     public void Dispose()
     {
         AssetPackageLease? packageLease;
         WorldRetainedHistoryControl? retainedHistory;
+        IDisposable? sourceOwnership;
+        IDisposable? sourceBudget;
 
         lock (_gate)
         {
@@ -35,8 +50,26 @@ internal sealed class WorldPlaybackControl : IDisposable
             _isDisposed = true;
             packageLease = _packageLease;
             retainedHistory = _retainedHistory;
+            sourceOwnership = _sourceOwnership;
+            sourceBudget = _sourceBudget;
             _packageLease = null;
             _retainedHistory = null;
+            _sourceOwnership = null;
+            _sourceBudget = null;
+        }
+
+        if (sourceOwnership is not null)
+        {
+            try
+            {
+                sourceOwnership.Dispose();
+            }
+            finally
+            {
+                sourceBudget?.Dispose();
+            }
+
+            return;
         }
 
         try

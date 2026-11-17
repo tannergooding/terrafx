@@ -8,10 +8,164 @@ namespace TerraFX.Animation;
 
 internal static class AnimationClipSamplingKernels
 {
+    private const byte ChannelPosition = 0;
+    private const byte ChannelScale = 2;
     private const byte InterpolationCubic = 2;
     private const byte InterpolationLinear = 1;
     private const byte InterpolationStep = 0;
     private const float MinimumSampleQuaternionLengthSquared = 1.0e-12f;
+
+    internal static Vector3 ApplyAdditivePosition(
+        Vector3 current,
+        Vector3 sample,
+        Vector3 reference,
+        float weight)
+    {
+        current = ValidateVector3Sample(current, ChannelPosition);
+        sample = ValidateVector3Sample(sample, ChannelPosition);
+        reference = ValidateVector3Sample(reference, ChannelPosition);
+        weight = ValidateBlendWeight(weight);
+        return ValidateVector3Sample(current + ((sample - reference) * weight), ChannelPosition);
+    }
+
+    internal static Quaternion ApplyAdditiveQuaternion(
+        Quaternion current,
+        Quaternion sample,
+        Quaternion reference,
+        float weight)
+    {
+        current = NormalizeQuaternionSample(current);
+        sample = NormalizeQuaternionSample(sample);
+        reference = NormalizeQuaternionSample(reference);
+        weight = ValidateBlendWeight(weight);
+        var delta = NormalizeQuaternionSample(Quaternion.Compose(Quaternion.Invert(reference), sample));
+        var weightedDelta = NormalizeQuaternionSample(Quaternion.Slerp(Quaternion.Identity, delta, weight));
+        return NormalizeQuaternionSample(Quaternion.Compose(current, weightedDelta));
+    }
+
+    internal static Vector3 ApplyAdditiveScale(
+        Vector3 current,
+        Vector3 sample,
+        Vector3 reference,
+        float weight)
+    {
+        if (!AnimationScaleRules.IsScaleValid(current)
+            || !AnimationScaleRules.IsScaleValid(sample)
+            || !AnimationScaleRules.IsScaleValid(reference)
+            || !HasPositiveScaleComponents(sample)
+            || !HasPositiveScaleComponents(reference))
+        {
+            throw new InvalidDataException("Animation additive scale requires valid samples and positive sample/reference components.");
+        }
+
+        weight = ValidateBlendWeight(weight);
+        var ratio = new Vector3(
+            sample.X / reference.X,
+            sample.Y / reference.Y,
+            sample.Z / reference.Z);
+        var weightedRatio = Vector3.Lerp(Vector3.One, ratio, weight);
+        var result = current * weightedRatio;
+
+        if (!AnimationScaleRules.IsScaleValid(result))
+        {
+            throw new InvalidDataException("An Animation additive scale result is outside its admitted component range.");
+        }
+
+        return result;
+    }
+
+    internal static Quaternion BlendOverrideQuaternion(
+        ReadOnlySpan<Quaternion> samples,
+        ReadOnlySpan<float> weights,
+        Quaternion fallback)
+    {
+        ValidateBlendInputs(samples.Length, weights.Length);
+        fallback = NormalizeQuaternionSample(fallback);
+        var result = Quaternion.Identity;
+        var totalWeight = 0.0f;
+
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = NormalizeQuaternionSample(samples[index]);
+            var weight = ValidateBlendWeight(weights[index]);
+
+            if (weight == 0.0f)
+            {
+                continue;
+            }
+
+            var nextTotalWeight = totalWeight + weight;
+            result = (totalWeight == 0.0f)
+                ? sample
+                : NormalizeQuaternionSample(Quaternion.Slerp(result, sample, weight / nextTotalWeight));
+            totalWeight = nextTotalWeight;
+        }
+
+        return (totalWeight == 0.0f) ? fallback : result;
+    }
+
+    internal static Vector3 BlendOverrideScale(
+        ReadOnlySpan<Vector3> samples,
+        ReadOnlySpan<float> weights,
+        Vector3 fallback)
+    {
+        ValidateBlendInputs(samples.Length, weights.Length);
+
+        if (!AnimationScaleRules.IsScaleValid(fallback))
+        {
+            throw new InvalidDataException("An Animation fallback scale is outside its admitted component range.");
+        }
+
+        var weightedSample = Vector3.Zero;
+        var totalWeight = 0.0f;
+
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = samples[index];
+
+            if (!AnimationScaleRules.IsScaleValid(sample))
+            {
+                throw new InvalidDataException("An Animation scale sample is outside its admitted component range.");
+            }
+
+            var weight = ValidateBlendWeight(weights[index]);
+            weightedSample += sample * weight;
+            totalWeight += weight;
+        }
+
+        if (totalWeight == 0.0f)
+        {
+            return fallback;
+        }
+
+        var result = weightedSample / totalWeight;
+        return AnimationScaleRules.IsScaleValid(result)
+            ? result
+            : throw new InvalidDataException("An Animation override scale result is outside its admitted component range.");
+    }
+
+    internal static Vector3 BlendOverrideVector3(
+        ReadOnlySpan<Vector3> samples,
+        ReadOnlySpan<float> weights,
+        Vector3 fallback)
+    {
+        ValidateBlendInputs(samples.Length, weights.Length);
+        fallback = ValidateVector3Sample(fallback, ChannelPosition);
+        var weightedSample = Vector3.Zero;
+        var totalWeight = 0.0f;
+
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = ValidateVector3Sample(samples[index], ChannelPosition);
+            var weight = ValidateBlendWeight(weights[index]);
+            weightedSample += sample * weight;
+            totalWeight += weight;
+        }
+
+        return (totalWeight == 0.0f)
+            ? fallback
+            : ValidateVector3Sample(weightedSample / totalWeight, ChannelPosition);
+    }
 
     internal static Quaternion SampleQuaternion(
         AnimationClipAsset clip,
@@ -116,6 +270,12 @@ internal static class AnimationClipSamplingKernels
     {
         ArgumentNullException.ThrowIfNull(clip);
         ValidateClipTime(clip, timeTicks);
+
+        if (track.Channel is not ChannelPosition and not ChannelScale)
+        {
+            throw new InvalidDataException("A sampled Vector3 track must be a Position or Scale track.");
+        }
+
         var keys = track.Vector3Keys;
 
         if (keys.IsDefaultOrEmpty)
@@ -128,17 +288,17 @@ internal static class AnimationClipSamplingKernels
         if (track.Interpolation is InterpolationStep)
         {
             var selectedIndex = (nextIndex == 0) ? 0 : Math.Min(nextIndex - 1, keys.Length - 1);
-            return ValidateVector3Sample(keys[selectedIndex].Value);
+            return ValidateVector3Sample(keys[selectedIndex].Value, track.Channel);
         }
 
         if (nextIndex == 0)
         {
-            return ValidateVector3Sample(keys[0].Value);
+            return ValidateVector3Sample(keys[0].Value, track.Channel);
         }
 
         if (nextIndex == keys.Length)
         {
-            return ValidateVector3Sample(keys[^1].Value);
+            return ValidateVector3Sample(keys[^1].Value, track.Channel);
         }
 
         var first = keys[nextIndex - 1];
@@ -146,14 +306,14 @@ internal static class AnimationClipSamplingKernels
 
         if (second.TimeTicks == timeTicks)
         {
-            return ValidateVector3Sample(second.Value);
+            return ValidateVector3Sample(second.Value, track.Channel);
         }
 
         var amount = CalculateAmount(first.TimeTicks, second.TimeTicks, timeTicks);
 
         if (track.Interpolation is InterpolationLinear)
         {
-            return ValidateVector3Sample(Vector3.Lerp(first.Value, second.Value, amount));
+            return ValidateVector3Sample(Vector3.Lerp(first.Value, second.Value, amount), track.Channel);
         }
 
         if (track.Interpolation is not InterpolationCubic
@@ -174,7 +334,8 @@ internal static class AnimationClipSamplingKernels
             (first.Value * firstWeight)
             + (first.OutTangent.Value * (firstTangentWeight * tangentSeconds))
             + (second.Value * secondWeight)
-            + (second.InTangent.Value * (secondTangentWeight * tangentSeconds)));
+            + (second.InTangent.Value * (secondTangentWeight * tangentSeconds)),
+            track.Channel);
     }
 
     private static float CalculateAmount(long firstTimeTicks, long secondTimeTicks, long timeTicks)
@@ -274,6 +435,9 @@ internal static class AnimationClipSamplingKernels
         return low;
     }
 
+    private static bool HasPositiveScaleComponents(Vector3 value)
+        => (value.X > 0.0f) && (value.Y > 0.0f) && (value.Z > 0.0f);
+
     private static Quaternion NormalizeQuaternionSample(Quaternion value)
     {
         var lengthSquared = Quaternion.Dot(value, value);
@@ -289,17 +453,42 @@ internal static class AnimationClipSamplingKernels
         return normalized;
     }
 
+    private static void ValidateBlendInputs(int sampleCount, int weightCount)
+    {
+        if (sampleCount != weightCount)
+        {
+            throw new ArgumentException("Animation blend samples and weights must have matching lengths.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(sampleCount, 4);
+    }
+
+    private static float ValidateBlendWeight(float weight)
+    {
+        if (!float.IsFinite(weight) || (weight < 0.0f) || (weight > 1.0f))
+        {
+            throw new InvalidDataException("An Animation blend weight must be finite and in [0,1].");
+        }
+
+        return weight;
+    }
+
     private static void ValidateClipTime(AnimationClipAsset clip, long timeTicks)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(timeTicks);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeTicks, clip.DurationTicks);
     }
 
-    private static Vector3 ValidateVector3Sample(Vector3 value)
+    private static Vector3 ValidateVector3Sample(Vector3 value, byte channel)
     {
         if (!value.IsFinite().All())
         {
             throw new InvalidDataException("An Animation vector sample is not finite.");
+        }
+
+        if ((channel == ChannelScale) && !AnimationScaleRules.IsScaleValid(value))
+        {
+            throw new InvalidDataException("An Animation Scale sample has component magnitudes outside [0.0001,1000].");
         }
 
         return value;

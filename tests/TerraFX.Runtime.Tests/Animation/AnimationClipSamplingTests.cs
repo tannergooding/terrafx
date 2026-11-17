@@ -59,6 +59,51 @@ internal sealed class AnimationClipSamplingTests
     }
 
     [Test]
+    [TestCase(-4.0f, 4.0f, true)]
+    [TestCase(-10000.0f, 10000.0f, true)]
+    [TestCase(-8.0f, 8.0f, false)]
+    public void CubicScaleSampleValidatesComponentMagnitudes(
+        float firstOutTangentX,
+        float secondInTangentX,
+        bool shouldReject)
+    {
+        var targetId = Guid.NewGuid();
+        var clip = CreateClip(
+            TimeSpan.TicksPerSecond,
+            new AnimationClipAsset.AnimationTrack(
+                targetId,
+                0,
+                2,
+                2,
+                [
+                    new AnimationClipAsset.Vector3Key(
+                        0,
+                        Vector3.One,
+                        Vector3.Zero,
+                        new Vector3(firstOutTangentX, 0.0f, 0.0f)),
+                    new AnimationClipAsset.Vector3Key(
+                        TimeSpan.TicksPerSecond,
+                        Vector3.One,
+                        new Vector3(secondInTangentX, 0.0f, 0.0f),
+                        Vector3.Zero),
+                ],
+                [],
+                []));
+
+        if (shouldReject)
+        {
+            _ = Assert.Throws<InvalidDataException>(
+                () => AnimationClipSamplingKernels.SampleVector3(clip, clip.Tracks[0], TimeSpan.TicksPerSecond / 2));
+        }
+        else
+        {
+            Assert.That(
+                AnimationClipSamplingKernels.SampleVector3(clip, clip.Tracks[0], TimeSpan.TicksPerSecond / 2),
+                Is.EqualTo(new Vector3(-1.0f, 1.0f, 1.0f)));
+        }
+    }
+
+    [Test]
     public void CubicVectorSampleScalesTangentsBySegmentSeconds()
     {
         var targetId = Guid.NewGuid();

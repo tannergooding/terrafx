@@ -140,6 +140,37 @@ internal static class AnimationClipAssetReader
             [.. record.EncodedBytes]);
     }
 
+    internal static AssetId ReadAssetReferenceValue(
+        scoped ReadOnlySpan<byte> payload,
+        Guid expectedSchemaId,
+        uint expectedMajor,
+        AssetCodecContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var reference = new EbinRecordReadView(payload);
+        ValidateHeader(reference, s_assetReferenceSchemaId, fieldCounts: [3]);
+        var assetIdValue = ReadUInt32(reference, tag: 1);
+        var schemaId = ReadGuid(reference, tag: 2);
+        var schemaMajor = ReadUInt32(reference, tag: 3);
+
+        if ((assetIdValue is 0 or > int.MaxValue)
+            || (schemaId != expectedSchemaId)
+            || (schemaMajor != expectedMajor))
+        {
+            throw new InvalidDataException("An Animation asset reference does not name its owner-selected native asset schema.");
+        }
+
+        var schemaReference = new ContentSchemaReference(schemaId, checked((int)schemaMajor), 0, ContentSchemaScope.Content);
+
+        if (!context.Schemas.TryGetSchema(schemaReference, out var schema)
+            || (schema.Role != ContentSchemaRole.NativeAsset))
+        {
+            throw new InvalidDataException("An Animation asset reference selects an absent or non-native compiled schema.");
+        }
+
+        return new AssetId(checked((int)assetIdValue));
+    }
+
     private static EbinFieldReadView GetRequiredField(
         EbinRecordReadView record,
         uint tag,
@@ -178,15 +209,6 @@ internal static class AnimationClipAssetReader
         return field;
     }
 
-    private static bool IsScaleValid(Vector3 scale)
-        => scale.IsFinite().All()
-        && (float.Abs(scale.X) >= 0.0001f)
-        && (float.Abs(scale.X) <= 1000.0f)
-        && (float.Abs(scale.Y) >= 0.0001f)
-        && (float.Abs(scale.Y) <= 1000.0f)
-        && (float.Abs(scale.Z) >= 0.0001f)
-        && (float.Abs(scale.Z) <= 1000.0f);
-
     private static AssetId ReadAssetReference(
         EbinRecordReadView record,
         uint tag,
@@ -198,36 +220,6 @@ internal static class AnimationClipAssetReader
             expectedSchemaId,
             expectedMajor,
             context);
-
-    private static AssetId ReadAssetReferenceValue(
-        scoped ReadOnlySpan<byte> payload,
-        Guid expectedSchemaId,
-        uint expectedMajor,
-        AssetCodecContext context)
-    {
-        var reference = new EbinRecordReadView(payload);
-        ValidateHeader(reference, s_assetReferenceSchemaId, fieldCounts: [3]);
-        var assetIdValue = ReadUInt32(reference, tag: 1);
-        var schemaId = ReadGuid(reference, tag: 2);
-        var schemaMajor = ReadUInt32(reference, tag: 3);
-
-        if ((assetIdValue is 0 or > int.MaxValue)
-            || (schemaId != expectedSchemaId)
-            || (schemaMajor != expectedMajor))
-        {
-            throw new InvalidDataException("An Animation asset reference does not name its owner-selected native asset schema.");
-        }
-
-        var schemaReference = new ContentSchemaReference(schemaId, checked((int)schemaMajor), 0, ContentSchemaScope.Content);
-
-        if (!context.Schemas.TryGetSchema(schemaReference, out var schema)
-            || (schema.Role != ContentSchemaRole.NativeAsset))
-        {
-            throw new InvalidDataException("An Animation asset reference selects an absent or non-native compiled schema.");
-        }
-
-        return new AssetId(checked((int)assetIdValue));
-    }
 
     private static AnimationClipAsset.ClipBounds ReadBounds(scoped ReadOnlySpan<byte> encodedBounds)
     {
@@ -632,7 +624,7 @@ internal static class AnimationClipAssetReader
             ValidateKeyTime(timeTicks, previousTime, durationTicks);
 
             if (!value.IsFinite().All()
-                || ((channel == ChannelScale) && !IsScaleValid(value)))
+                || ((channel == ChannelScale) && !AnimationScaleRules.IsScaleValid(value)))
             {
                 throw new InvalidDataException(channel == ChannelScale
                     ? "Animation Scale keys must be finite with component magnitudes in [0.0001,1000]."

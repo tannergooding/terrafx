@@ -29,6 +29,10 @@ public sealed class WorldPersistence : IAsyncDisposable
     private const int MaximumAssetValidationReadBufferBytes = 65_537;
     private const int MaximumQueuedSavesPerPath = 8;
     private const ushort UInt32Kind = 3;
+    private static readonly Guid s_animationControllerSchemaId = new ContentSchemaIdentityAssignment("native/animation-controller").SchemaId;
+    private static readonly Guid s_clipSchemaId = new ContentSchemaIdentityAssignment("native/clip").SchemaId;
+    private static readonly Guid s_materialSchemaId = new ContentSchemaIdentityAssignment("native/material").SchemaId;
+    private static readonly Guid s_meshSchemaId = new ContentSchemaIdentityAssignment("native/mesh").SchemaId;
     private static readonly ConcurrentDictionary<string, SavePathState> s_savePaths = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private int _activeLoads;
@@ -60,6 +64,28 @@ public sealed class WorldPersistence : IAsyncDisposable
 
     internal EngineHost? Host => _host;
 
+    internal static Diagnostic CreateLoadDiagnostic(string code, string message, Guid? worldGuid)
+        => new(
+            code,
+            DiagnosticSeverity.Error,
+            Stopwatch.GetTimestamp(),
+            hostId: null,
+            worldGuid: worldGuid,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: null,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "PrepareLoadAsync",
+            nativeResult: null,
+            message: message,
+            context: []);
+
     internal static WorldLoadReceipt CreateLoadRejectedReceipt(string code, string message, Guid? worldGuid)
         => new(
             WorldLoadStatus.Rejected,
@@ -70,6 +96,19 @@ public sealed class WorldPersistence : IAsyncDisposable
             targetRecordWorldGuid: null,
             loadedTick: null,
             rejection: CreateCommitLoadDiagnostic(code, message, worldGuid));
+
+    internal static int? GetM05RequiredAssetMinor(AssetReference reference)
+        => ((((reference.SchemaId == s_meshSchemaId) || (reference.SchemaId == s_materialSchemaId))
+                && (reference.SchemaMajor is 1 or 2))
+            || (((reference.SchemaId == s_animationControllerSchemaId) || (reference.SchemaId == s_clipSchemaId))
+                && (reference.SchemaMajor == 1)))
+            ? 0
+            : null;
+
+    internal static long MeasureAssetReferenceValidationWorkspaceBytes(int referenceCount, int maximumDecodedAssetBytes)
+        => checked(4096L + 64L
+            + ((((long)referenceCount * Unsafe.SizeOf<AssetReference>()) + 7L) & ~7L)
+            + ((referenceCount == 0) ? 0L : (long)maximumDecodedAssetBytes + MaximumAssetValidationReadBufferBytes));
 
     private static long Align16(long value)
     {
@@ -121,28 +160,6 @@ public sealed class WorldPersistence : IAsyncDisposable
             assetId: null,
             commandIdentity: null,
             operation: "SaveAsync",
-            nativeResult: null,
-            message: message,
-            context: []);
-
-    private static Diagnostic CreateLoadDiagnostic(string code, string message, Guid? worldGuid)
-        => new(
-            code,
-            DiagnosticSeverity.Error,
-            Stopwatch.GetTimestamp(),
-            hostId: null,
-            worldGuid: worldGuid,
-            deviceId: null,
-            surfaceId: null,
-            deviceEpoch: null,
-            surfaceEpoch: null,
-            swapchainEpoch: null,
-            tick: null,
-            systemId: null,
-            passId: null,
-            assetId: null,
-            commandIdentity: null,
-            operation: "PrepareLoadAsync",
             nativeResult: null,
             message: message,
             context: []);
@@ -409,6 +426,7 @@ public sealed class WorldPersistence : IAsyncDisposable
         AssetReference[] assetReferences,
         int assetReferenceCount,
         AssetPackageLease packageLease,
+        bool useM05AssetProfile,
         IDisposable? saveUse,
         CancellationToken cancellationToken)
     {
@@ -436,8 +454,12 @@ public sealed class WorldPersistence : IAsyncDisposable
             for (var index = 0; index < assetReferenceCount; index++)
             {
                 var reference = assetReferences[index];
+                var requiredMinor = useM05AssetProfile ? GetM05RequiredAssetMinor(reference) : null;
+                var matches = requiredMinor is int minor
+                    ? await packageLease.MatchesAssetReferenceAsync(reference, minor, cancellationToken).ConfigureAwait(false)
+                    : await packageLease.MatchesAssetReferenceAsync(reference, cancellationToken).ConfigureAwait(false);
 
-                if (!await packageLease.MatchesAssetReferenceAsync(reference, cancellationToken).ConfigureAwait(false))
+                if (!matches)
                 {
                     return CreateRejected(
                         "save-package-asset-schema-mismatch",
@@ -954,6 +976,7 @@ public sealed class WorldPersistence : IAsyncDisposable
             var pathState = s_savePaths.GetOrAdd(targetPath, static _ => new SavePathState());
             var maximumSnapshotBytes = world.Options.MaximumSnapshotBytes;
             var capturedWorldGuid = world.WorldGuid;
+            var useM05AssetProfile = WorldLoadPreparedState.IsM05AssetProfileSelected(world.Options.Registration);
             var retainedPackageLease = packageLease
                 ?? throw new InvalidOperationException("The selected package lease was not retained for file I/O.");
             var retainedSaveUse = saveUse
@@ -969,6 +992,7 @@ public sealed class WorldPersistence : IAsyncDisposable
                 assetReferences,
                 uniqueAssetReferenceCount,
                 retainedPackageLease,
+                useM05AssetProfile,
                 retainedSaveUse,
                 cancellationToken));
 
@@ -1091,6 +1115,8 @@ public sealed class WorldPersistence : IAsyncDisposable
         AssetPackageLease? packageLease = null;
         WorldPersistenceAdmissionReservation? sourceAdmission = null;
         WorldPersistenceAdmissionReservation? restoreStateAdmission = null;
+        WorldPersistenceAdmissionReservation? sourceStorageAdmission = null;
+        WorldPreparedSourceStorage? preparedSourceStorage = null;
         IDisposable? sourcePerWorldUse = null;
         IDisposable? restoreIdentityUse = null;
         IDisposable? recoveryUse = null;
@@ -1491,7 +1517,36 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             restoreValidationWorkspaceByteReservation = checked(
                 restoreValidationWorkspaceByteReservation + targetBytes);
-            var sourceBytes = Math.Max(1L, checked((long)fileRecord.Length + readWorkspaceBytes));
+            var preparedSourceBytes = WorldLoadPreparedState.MeasureSourceStorageBytes(
+                targetWorld.Options.Registration, checkpointContents);
+
+            if ((checked(targetBytes + preparedSourceBytes)
+                    > checkpointContents.WorldContents.Configuration.SchedulingLimits.MaximumOwnedStateBytes)
+                || !targetWorld.TryReservePreparedRestoreSourceBytes(preparedSourceBytes, out sourceStorageAdmission)
+                || (sourceStorageAdmission is null))
+            {
+                return CreateLoadRejected(
+                    "load-source-storage-admission-rejected",
+                    "The complete typed source/cache/decode peak does not fit the existing resource, World, or domain limits.",
+                    targetWorldGuid);
+            }
+
+            using (sourceStorageAdmission)
+            {
+                var storageUse = sourceStorageAdmission.AcquireRetainedUse(targetWorld, preparedSourceBytes);
+
+                try
+                {
+                    preparedSourceStorage = new WorldPreparedSourceStorage(storageUse, preparedSourceBytes);
+                }
+                catch
+                {
+                    storageUse.Dispose();
+                    throw;
+                }
+            }
+
+            var sourceBytes = Math.Max(1L, checked((long)fileRecord.Length + readWorkspaceBytes + preparedSourceBytes));
             var remapBytes = WorldIdentityRemapHelpers.MeasureRetainedBytes(
                 checkpointContents.WorldContents.Ecs.LiveEntityCount,
                 checkpointContents.WorldContents.Ecs.LiveSceneInstanceCount);
@@ -1504,7 +1559,7 @@ public sealed class WorldPersistence : IAsyncDisposable
                     + checkpointContents.WorldRecord.Length
                     + checkpointContents.HeaderRecord.Length
                     + 512L));
-            var cleanupBytes = Math.Max(1L, targetBytes);
+            var cleanupBytes = Math.Max(1L, checked(targetBytes + preparedSourceBytes));
 
             if (!targetWorld.TryPrepareLoadReplacement(
                     checkpointContents.WorldGuid,
@@ -1569,13 +1624,30 @@ public sealed class WorldPersistence : IAsyncDisposable
                 replacementPreparation,
                 packageLease,
                 historyControl,
-                options.RestoreIntent);
+                options.RestoreIntent,
+                limits,
+                preparedSourceStorage);
+            preparedSourceStorage = null;
             constructionPlan = null;
             replacementPreparation = null;
             packageLease = null;
             retainedHistoryControl = null;
             combinedUse = null;
             fileRecord = null;
+            var sourceDiagnostics = preparedState.PrepareSources(cancellationToken);
+
+            if (!sourceDiagnostics.IsEmpty)
+            {
+                return new WorldLoadPreparation(WorldLoadPreparationStatus.Rejected, plan: null, sourceDiagnostics);
+            }
+
+            var assetDiagnostics = await preparedState.ValidateAssetReferencesAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!assetDiagnostics.IsEmpty)
+            {
+                return new WorldLoadPreparation(WorldLoadPreparationStatus.Rejected, plan: null, assetDiagnostics);
+            }
+
             var payloadDigest = SHA256.HashData(checkpointContents.WorldRecord.Span);
             loadPlan = new WorldLoadPlan(
                 targetWorld,
@@ -1617,6 +1689,8 @@ public sealed class WorldPersistence : IAsyncDisposable
             sourceAdmission?.Dispose();
             restoreStateAdmission?.Dispose();
             restoreIdentityUse?.Dispose();
+            preparedSourceStorage?.Dispose();
+            sourceStorageAdmission?.Dispose();
             packageLease?.Dispose();
             EndLoad();
         }

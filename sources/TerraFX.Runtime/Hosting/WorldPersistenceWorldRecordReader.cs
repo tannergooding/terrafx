@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
+using System.Threading;
 using TerraFX;
 using TerraFX.Entities;
 using TerraFX.Scenes;
@@ -746,6 +747,7 @@ internal static class WorldPersistenceWorldRecordReader
             throw new ArgumentException("The ECS entity/scene-instance arrays do not match their live identity history.", nameof(worldRecord));
         }
 
+        // Registered aggregate values are decoded once by the prepared source owner after envelope validation.
         return new WorldPersistenceWorldRecordContents(
             parsedConfiguration,
             parsedClock,
