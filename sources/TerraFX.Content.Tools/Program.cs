@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
@@ -15,6 +16,8 @@ internal static class Program
 {
     private const string CompileDxilCommand = "compile-m04-dxil";
     private const string CompileShaderCommand = "compile-m04-shader";
+    private const string CookNativeMeshCommand = "cook-native-mesh";
+    private const string CookNativeParticleEmitterCommand = "cook-native-particle-emitter";
     private const string CookStaticMeshCommand = "cook-static-mesh";
     private const string VerifyDxcCommand = "verify-dxc";
     private static readonly string[] s_usageLines = [
@@ -24,6 +27,8 @@ internal static class Program
         "  TerraFX.Content.Tools compile-m04-shader <new-output-directory>",
         "  TerraFX.Content.Tools cook-static-mesh <glb|obj> --source <path> --profile-record <path> --material-record <path> --mesh-id <id> --material-id <id> --output <package>",
         "  OBJ additionally requires --obj-convention rh-y-up-z-forward-meters",
+        "  TerraFX.Content.Tools cook-native-mesh --source <mesh-2.ebin> --profile-record <path> --mesh-id <id> [--asset <id>=<record-path>]... --output <package>",
+        "  TerraFX.Content.Tools cook-native-particle-emitter --source <emitter-1.ebin> --profile-record <path> --emitter-id <id> [--asset <id>=<record-path>]... --output <package>",
         "  TerraFX.Content.Tools shader compile --source <file> --output <directory> --entry <name> --stage <vertex|pixel|compute> --dxc <path> --vulkan-sdk <path>",
         "  TerraFX.Content.Tools --help",
     ];
@@ -41,13 +46,17 @@ internal static class Program
             && StringComparer.Ordinal.Equals(arguments[1], "compile");
         var isStaticMeshCook = (arguments.Length >= 2)
             && StringComparer.Ordinal.Equals(arguments[0], CookStaticMeshCommand);
+        var isNativeMeshCook = (arguments.Length >= 1)
+            && StringComparer.Ordinal.Equals(arguments[0], CookNativeMeshCommand);
+        var isNativeParticleCook = (arguments.Length >= 1)
+            && StringComparer.Ordinal.Equals(arguments[0], CookNativeParticleEmitterCommand);
         var isM04Compile = (arguments.Length == 2)
             && (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand)
                 || StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand));
         var isDxcVerification = (arguments.Length == 1)
             && StringComparer.Ordinal.Equals(arguments[0], VerifyDxcCommand);
 
-        if (!isShaderCompile && !isStaticMeshCook && !isM04Compile && !isDxcVerification)
+        if (!isShaderCompile && !isStaticMeshCook && !isNativeMeshCook && !isNativeParticleCook && !isM04Compile && !isDxcVerification)
         {
             await WriteUsageAsync().ConfigureAwait(false);
             return arguments.Length == 0 ? 0 : 2;
@@ -65,6 +74,20 @@ internal static class Program
 
         try
         {
+            if (isNativeMeshCook)
+            {
+                return await NativeMeshCookCommand.RunCliAsync(
+                    arguments[1..],
+                    cancellationSource.Token).ConfigureAwait(false);
+            }
+
+            if (isNativeParticleCook)
+            {
+                return await NativeParticleCookCommand.RunCliAsync(
+                    arguments[1..],
+                    cancellationSource.Token).ConfigureAwait(false);
+            }
+
             if (isStaticMeshCook)
             {
                 return await StaticMeshCookCommand.RunCliAsync(
@@ -114,9 +137,12 @@ internal static class Program
         }
         catch (Exception exception) when (exception is ArgumentException
             or FormatException
+            or InvalidDataException
             or IOException
             or InvalidOperationException
+            or KeyNotFoundException
             or NotSupportedException
+            or OverflowException
             or JsonException
             or PlatformNotSupportedException
             or TimeoutException

@@ -65,6 +65,72 @@ Import `sources\TerraFX.Content.Tools\ContentCooking.targets` after declaring `T
 
 `TerraFXCookStaticMeshes` runs before `Build`, declares the source, profile, material, project/target files, and tool assembly as incremental inputs, and publishes only after the package has been decoded through the native Mesh/Material codecs. Set `TerraFXSkipContentCooking=true` only when intentionally skipping content cooking.
 
+## Native Mesh LOD content cooking
+
+`cook-native-mesh` accepts a complete canonical `native/mesh` 2.0 EBIN1 record already authored in the selected Foundation profile. It does not convert coordinates, simplify geometry, or import GLB/OBJ LODs:
+
+```powershell
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll cook-native-mesh --source Assets\lod-mesh.ebin --profile-record Assets\profile.ebin --mesh-id 100 --asset 101=Assets\material.ebin --output artifacts\content\lod.epkg
+```
+
+Repeat `--asset <id>=<record-path>` for the exact same-package reference closure: Material 1.0/2.0, optional Skeleton 1.0, and referenced Texture 1.0 records. IDs must be distinct positive signed-32-bit values. Missing, unused, or wrong-version dependencies reject; selected Material majors are preserved. Mesh 2.0 requires both additional-level and threshold arrays, even when empty. All levels share streams, material membership, group mapping, Skeleton, and conservative all-position bounds.
+
+Use the same tool project reference and `ContentCooking.targets` import as static cooking:
+
+```xml
+<ItemGroup>
+  <TerraFXNativeMesh Include="Assets\lod-mesh.ebin">
+    <ProfileRecord>Assets\profile.ebin</ProfileRecord>
+    <MeshAssetId>100</MeshAssetId>
+    <PackagePath>$(IntermediateOutputPath)Content\lod.epkg</PackagePath>
+  </TerraFXNativeMesh>
+  <TerraFXNativeMeshAsset Include="Assets\material.ebin">
+    <MeshSource>Assets\lod-mesh.ebin</MeshSource>
+    <AssetId>101</AssetId>
+  </TerraFXNativeMeshAsset>
+</ItemGroup>
+```
+
+`TerraFXCookNativeMeshes` resolves paths from the invoking project directory, rejects ambiguous dependency associations and duplicate output paths, and tracks roots, profiles, dependencies, project/imported item options, the target, and the tool assembly as inputs. Missing outputs rebuild. `TerraFXSkipContentCooking` also applies to this target.
+
+The producer checks complete record/envelope extents and candidate layout before bulk copies. The candidate package and simultaneous input/candidate/encoding buffers each fit the writer's 2,147,483,584-byte ceiling; AssetStore validation retains its separate decode and lease budgets. The staged EPKG2 is opened through a real AssetStore and the exact codecs, including Material/texture/Skeleton bindings, before atomic replacement. Refusal or cancellation before publication preserves the previous output. The default package writer and `cook-static-mesh` still select 1.0 assets only.
+
+This standalone content path does not activate version-2 render components, Scene preparation, per-camera LOD selection/history, or native LOD rendering.
+
+## Native cosmetic particle content cooking
+
+`cook-native-particle-emitter` accepts one canonical `native/cosmetic-particle-emitter` 1.0 EBIN record authored in the selected Foundation profile:
+
+```powershell
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll cook-native-particle-emitter --source Assets\emitter.ebin --profile-record Assets\profile.ebin --emitter-id 300 --asset 301=Assets\atlas.ebin --asset 302=Assets\atlas-page.ebin --asset 303=Assets\sprite-material.ebin --output artifacts\content\particles.epkg
+```
+
+Repeat `--asset <id>=<record-path>` for the exact same-package closure: the Atlas, all referenced Texture pages, and an optional Sprite Material 1.0/2.0. IDs must be distinct positive signed-32-bit values. The cooker validates the selected frame, retained page assets, Material profile and page binding before atomic publication; without a Material, the existing default Sprite profile is used.
+
+Use `RenderingSchemaCatalogue.M05Schemas` in the compiled schema registry and call `Renderer.RegisterAssetCodecs` followed by `Renderer.RegisterM05AssetCodecs(builder, RendererCpuFeatures.MeshLod | RendererCpuFeatures.CosmeticParticles)` when the runtime store must decode this package.
+
+The `ContentCooking.targets` import also accepts `TerraFXNativeParticleEmitter` items with `ProfileRecord`, `EmitterAssetId`, and `PackagePath` metadata. Associate each dependency with the root's resolved path through a `TerraFXNativeParticleEmitterAsset` item using `EmitterSource` and `AssetId`:
+
+```xml
+<ItemGroup>
+  <TerraFXNativeParticleEmitter Include="Assets\emitter.ebin">
+    <ProfileRecord>Assets\profile.ebin</ProfileRecord>
+    <EmitterAssetId>300</EmitterAssetId>
+    <PackagePath>$(IntermediateOutputPath)Content\particles.epkg</PackagePath>
+  </TerraFXNativeParticleEmitter>
+  <TerraFXNativeParticleEmitterAsset Include="Assets\atlas.ebin">
+    <EmitterSource>Assets\emitter.ebin</EmitterSource>
+    <AssetId>301</AssetId>
+  </TerraFXNativeParticleEmitterAsset>
+  <TerraFXNativeParticleEmitterAsset Include="Assets\atlas-page.ebin">
+    <EmitterSource>Assets\emitter.ebin</EmitterSource>
+    <AssetId>302</AssetId>
+  </TerraFXNativeParticleEmitterAsset>
+</ItemGroup>
+```
+
+`TerraFXCookNativeParticleEmitters` tracks these inputs and rebuilds missing outputs; it honors `TerraFXSkipContentCooking`. This produces authored content only, not a live World particle pool, Scene consumer, or rendering qualification.
+
 ## Specialized procedures
 
 - [Graphics and rendering tests](Building.Graphics.md): D3D12/Vulkan setup, grouped rendering, shader fixtures, and optional budget-pressure probes.

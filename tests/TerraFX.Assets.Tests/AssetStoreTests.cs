@@ -281,8 +281,9 @@ internal sealed class AssetStoreTests
         }
     }
 
-    [Test]
-    public async Task AssetPackageLeaseReferenceInspectionHonorsConcurrentDecodeBudget()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task AssetPackageLeaseReferenceInspectionHonorsConcurrentDecodeBudget(bool explicitMinor)
     {
         var registration = CreateRegistration();
         var payload = CreateAssetEnvelope(1, 52);
@@ -301,7 +302,9 @@ internal sealed class AssetStoreTests
                 var reference = new AssetReference(new AssetId(1), s_assetSchema.SchemaId, s_assetSchema.Major);
 
                 _ = Assert.ThrowsAsync<InvalidOperationException>(
-                    async () => await packageLease.MatchesAssetReferenceAsync(reference, CancellationToken.None).ConfigureAwait(false));
+                    async () => await (explicitMinor
+                        ? packageLease.MatchesAssetReferenceAsync(reference, requiredMinor: 0, CancellationToken.None)
+                        : packageLease.MatchesAssetReferenceAsync(reference, CancellationToken.None)).ConfigureAwait(false));
             }
             finally
             {
@@ -311,6 +314,64 @@ internal sealed class AssetStoreTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task AssetPackageLeaseReferenceMinorInspectionKeepsTheExactBackingAndCodecChecks(bool registerCodec)
+    {
+        var registration = registerCodec ? CreateRegistration() : new AssetStoreRegistrationBuilder(s_schemas).Build();
+        var payload = CreateAssetEnvelope(1, 52);
+        var originalPackage = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, payload));
+        var replacementPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 73)));
+        var directory = Path.GetFullPath(Path.Combine("artifacts", "tst", "asset-reference-minors", Guid.NewGuid().ToString("N")));
+        _ = Directory.CreateDirectory(directory);
+        var originalPath = Path.Combine(directory, "original.epkg");
+        var replacementPath = Path.Combine(directory, "replacement.epkg");
+        await File.WriteAllBytesAsync(originalPath, originalPackage).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(replacementPath, replacementPackage).ConfigureAwait(false);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                CreateOptions(originalPath, originalPackage, registration, maximumConcurrentDecodeBytes: payload.Length)).ConfigureAwait(false);
+            await using (store.ConfigureAwait(false))
+            {
+                using var packageLease = store.AcquirePackageLease();
+                var reference = new AssetReference(new AssetId(1), s_assetSchema.SchemaId, s_assetSchema.Major);
+                _ = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => packageLease.MatchesAssetReferenceAsync(reference, requiredMinor: -1, CancellationToken.None));
+
+                using var cancellation = new CancellationTokenSource();
+                await cancellation.CancelAsync().ConfigureAwait(false);
+                _ = Assert.ThrowsAsync<OperationCanceledException>(
+                    async () => await packageLease.MatchesAssetReferenceAsync(reference, requiredMinor: 0, cancellation.Token).ConfigureAwait(false));
+                Assert.That(await packageLease.MatchesAssetReferenceAsync(
+                    reference, requiredMinor: 1, CancellationToken.None).ConfigureAwait(false), Is.False);
+                Assert.That(await packageLease.MatchesAssetReferenceAsync(
+                    new AssetReference(reference.AssetId, Guid.NewGuid(), reference.SchemaMajor), requiredMinor: 0, CancellationToken.None).ConfigureAwait(false), Is.False);
+                Assert.That(await packageLease.MatchesAssetReferenceAsync(
+                    new AssetReference(reference.AssetId, reference.SchemaId, 2), requiredMinor: 0, CancellationToken.None).ConfigureAwait(false), Is.False);
+
+                await store.ReplacePackageAsync(CreateOptions(
+                    replacementPath, replacementPackage, registration, maximumConcurrentDecodeBytes: payload.Length)).ConfigureAwait(false);
+                using var currentPackage = store.AcquirePackageLease();
+                Assert.That(await currentPackage.MatchesAssetReferenceAsync(
+                    reference, requiredMinor: 0, CancellationToken.None).ConfigureAwait(false), Is.False);
+                Assert.That(await packageLease.MatchesAssetReferenceAsync(
+                    reference, CancellationToken.None).ConfigureAwait(false), Is.EqualTo(registerCodec));
+
+                var pending = packageLease.MatchesAssetReferenceAsync(reference, requiredMinor: 0, CancellationToken.None);
+                packageLease.Dispose();
+                await store.DisposeAsync().ConfigureAwait(false);
+                Assert.That(await pending.ConfigureAwait(false), Is.EqualTo(registerCodec));
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
         }
     }
 

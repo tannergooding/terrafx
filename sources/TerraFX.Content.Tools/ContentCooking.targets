@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TerraFXContentToolsAssembly Condition="'$(TerraFXContentToolsAssembly)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\bin\sources\TerraFX.Content.Tools\$(Configuration)\$(TargetFramework)\TerraFX.Content.Tools.dll</TerraFXContentToolsAssembly>
     <TerraFXSkipContentCooking Condition="'$(TerraFXSkipContentCooking)' == ''">false</TerraFXSkipContentCooking>
+    <_TerraFXContentCookingTargets>$(MSBuildThisFileFullPath)</_TerraFXContentCookingTargets>
   </PropertyGroup>
 
   <Target Name="TerraFXCookStaticMeshes"
@@ -24,5 +25,120 @@
     <Exec Condition="'%(TerraFXStaticMesh.Format)' == 'obj'"
           WorkingDirectory="$(MSBuildProjectDirectory)"
           Command="dotnet &quot;$(TerraFXContentToolsAssembly)&quot; cook-static-mesh obj --source &quot;%(FullPath)&quot; --profile-record &quot;%(TerraFXStaticMesh.ProfileRecord)&quot; --material-record &quot;%(TerraFXStaticMesh.MaterialRecord)&quot; --mesh-id &quot;%(TerraFXStaticMesh.MeshAssetId)&quot; --material-id &quot;%(TerraFXStaticMesh.MaterialAssetId)&quot; --output &quot;%(TerraFXStaticMesh.PackagePath)&quot; --obj-convention &quot;%(TerraFXStaticMesh.ObjConvention)&quot;" />
+  </Target>
+
+  <Target Name="_TerraFXPrepareNativeMeshes"
+          BeforeTargets="TerraFXCookStaticMeshes"
+          Condition="('@(TerraFXNativeMesh)' != '' or '@(TerraFXNativeParticleEmitter)' != '') and '$(TerraFXSkipContentCooking)' != 'true'">
+    <Error Condition="!Exists('$(TerraFXContentToolsAssembly)')"
+           Text="TerraFXContentToolsAssembly does not identify a built TerraFX.Content.Tools assembly." />
+    <Error Condition="'@(TerraFXNativeMesh)' != '' and ('%(TerraFXNativeMesh.ProfileRecord)' == '' or '%(TerraFXNativeMesh.MeshAssetId)' == '' or '%(TerraFXNativeMesh.PackagePath)' == '')"
+           Text="TerraFXNativeMesh requires ProfileRecord, MeshAssetId, and PackagePath metadata." />
+    <Error Condition="'@(TerraFXNativeParticleEmitter)' != '' and ('%(TerraFXNativeParticleEmitter.ProfileRecord)' == '' or '%(TerraFXNativeParticleEmitter.EmitterAssetId)' == '' or '%(TerraFXNativeParticleEmitter.PackagePath)' == '')"
+           Text="TerraFXNativeParticleEmitter requires ProfileRecord, EmitterAssetId, and PackagePath metadata." />
+    <Error Condition="'@(TerraFXNativeMeshAsset)' != '' and ('%(TerraFXNativeMeshAsset.AssetId)' == '' or '%(TerraFXNativeMeshAsset.MeshSource)' == '')"
+           Text="TerraFXNativeMeshAsset requires AssetId and MeshSource metadata." />
+    <Error Condition="'@(TerraFXNativeParticleEmitterAsset)' != '' and ('%(TerraFXNativeParticleEmitterAsset.AssetId)' == '' or '%(TerraFXNativeParticleEmitterAsset.EmitterSource)' == '')"
+           Text="TerraFXNativeParticleEmitterAsset requires AssetId and EmitterSource metadata." />
+    <ItemGroup>
+      <_TerraFXNativeMesh Include="@(TerraFXNativeMesh)">
+        <SourceFullPath>%(FullPath)</SourceFullPath>
+        <MeshSourceFullPath>%(FullPath)</MeshSourceFullPath>
+        <ProfileFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(ProfileRecord)'))</ProfileFullPath>
+        <PackageFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(PackagePath)'))</PackageFullPath>
+      </_TerraFXNativeMesh>
+      <_TerraFXNativeMeshAsset Include="@(TerraFXNativeMeshAsset)">
+        <MeshSourceFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(MeshSource)'))</MeshSourceFullPath>
+      </_TerraFXNativeMeshAsset>
+      <_TerraFXNativeParticleEmitter Include="@(TerraFXNativeParticleEmitter)">
+        <SourceFullPath>%(FullPath)</SourceFullPath>
+        <EmitterSourceFullPath>%(FullPath)</EmitterSourceFullPath>
+        <ProfileFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(ProfileRecord)'))</ProfileFullPath>
+        <PackageFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(PackagePath)'))</PackageFullPath>
+      </_TerraFXNativeParticleEmitter>
+      <_TerraFXNativeParticleEmitterAsset Include="@(TerraFXNativeParticleEmitterAsset)">
+        <EmitterSourceFullPath>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(EmitterSource)'))</EmitterSourceFullPath>
+      </_TerraFXNativeParticleEmitterAsset>
+      <_TerraFXNativeRootSource Include="@(_TerraFXNativeMesh->'%(SourceFullPath)')" />
+      <_TerraFXNativeRootSource Include="@(_TerraFXNativeParticleEmitter->'%(SourceFullPath)')" />
+      <_TerraFXContentPackageOutput Include="@(_TerraFXNativeMesh->'%(PackageFullPath)')" />
+      <_TerraFXContentPackageOutput Include="@(_TerraFXNativeParticleEmitter->'%(PackageFullPath)')" />
+      <_TerraFXContentPackageOutput Include="@(TerraFXStaticMesh->'%(PackagePath)')" />
+    </ItemGroup>
+    <RemoveDuplicates Inputs="@(_TerraFXNativeRootSource)">
+      <Output TaskParameter="Filtered" ItemName="_TerraFXNativeUniqueRootSource" />
+    </RemoveDuplicates>
+    <RemoveDuplicates Inputs="@(_TerraFXContentPackageOutput->'%(FullPath)')">
+      <Output TaskParameter="Filtered" ItemName="_TerraFXNativeMeshUniqueOutput" />
+    </RemoveDuplicates>
+    <Error Condition="'@(_TerraFXNativeRootSource->Count())' != '@(_TerraFXNativeUniqueRootSource->Count())'"
+           Text="Native Mesh and particle emitter source paths must be unique so dependency associations are unambiguous." />
+    <Error Condition="'@(_TerraFXContentPackageOutput->Count())' != '@(_TerraFXNativeMeshUniqueOutput->Count())'"
+           Text="Content cooking items must not share a package output path." />
+    <ItemGroup>
+      <_TerraFXNativeCookInput Include="@(_TerraFXNativeMesh->'%(SourceFullPath)');@(_TerraFXNativeMesh->'%(ProfileFullPath)');@(_TerraFXNativeMeshAsset->'%(FullPath)');@(_TerraFXNativeParticleEmitter->'%(SourceFullPath)');@(_TerraFXNativeParticleEmitter->'%(ProfileFullPath)');@(_TerraFXNativeParticleEmitterAsset->'%(FullPath)');@(TerraFXStaticMesh->'%(FullPath)');@(TerraFXStaticMesh->'%(ProfileRecord)');@(TerraFXStaticMesh->'%(MaterialRecord)')">
+        <InputFullPath>%(FullPath)</InputFullPath>
+      </_TerraFXNativeCookInput>
+      <_TerraFXNonAliasingPackageOutput Include="@(_TerraFXContentPackageOutput)">
+        <InputFullPath>%(FullPath)</InputFullPath>
+      </_TerraFXNonAliasingPackageOutput>
+      <_TerraFXNonAliasingPackageOutput Remove="@(_TerraFXNativeCookInput)"
+                                      MatchOnMetadata="InputFullPath"
+                                      MatchOnMetadataOptions="PathLike" />
+      <_TerraFXUnmatchedNativeMeshAsset Include="@(_TerraFXNativeMeshAsset)" />
+      <_TerraFXUnmatchedNativeMeshAsset Remove="@(_TerraFXNativeMesh)"
+                                      MatchOnMetadata="MeshSourceFullPath"
+                                      MatchOnMetadataOptions="PathLike" />
+      <_TerraFXUnmatchedNativeParticleEmitterAsset Include="@(_TerraFXNativeParticleEmitterAsset)" />
+      <_TerraFXUnmatchedNativeParticleEmitterAsset Remove="@(_TerraFXNativeParticleEmitter)"
+                                                   MatchOnMetadata="EmitterSourceFullPath"
+                                                   MatchOnMetadataOptions="PathLike" />
+    </ItemGroup>
+    <Error Condition="'@(_TerraFXNonAliasingPackageOutput->Count())' != '@(_TerraFXContentPackageOutput->Count())'"
+           Text="Native content package outputs must not overwrite any declared input." />
+    <Error Condition="'@(_TerraFXUnmatchedNativeMeshAsset)' != ''"
+           Text="Each TerraFXNativeMeshAsset MeshSource must match exactly one resolved TerraFXNativeMesh source path." />
+    <Error Condition="'@(_TerraFXUnmatchedNativeParticleEmitterAsset)' != ''"
+           Text="Each TerraFXNativeParticleEmitterAsset EmitterSource must match exactly one resolved TerraFXNativeParticleEmitter source path." />
+  </Target>
+
+  <Target Name="TerraFXCookNativeMeshes"
+          BeforeTargets="Build"
+          DependsOnTargets="_TerraFXPrepareNativeMeshes"
+          Condition="'@(TerraFXNativeMesh)' != '' and '$(TerraFXSkipContentCooking)' != 'true'"
+          Inputs="%(_TerraFXNativeMesh.SourceFullPath);%(_TerraFXNativeMesh.ProfileFullPath);@(_TerraFXNativeMeshAsset->'%(FullPath)');$(MSBuildAllProjects);$(_TerraFXContentCookingTargets);$(TerraFXContentToolsAssembly)"
+          Outputs="%(_TerraFXNativeMesh.PackageFullPath)">
+    <PropertyGroup>
+      <_TerraFXCurrentNativeMeshSource>%(_TerraFXNativeMesh.SourceFullPath)</_TerraFXCurrentNativeMeshSource>
+    </PropertyGroup>
+    <ItemGroup>
+      <_TerraFXCurrentNativeMeshAsset Remove="@(_TerraFXCurrentNativeMeshAsset)" />
+      <_TerraFXCurrentNativeMeshAsset Include="@(_TerraFXNativeMeshAsset->WithMetadataValue('MeshSourceFullPath', '$(_TerraFXCurrentNativeMeshSource)'))" />
+    </ItemGroup>
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="dotnet &quot;$(TerraFXContentToolsAssembly)&quot; cook-native-mesh --source &quot;%(_TerraFXNativeMesh.SourceFullPath)&quot; --profile-record &quot;%(_TerraFXNativeMesh.ProfileFullPath)&quot; --mesh-id &quot;%(_TerraFXNativeMesh.MeshAssetId)&quot; @(_TerraFXCurrentNativeMeshAsset->'--asset &quot;%(AssetId)=%(FullPath)&quot;', ' ') --output &quot;%(_TerraFXNativeMesh.PackageFullPath)&quot;" />
+    <ItemGroup>
+      <FileWrites Include="%(_TerraFXNativeMesh.PackageFullPath)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="TerraFXCookNativeParticleEmitters"
+          BeforeTargets="Build"
+          DependsOnTargets="_TerraFXPrepareNativeMeshes"
+          Condition="'@(TerraFXNativeParticleEmitter)' != '' and '$(TerraFXSkipContentCooking)' != 'true'"
+          Inputs="%(_TerraFXNativeParticleEmitter.SourceFullPath);%(_TerraFXNativeParticleEmitter.ProfileFullPath);@(_TerraFXNativeParticleEmitterAsset->'%(FullPath)');$(MSBuildAllProjects);$(_TerraFXContentCookingTargets);$(TerraFXContentToolsAssembly)"
+          Outputs="%(_TerraFXNativeParticleEmitter.PackageFullPath)">
+    <PropertyGroup>
+      <_TerraFXCurrentParticleEmitterSource>%(_TerraFXNativeParticleEmitter.SourceFullPath)</_TerraFXCurrentParticleEmitterSource>
+    </PropertyGroup>
+    <ItemGroup>
+      <_TerraFXCurrentParticleEmitterAsset Remove="@(_TerraFXCurrentParticleEmitterAsset)" />
+      <_TerraFXCurrentParticleEmitterAsset Include="@(_TerraFXNativeParticleEmitterAsset->WithMetadataValue('EmitterSourceFullPath', '$(_TerraFXCurrentParticleEmitterSource)'))" />
+    </ItemGroup>
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="dotnet &quot;$(TerraFXContentToolsAssembly)&quot; cook-native-particle-emitter --source &quot;%(_TerraFXNativeParticleEmitter.SourceFullPath)&quot; --profile-record &quot;%(_TerraFXNativeParticleEmitter.ProfileFullPath)&quot; --emitter-id &quot;%(_TerraFXNativeParticleEmitter.EmitterAssetId)&quot; @(_TerraFXCurrentParticleEmitterAsset->'--asset &quot;%(AssetId)=%(FullPath)&quot;', ' ') --output &quot;%(_TerraFXNativeParticleEmitter.PackageFullPath)&quot;" />
+    <ItemGroup>
+      <FileWrites Include="%(_TerraFXNativeParticleEmitter.PackageFullPath)" />
+    </ItemGroup>
   </Target>
 </Project>

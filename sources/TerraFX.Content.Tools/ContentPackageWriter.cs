@@ -8,7 +8,7 @@ using TerraFX.Numerics;
 
 namespace TerraFX.Content.Tools;
 
-internal static class ContentPackageWriter
+internal static partial class ContentPackageWriter
 {
     private const int DirectoryEntryBytes = 32;
     private const int DirectoryHeaderBytes = 64;
@@ -31,93 +31,7 @@ internal static class ContentPackageWriter
     internal static byte[] CreatePackage(
         scoped ReadOnlySpan<byte> profileRecord,
         scoped ReadOnlySpan<ContentPackageAsset> assets)
-    {
-        _ = ValidateRecord(
-            profileRecord,
-            s_profileSchema.SchemaId,
-            major: 2,
-            minor: 0,
-            "profile",
-            EbinReadLimits.Foundation);
-        ArgumentOutOfRangeException.ThrowIfZero(assets.Length);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(assets.Length, 131_072);
-
-        var sortedAssets = assets.ToArray();
-        Array.Sort(sortedAssets, static (left, right) => left.AssetId.CompareTo(right.AssetId));
-        var envelopes = new byte[sortedAssets.Length][];
-
-        for (var index = 0; index < sortedAssets.Length; index++)
-        {
-            var asset = sortedAssets[index];
-
-            if (asset.AssetId is 0 or > int.MaxValue)
-            {
-                throw new ArgumentOutOfRangeException(nameof(assets), "Package AssetIds must be in [1,2147483647].");
-            }
-
-            if ((index != 0) && (sortedAssets[index - 1].AssetId == asset.AssetId))
-            {
-                throw new InvalidDataException("A content package cannot contain duplicate AssetIds.");
-            }
-
-            var record = asset.Record.Span;
-            var schemaId = ValidateRecord(record, expectedSchemaId: null, major: 1, minor: 0, "asset", s_assetRecordLimits);
-
-            if (schemaId == s_envelopeSchema.SchemaId)
-            {
-                throw new InvalidDataException("Package assets must be native records, not pre-encoded native/envelope records.");
-            }
-
-            envelopes[index] = CreateEnvelope(asset.AssetId, record);
-        }
-
-        var directoryOffset = Align16(checked((ulong)(PackageHeaderBytes + profileRecord.Length)));
-        var directoryLength = checked((ulong)DirectoryHeaderBytes + (checked((ulong)assets.Length) * DirectoryEntryBytes));
-        var payloadEnd = Align16(checked(directoryOffset + directoryLength));
-        var payloadOffsets = new ulong[envelopes.Length];
-
-        for (var index = 0; index < envelopes.Length; index++)
-        {
-            payloadOffsets[index] = payloadEnd;
-            payloadEnd = Align16(checked(payloadEnd + checked((ulong)envelopes[index].Length)));
-        }
-
-        var packageLength = Align16(payloadEnd);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(packageLength, checked((ulong)MaximumPackageBytes));
-        var package = new byte[checked((int)packageLength)];
-        "EPKG"u8.CopyTo(package);
-        BinaryPrimitives.WriteUInt16LittleEndian(package.AsSpan(4), 2);
-        BinaryPrimitives.WriteUInt16LittleEndian(package.AsSpan(6), 0);
-        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(8), packageLength);
-        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(16), PackageHeaderBytes);
-        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(24), checked((ulong)profileRecord.Length));
-        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(32), directoryOffset);
-        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(40), directoryLength);
-        BinaryPrimitives.WriteUInt32LittleEndian(package.AsSpan(48), checked((uint)envelopes.Length));
-        profileRecord.CopyTo(package.AsSpan(PackageHeaderBytes));
-
-        var directory = package.AsSpan(checked((int)directoryOffset), checked((int)directoryLength));
-        "EIDX"u8.CopyTo(directory);
-        BinaryPrimitives.WriteUInt16LittleEndian(directory[4..], 1);
-        BinaryPrimitives.WriteUInt16LittleEndian(directory[6..], 16);
-        BinaryPrimitives.WriteUInt32LittleEndian(directory[8..], checked((uint)envelopes.Length));
-        BinaryPrimitives.WriteUInt64LittleEndian(directory[16..], DirectoryHeaderBytes);
-        BinaryPrimitives.WriteUInt64LittleEndian(directory[24..], checked((ulong)envelopes.Length * DirectoryEntryBytes));
-        BinaryPrimitives.WriteUInt64LittleEndian(directory[32..], directoryLength);
-
-        for (var index = 0; index < envelopes.Length; index++)
-        {
-            var entry = directory.Slice(DirectoryHeaderBytes + (index * DirectoryEntryBytes), DirectoryEntryBytes);
-            var envelope = envelopes[index];
-            BinaryPrimitives.WriteUInt32LittleEndian(entry, sortedAssets[index].AssetId);
-            BinaryPrimitives.WriteUInt64LittleEndian(entry[8..], payloadOffsets[index]);
-            BinaryPrimitives.WriteUInt64LittleEndian(entry[16..], checked((ulong)envelope.Length));
-            BinaryPrimitives.WriteUInt64LittleEndian(entry[24..], checked((ulong)envelope.Length));
-            envelope.CopyTo(package.AsSpan(checked((int)payloadOffsets[index])));
-        }
-
-        return package;
-    }
+        => CreatePackageCore(profileRecord, assets, nativeAssetSchemas: null);
 
     internal static byte[] EncodeFixedArray(scoped ReadOnlySpan<Vector2> values)
     {
@@ -403,30 +317,106 @@ internal static class ContentPackageWriter
         return payload;
     }
 
-    private static byte[] CreateEnvelope(uint assetId, scoped ReadOnlySpan<byte> record)
+    private static byte[] CreatePackageCore(
+        scoped ReadOnlySpan<byte> profileRecord,
+        scoped ReadOnlySpan<ContentPackageAsset> assets,
+        CompiledContentSchemaRegistry? nativeAssetSchemas)
     {
-        Span<byte> idPayload = stackalloc byte[sizeof(uint)];
-        var status = EbinPayloadWriter.Write(assetId, idPayload, out var idBytes, out var diagnostic);
+        _ = ValidateRecord(profileRecord, s_profileSchema.SchemaId, 2, 0, "profile", EbinReadLimits.Foundation);
+        ArgumentOutOfRangeException.ThrowIfZero(assets.Length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(assets.Length, 131_072);
+        var sortedAssets = assets.ToArray();
+        Array.Sort(sortedAssets, static (left, right) => left.AssetId.CompareTo(right.AssetId));
+        var directoryOffset = Align16(checked((ulong)(PackageHeaderBytes + profileRecord.Length)));
+        var directoryLength = checked((ulong)DirectoryHeaderBytes + (checked((ulong)assets.Length) * DirectoryEntryBytes));
+        var packageLength = Align16(checked(directoryOffset + directoryLength));
 
-        if (status is not EbinWriteStatus.Complete)
+        for (var index = 0; index < sortedAssets.Length; index++)
         {
-            throw new InvalidDataException($"The package envelope AssetId field is invalid: {diagnostic?.Category ?? status.ToString()}.");
+            var asset = sortedAssets[index];
+
+            if (asset.AssetId is 0 or > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(assets), "Package AssetIds must be in [1,2147483647].");
+            }
+
+            if ((index != 0) && (sortedAssets[index - 1].AssetId == asset.AssetId))
+            {
+                throw new InvalidDataException("A content package cannot contain duplicate AssetIds.");
+            }
+
+            var record = asset.Record.Span;
+            var schemaId = nativeAssetSchemas is null
+                ? ValidateRecord(record, expectedSchemaId: null, 1, 0, "asset", s_assetRecordLimits)
+                : ValidateNativeAssetRecord(record, nativeAssetSchemas);
+
+            if (schemaId == s_envelopeSchema.SchemaId)
+            {
+                throw new InvalidDataException("Package assets must be native records, not pre-encoded native/envelope records.");
+            }
+
+            var envelopeLength = Align16(checked(144UL + checked((ulong)record.Length)));
+
+            if (envelopeLength > checked((ulong)s_assetRecordLimits.MaximumRecordBytes))
+            {
+                throw new InvalidDataException("A complete package envelope exceeds the asset record byte limit.");
+            }
+
+            packageLength = Align16(checked(packageLength + envelopeLength));
         }
 
-        var payloadStorage = new byte[checked(idBytes + record.Length)];
-        idPayload[..idBytes].CopyTo(payloadStorage);
-        record.CopyTo(payloadStorage.AsSpan(idBytes));
-        EbinFieldSource[] fields = [
-            new EbinFieldSource(1, 3, 1, 1, new EbinPayloadSlice(0, idBytes)),
-            new EbinFieldSource(2, 22, 1, 1, new EbinPayloadSlice(idBytes, record.Length)),
-        ];
-        return EncodeRecord(
-            s_envelopeSchema.SchemaId,
-            major: 2,
-            minor: 0,
-            fields,
-            payloadStorage,
-            s_assetRecordLimits);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(packageLength, checked((ulong)MaximumPackageBytes));
+
+        if (nativeAssetSchemas is not null)
+        {
+            var lengths = new long[assets.Length];
+
+            for (var index = 0; index < assets.Length; index++)
+            {
+                lengths[index] = assets[index].Record.Length;
+            }
+
+            _ = MeasureNativeAssetPackage(profileRecord.Length, lengths);
+        }
+
+        var package = new byte[checked((int)packageLength)];
+        "EPKG"u8.CopyTo(package);
+        BinaryPrimitives.WriteUInt16LittleEndian(package.AsSpan(4), 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(package.AsSpan(6), 0);
+        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(8), packageLength);
+        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(16), PackageHeaderBytes);
+        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(24), checked((ulong)profileRecord.Length));
+        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(32), directoryOffset);
+        BinaryPrimitives.WriteUInt64LittleEndian(package.AsSpan(40), directoryLength);
+        BinaryPrimitives.WriteUInt32LittleEndian(package.AsSpan(48), checked((uint)assets.Length));
+        profileRecord.CopyTo(package.AsSpan(PackageHeaderBytes));
+        var directory = package.AsSpan(checked((int)directoryOffset), checked((int)directoryLength));
+        "EIDX"u8.CopyTo(directory);
+        BinaryPrimitives.WriteUInt16LittleEndian(directory[4..], 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(directory[6..], 16);
+        BinaryPrimitives.WriteUInt32LittleEndian(directory[8..], checked((uint)assets.Length));
+        BinaryPrimitives.WriteUInt64LittleEndian(directory[16..], DirectoryHeaderBytes);
+        BinaryPrimitives.WriteUInt64LittleEndian(directory[24..], checked((ulong)assets.Length * DirectoryEntryBytes));
+        BinaryPrimitives.WriteUInt64LittleEndian(directory[32..], directoryLength);
+        var payloadOffset = Align16(checked(directoryOffset + directoryLength));
+
+        for (var index = 0; index < sortedAssets.Length; index++)
+        {
+            var asset = sortedAssets[index];
+            var envelopeLength = Align16(checked(144UL + checked((ulong)asset.Record.Length)));
+            var entry = directory.Slice(DirectoryHeaderBytes + (index * DirectoryEntryBytes), DirectoryEntryBytes);
+            BinaryPrimitives.WriteUInt32LittleEndian(entry, asset.AssetId);
+            BinaryPrimitives.WriteUInt64LittleEndian(entry[8..], payloadOffset);
+            BinaryPrimitives.WriteUInt64LittleEndian(entry[16..], envelopeLength);
+            BinaryPrimitives.WriteUInt64LittleEndian(entry[24..], envelopeLength);
+            WriteEnvelope(
+                asset.AssetId,
+                asset.Record.Span,
+                package.AsSpan(checked((int)payloadOffset), checked((int)envelopeLength)));
+            payloadOffset = Align16(checked(payloadOffset + envelopeLength));
+        }
+
+        return package;
     }
 
     private static byte[] EncodeRecord(
@@ -455,6 +445,32 @@ internal static class ContentPackageWriter
         }
 
         return encoded;
+    }
+
+    private static void WriteEnvelope(uint assetId, scoped ReadOnlySpan<byte> record, scoped Span<byte> destination)
+    {
+        Span<byte> idPayload = stackalloc byte[sizeof(uint)];
+        var status = EbinPayloadWriter.Write(assetId, idPayload, out var idBytes, out var diagnostic);
+
+        if (status is not EbinWriteStatus.Complete)
+        {
+            throw new InvalidDataException($"The package envelope AssetId field is invalid: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        var payloadStorage = new byte[checked(idBytes + record.Length)];
+        idPayload[..idBytes].CopyTo(payloadStorage);
+        record.CopyTo(payloadStorage.AsSpan(idBytes));
+        EbinFieldSource[] fields = [
+            new EbinFieldSource(1, 3, 1, 1, new EbinPayloadSlice(0, idBytes)),
+            new EbinFieldSource(2, 22, 1, 1, new EbinPayloadSlice(idBytes, record.Length)),
+        ];
+        var envelope = new EbinRecordWriteView(s_envelopeSchema.SchemaId, 2, 0, fields, payloadStorage);
+        status = EbinStructuralWriter.Prepare(in envelope, s_assetRecordLimits, destination, out var bytesWritten, out diagnostic);
+
+        if ((status is not EbinWriteStatus.Complete) || (bytesWritten != destination.Length))
+        {
+            throw new InvalidDataException($"The package envelope could not be written: {diagnostic?.Category ?? status.ToString()}.");
+        }
     }
 
     private static void WritePayload<T>(
