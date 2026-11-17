@@ -196,6 +196,75 @@ internal sealed class BufferTests
     }
 
     [Test]
+    public void CompletionAdmissionAccountsForRoundedBackingAndRetainedControls()
+    {
+        var footprint = new BufferCompletionFootprint(33, alignment: 16);
+        _ = Assert.Throws<OutOfMemoryException>(
+            () => BufferCompletionAdmission.Create(33, 16, footprint.TotalByteAllowance - 1));
+        var admission = BufferCompletionAdmission.Create(33, 16, footprint.TotalByteAllowance);
+        using var storage = UnmanagedBuffer<byte>.Allocate(
+            33,
+            new BufferAllocationOptions(48, 16),
+            NativeMemoryOperations.Instance,
+            admission);
+        using var writer = storage.AcquireWrite(0, 33);
+        var fill = new FillCompletionAction();
+        writer.UseWindow(0, 33, ref fill);
+        _ = Assert.Throws<InvalidOperationException>(() => storage.TransferToOwnedBuffer());
+        writer.Dispose();
+        using var result = storage.TransferToOwnedBuffer();
+        using var reader = result.AcquireReadLease(0, 33);
+        _ = Assert.Throws<OutOfMemoryException>(() => reader.Retain());
+        _ = Assert.Throws<OutOfMemoryException>(() => result.AcquireReadLease(0, 33));
+
+        Assert.That(result.ByteLength, Is.EqualTo((nint)33));
+        Assert.That(admission.NativeByteCharge, Is.EqualTo(48));
+        result.Dispose();
+        Assert.That(admission.NativeByteCharge, Is.EqualTo(48));
+        reader.Dispose();
+        Assert.That(admission.NativeByteCharge, Is.Zero);
+        Assert.That(admission.ManagedByteCharge, Is.EqualTo(BufferCompletionFootprint.ManagedByteAllowance));
+        Assert.That(admission.ManagedByteCharge, Is.GreaterThan(0));
+    }
+
+    [Test]
+    public void CompletionAdmissionBoundsTheActualCoreConstructionGroup()
+    {
+        static long Construct()
+        {
+            var start = GC.GetAllocatedBytesForCurrentThread();
+            var admission = BufferCompletionAdmission.Create(33, 16, 16 * 1024 * 1024);
+            using var storage = UnmanagedBuffer<byte>.Allocate(
+                33,
+                new BufferAllocationOptions(48, 16),
+                NativeMemoryOperations.Instance,
+                admission);
+            using var writer = storage.AcquireWrite(0, 33);
+            var fill = new FillCompletionAction();
+            writer.UseWindow(0, 33, ref fill);
+            writer.Dispose();
+            using var result = storage.TransferToOwnedBuffer();
+            using var reader = result.AcquireReadLease(0, 33);
+            var read = new ReadCompletionAction();
+            reader.UseWindow(0, 33, ref read);
+            return GC.GetAllocatedBytesForCurrentThread() - start;
+        }
+
+        var first = Construct();
+        var warm = Construct();
+        TestContext.WriteLine($"Core completion construction allocations: first={first}, warm={warm}, allowance={BufferCompletionFootprint.ManagedByteAllowance}");
+        Assert.That(first, Is.LessThanOrEqualTo(BufferCompletionFootprint.ManagedByteAllowance));
+        Assert.That(warm, Is.InRange(1, BufferCompletionFootprint.ManagedByteAllowance));
+    }
+
+    [Test]
+    public void CompletionAdmissionRefusesCheckedExtentOverflow()
+    {
+        _ = Assert.Throws<OutOfMemoryException>(
+            () => BufferCompletionAdmission.Create(nint.MaxValue, alignment: 16, maximumCpuBytes: long.MaxValue));
+    }
+
+    [Test]
     public void CopyAndScopedWindowsPreserveValuesAndRefStructState()
     {
         using var buffer = UnmanagedBuffer<int>.Allocate(4, new BufferAllocationOptions(32, 4));
@@ -383,6 +452,20 @@ internal sealed class BufferTests
             lease.Dispose();
             _observedValue = window[0];
         }
+    }
+
+    private struct FillCompletionAction : IAction<Span<byte>>
+    {
+        public readonly void Invoke(scoped Span<byte> argument)
+            => argument.Fill(0x42);
+    }
+
+    private struct ReadCompletionAction : IAction<ReadOnlySpan<byte>>
+    {
+        public int Value { get; private set; }
+
+        public void Invoke(scoped ReadOnlySpan<byte> argument)
+            => Value = argument[0];
     }
 
     private struct ReentrantWriteAction(BufferWriteLease<int> lease) : IAction<Span<int>>

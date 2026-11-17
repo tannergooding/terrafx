@@ -10,7 +10,8 @@ public sealed partial class GraphicsDevice
     private readonly ConcurrentDictionary<GpuPipelineHandle, GpuPipeline> _pipelinesByHandle = new();
 
     internal (GpuPipeline Pipeline, PipelineBindingLayout Layout, GraphicsResourceOwner.UseLease UseLease) AcquirePipelineForRecording(
-        GpuPipelineHandle pipelineHandle)
+        GpuPipelineHandle pipelineHandle,
+        GraphicsRecordingUseAdmission? recordingAdmission = null)
     {
         if (!pipelineHandle.IsValid
             || (pipelineHandle.OwnerId != _ownerId)
@@ -34,7 +35,7 @@ public sealed partial class GraphicsDevice
             throw new ObjectDisposedException(nameof(GpuPipeline), "The pipeline handle is not live for new recording work.");
         }
 
-        var useLease = pipeline.ResourceOwner.AcquireUse(nameof(pipelineHandle));
+        var useLease = pipeline.ResourceOwner.AcquireUse(nameof(pipelineHandle), recordingAdmission);
         return (pipeline, pipeline.BindingLayout, useLease);
     }
 

@@ -805,11 +805,13 @@ public static unsafe class D3D12GraphicsBackend
         internal sealed unsafe class D3D12BackendDevice : IGraphicsBackendDevice
         {
             private const uint DefaultShader4ComponentMapping = 0x1688;
+            private const int MaximumActiveBufferReadbackCount = 256;
             private const long MaximumDedicatedStagingAllocationBytes = 512L * 1024 * 1024;
             private const int ResourceDescriptorCapacity = 1024;
             private const int SamplerDescriptorCapacity = 256;
             private const long StagingRingCapacityBytes = 64L * 1024 * 1024;
 
+            private readonly List<D3D12BufferReadback> _activeBufferReadbacks = [];
             private IDXGIAdapter3* _adapter;
             private readonly Func<long, long>? _completedFenceValueOverride;
             private ID3D12Device* _device;
@@ -896,37 +898,19 @@ public static unsafe class D3D12GraphicsBackend
             bool IGraphicsBackendDevice.HasUncertainSubmission
                 => _transferQueue?.HasUncertainSubmission == true;
 
-            private static OwnedBuffer<byte> CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength)
+            private static void CopyMappedStorageToLease(byte* source, nint byteLength, BufferWriteLease<byte> destination)
             {
-                var storage = UnmanagedBuffer<byte>.Allocate(
-                    byteLength,
-                    new BufferAllocationOptions(byteLength, alignment: 1));
-                var transferred = false;
+                nint copiedBytes = 0;
 
-                try
+                while (copiedBytes < byteLength)
                 {
-                    nint copiedBytes = 0;
-
-                    while (copiedBytes < byteLength)
-                    {
-                        var remainingBytes = byteLength - copiedBytes;
-                        var copyLength = remainingBytes > int.MaxValue
-                            ? int.MaxValue
-                            : checked((int)remainingBytes);
-                        storage.CopyFrom(new ReadOnlySpan<byte>(source + copiedBytes, copyLength), copiedBytes);
-                        copiedBytes = checked(copiedBytes + copyLength);
-                    }
-
-                    var ownedBuffer = storage.TransferToOwnedBuffer();
-                    transferred = true;
-                    return ownedBuffer;
-                }
-                finally
-                {
-                    if (!transferred)
-                    {
-                        storage.Dispose();
-                    }
+                    var remainingBytes = byteLength - copiedBytes;
+                    var copyLength = remainingBytes > int.MaxValue
+                        ? int.MaxValue
+                        : checked((int)remainingBytes);
+                    var copyAction = new ReadbackCopyAction(source + copiedBytes);
+                    destination.UseWindow(copiedBytes, copyLength, ref copyAction);
+                    copiedBytes = checked(copiedBytes + copyLength);
                 }
             }
 
@@ -1162,6 +1146,158 @@ public static unsafe class D3D12GraphicsBackend
                 var checkedLength = checked((long)byteLength);
                 ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, bufferLength, offsetName);
                 ArgumentOutOfRangeException.ThrowIfGreaterThan(checkedLength, bufferLength - offset, lengthName);
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
+                Justification = "A failed readback closes an unsubmitted command list before releasing its staging owner.")]
+            public IGraphicsBackendBufferReadback BeginBufferReadback(
+                IGraphicsBackendBuffer source,
+                GraphResourceState sourceState,
+                long sourceOffset,
+                nint byteLength)
+            {
+                EnsureOwnerThread();
+                var sourceBuffer = GetTransferBuffer(source, BufferUsage.CopySource, nameof(source));
+                ValidateTransferRange(sourceBuffer.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
+                var transferQueue = GetTransferQueue();
+                ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(
+                    _activeBufferReadbacks.Count,
+                    MaximumActiveBufferReadbackCount);
+                _ = _activeBufferReadbacks.EnsureCapacity(_activeBufferReadbacks.Count + 1);
+                var stagingResource = GetReadbackStaging(
+                    byteLength,
+                    alignment: sizeof(uint),
+                    out var isDedicated,
+                    out var stagingOffset,
+                    out var stagingReservation);
+                ID3D12CommandAllocator* commandAllocator = null;
+                ID3D12GraphicsCommandList* commandList = null;
+                D3D12BufferReadback? readback = null;
+                var readbackRegistered = false;
+                var submittedFence = 0L;
+
+                try
+                {
+                    readback = new D3D12BufferReadback(
+                        this,
+                        transferQueue,
+                        stagingResource,
+                        isDedicated,
+                        stagingOffset,
+                        byteLength,
+                        stagingReservation);
+                    _activeBufferReadbacks.Add(readback);
+                    readbackRegistered = true;
+                    commandList = transferQueue.BeginReadbackRecording(out commandAllocator);
+                    readback.SetCommandStorage(commandAllocator, commandList);
+                    var sourceResource = sourceBuffer.GetResource();
+                    var initialState = D3D12GraphResourceStateMapper.GetBufferState(sourceState, sourceBuffer.Description);
+                    var copySourceState = D3D12GraphResourceStateMapper.GetBufferState(
+                        GraphResourceState.CopySource,
+                        sourceBuffer.Description);
+                    var generalState = D3D12GraphResourceStateMapper.GetBufferState(
+                        GraphResourceState.General,
+                        sourceBuffer.Description);
+                    var requiresTransition = initialState != copySourceState;
+
+                    if (requiresTransition)
+                    {
+                        var toCopySource = D3D12_RESOURCE_BARRIER.InitTransition(
+                            sourceResource,
+                            initialState,
+                            copySourceState,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCopySource);
+                    }
+
+                    commandList->CopyBufferRegion(
+                        stagingResource,
+                        stagingOffset,
+                        sourceResource,
+                        checked((ulong)sourceOffset),
+                        checked((ulong)byteLength));
+
+                    if (copySourceState != generalState)
+                    {
+                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                            sourceResource,
+                            copySourceState,
+                            generalState,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCommon);
+                    }
+
+                    submittedFence = transferQueue.SubmitReadbackWithoutWait(
+                        stagingReservation.IsValid
+                            ? fenceValue => _readbackStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                            : null);
+                    readback.MarkSubmitted(submittedFence);
+                    return readback;
+                }
+                catch (Exception exception)
+                {
+                    if (transferQueue.IsRecording)
+                    {
+                        try
+                        {
+                            transferQueue.StopRecording();
+                        }
+                        catch (Exception stopException)
+                        {
+                            transferQueue.MarkUncertainSubmission();
+                            exception = new AggregateException(exception, stopException);
+                        }
+                    }
+
+                    if (transferQueue.HasUncertainSubmission || (submittedFence > 0))
+                    {
+                        transferQueue.MarkUncertainSubmission();
+
+                        if ((readback is null)
+                            && isDedicated
+                            && (_quarantinedStagingResource is null))
+                        {
+                            _quarantinedStagingResource = stagingResource;
+                        }
+                    }
+                    else if (readback is not null)
+                    {
+                        readback.AbortUnsubmitted(readbackRegistered);
+                    }
+                    else
+                    {
+                        if (isDedicated)
+                        {
+                            ReleaseDedicatedStagingResource(
+                                stagingResource,
+                                isMapped: false,
+                                writtenByteLength: 0,
+                                transferQueue);
+                        }
+
+                        ReleaseStagingRange(
+                            _readbackStagingAllocator,
+                            stagingReservation,
+                            completedFenceValue: null,
+                            hasUncertainSubmission: false);
+
+                        if (commandList is not null)
+                        {
+                            _ = commandList->Release();
+                        }
+
+                        if (commandAllocator is not null)
+                        {
+                            _ = commandAllocator->Release();
+                        }
+                    }
+
+                    throw exception;
+                }
             }
 
             public IGraphicsBackendBuffer CreateBuffer(
@@ -1467,6 +1603,11 @@ public static unsafe class D3D12GraphicsBackend
                     throw new InvalidOperationException("The D3D12 backend cannot release storage while transfer completion is uncertain.");
                 }
 
+                if (_activeBufferReadbacks.Count != 0)
+                {
+                    throw new InvalidOperationException("The D3D12 backend still has active buffer-readback owners.");
+                }
+
                 if (_quarantinedStagingResource is not null)
                 {
                     throw new InvalidOperationException("The D3D12 backend has a staging resource quarantined after uncertain transfer completion.");
@@ -1601,131 +1742,6 @@ public static unsafe class D3D12GraphicsBackend
                 ValidateTextureDescriptionSupport(_device, description);
                 var nativeDescription = CreateNativeTextureDescription(description);
                 return GetNativeAllocationInfo(_device, &nativeDescription, _adapter, GetTextureHeapIndex());
-            }
-
-            [SuppressMessage(
-                "Usage",
-                "CA1031:Do not catch general exception types",
-                Justification = "A failed readback closes an unsubmitted command list before releasing its staging owner.")]
-            public OwnedBuffer<byte> ReadbackBuffer(
-                IGraphicsBackendBuffer source,
-                GraphResourceState sourceState,
-                long sourceOffset,
-                nint byteLength)
-            {
-                var sourceBuffer = GetTransferBuffer(source, BufferUsage.CopySource, nameof(source));
-                ValidateTransferRange(sourceBuffer.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
-                var transferQueue = GetTransferQueue();
-                var stagingResource = GetReadbackStaging(
-                    byteLength,
-                    alignment: sizeof(uint),
-                    out var isDedicated,
-                    out var stagingOffset,
-                    out var stagingReservation);
-                var isMapped = false;
-                long? completedFenceValue = null;
-
-                try
-                {
-                    var commandList = transferQueue.BeginRecording();
-                    var sourceResource = sourceBuffer.GetResource();
-                    var initialState = D3D12GraphResourceStateMapper.GetBufferState(sourceState, sourceBuffer.Description);
-                    var copySourceState = D3D12GraphResourceStateMapper.GetBufferState(
-                        GraphResourceState.CopySource,
-                        sourceBuffer.Description);
-                    var generalState = D3D12GraphResourceStateMapper.GetBufferState(
-                        GraphResourceState.General,
-                        sourceBuffer.Description);
-                    var requiresTransition = initialState != copySourceState;
-
-                    if (requiresTransition)
-                    {
-                        var toCopySource = D3D12_RESOURCE_BARRIER.InitTransition(
-                            sourceResource,
-                            initialState,
-                            copySourceState,
-                            0,
-                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                        commandList->ResourceBarrier(1, &toCopySource);
-                    }
-
-                    commandList->CopyBufferRegion(
-                        stagingResource,
-                        stagingOffset,
-                        sourceResource,
-                        checked((ulong)sourceOffset),
-                        checked((ulong)byteLength));
-
-                    if (copySourceState != generalState)
-                    {
-                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
-                            sourceResource,
-                            copySourceState,
-                            generalState,
-                            0,
-                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                        commandList->ResourceBarrier(1, &toCommon);
-                    }
-
-                    completedFenceValue = transferQueue.SubmitAndWait(
-                        stagingReservation.IsValid
-                            ? fenceValue => _readbackStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
-                            : null);
-                    var readRange = new D3D12_RANGE {
-                        Begin = checked((nuint)stagingOffset),
-                        End = checked((nuint)(stagingOffset + (ulong)byteLength)),
-                    };
-                    void* mapped = null;
-                    ThrowIfFailed(stagingResource->Map(0, &readRange, &mapped));
-
-                    if (mapped is null)
-                    {
-                        throw new InvalidOperationException("D3D12 readback staging returned no mapped storage.");
-                    }
-
-                    isMapped = true;
-                    return CopyMappedStorageToOwnedBuffer((byte*)mapped + checked((nint)stagingOffset), byteLength);
-                }
-                catch (Exception exception)
-                {
-                    try
-                    {
-                        transferQueue.StopRecording();
-                    }
-                    catch (Exception stopException)
-                    {
-                        throw new AggregateException(exception, stopException);
-                    }
-
-                    throw;
-                }
-                finally
-                {
-                    if (isMapped)
-                    {
-                        var readRange = new D3D12_RANGE {
-                            Begin = 0,
-                            End = 0,
-                        };
-                        stagingResource->Unmap(0, &readRange);
-                        isMapped = false;
-                    }
-
-                    if (isDedicated)
-                    {
-                        ReleaseDedicatedStagingResource(
-                            stagingResource,
-                            isMapped: false,
-                            writtenByteLength: 0,
-                            transferQueue);
-                    }
-
-                    ReleaseStagingRange(
-                        _readbackStagingAllocator,
-                        stagingReservation,
-                        completedFenceValue,
-                        transferQueue.HasUncertainSubmission);
-                }
             }
 
             [SuppressMessage(
@@ -4866,6 +4882,221 @@ public static unsafe class D3D12GraphicsBackend
                     }
                 }
             }
+
+            private sealed unsafe class D3D12BufferReadback : IGraphicsBackendBufferReadback
+            {
+                private readonly nint _byteLength;
+                private ID3D12CommandAllocator* _commandAllocator;
+                private ID3D12GraphicsCommandList* _commandList;
+                private long _completionFence;
+                private readonly D3D12BackendDevice _device;
+                private readonly bool _isDedicated;
+                private readonly ulong _stagingOffset;
+                private readonly GraphicsStagingRingAllocator.Reservation _stagingReservation;
+                private ID3D12Resource* _stagingResource;
+                private int _state;
+                private readonly D3D12BackendFactory.D3D12TransferQueue _transferQueue;
+
+                internal D3D12BufferReadback(
+                    D3D12BackendDevice device,
+                    D3D12BackendFactory.D3D12TransferQueue transferQueue,
+                    ID3D12Resource* stagingResource,
+                    bool isDedicated,
+                    ulong stagingOffset,
+                    nint byteLength,
+                    GraphicsStagingRingAllocator.Reservation stagingReservation)
+                {
+                    _byteLength = byteLength;
+                    _device = device;
+                    _isDedicated = isDedicated;
+                    _stagingOffset = stagingOffset;
+                    _stagingReservation = stagingReservation;
+                    _stagingResource = stagingResource;
+                    _transferQueue = transferQueue;
+                }
+
+                public long CompletionFence => Volatile.Read(ref _completionFence);
+
+                public void CopyCompleted(BufferWriteLease<byte> destination)
+                {
+                    ArgumentNullException.ThrowIfNull(destination);
+                    _device.EnsureOwnerThread();
+                    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(CompletionFence);
+
+                    if (destination.Length != _byteLength)
+                    {
+                        throw new ArgumentException("The readback destination has an unexpected byte extent.", nameof(destination));
+                    }
+
+                    if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 buffer readback has already been copied or disposed.");
+                    }
+
+                    var readRange = new D3D12_RANGE {
+                        Begin = checked((nuint)_stagingOffset),
+                        End = checked((nuint)(_stagingOffset + checked((ulong)_byteLength))),
+                    };
+                    void* mapped = null;
+                    var stagingResource = _stagingResource;
+                    ObjectDisposedException.ThrowIf(stagingResource is null, this);
+                    ThrowIfFailed(stagingResource->Map(0, &readRange, &mapped));
+
+                    if (mapped is null)
+                    {
+                        throw new InvalidOperationException("D3D12 readback staging returned no mapped storage.");
+                    }
+
+                    try
+                    {
+                        CopyMappedStorageToLease(
+                            (byte*)mapped + checked((nint)_stagingOffset),
+                            _byteLength,
+                            destination);
+                    }
+                    finally
+                    {
+                        var writtenRange = new D3D12_RANGE {
+                            Begin = 0,
+                            End = 0,
+                        };
+                        stagingResource->Unmap(0, &writtenRange);
+                    }
+                }
+
+                public void Dispose()
+                {
+                    _device.EnsureOwnerThread();
+
+                    if (Volatile.Read(ref _state) == 2)
+                    {
+                        return;
+                    }
+
+                    if (Volatile.Read(ref _state) != 1)
+                    {
+                        throw new InvalidOperationException("The D3D12 buffer readback cannot be disposed before completion is copied.");
+                    }
+
+                    ReleaseCommandStorage();
+
+                    var stagingResource = _stagingResource;
+
+                    if (stagingResource is not null)
+                    {
+                        if (_isDedicated)
+                        {
+                            _device.ReleaseDedicatedStagingResource(
+                                stagingResource,
+                                isMapped: false,
+                                writtenByteLength: 0,
+                                _transferQueue);
+                        }
+
+                        D3D12BackendDevice.ReleaseStagingRange(
+                            _device._readbackStagingAllocator,
+                            _stagingReservation,
+                            CompletionFence,
+                            _transferQueue.HasUncertainSubmission);
+                        _stagingResource = null;
+                    }
+
+                    if (!_device._activeBufferReadbacks.Remove(this))
+                    {
+                        throw new InvalidOperationException("The D3D12 buffer-readback owner was not registered.");
+                    }
+
+                    Volatile.Write(ref _state, 2);
+                }
+
+                internal void AbortUnsubmitted(bool registered)
+                {
+                    _device.EnsureOwnerThread();
+
+                    if ((Volatile.Read(ref _state) != 0) || (CompletionFence != 0))
+                    {
+                        throw new InvalidOperationException("Only an unsubmitted D3D12 buffer readback can be aborted.");
+                    }
+
+                    try
+                    {
+                        ReleaseCommandStorage();
+                        var stagingResource = _stagingResource;
+
+                        if (stagingResource is not null)
+                        {
+                            if (_isDedicated)
+                            {
+                                _device.ReleaseDedicatedStagingResource(
+                                    stagingResource,
+                                    isMapped: false,
+                                    writtenByteLength: 0,
+                                    _transferQueue);
+                            }
+
+                            D3D12BackendDevice.ReleaseStagingRange(
+                                _device._readbackStagingAllocator,
+                                _stagingReservation,
+                                completedFenceValue: null,
+                                hasUncertainSubmission: false);
+                            _stagingResource = null;
+                        }
+
+                        if (registered && !_device._activeBufferReadbacks.Remove(this))
+                        {
+                            throw new InvalidOperationException("The D3D12 buffer-readback owner was not registered.");
+                        }
+
+                        Volatile.Write(ref _state, 2);
+                    }
+                    catch
+                    {
+                        _transferQueue.MarkUncertainSubmission();
+                        throw;
+                    }
+                }
+
+                internal void MarkSubmitted(long completionFence)
+                {
+                    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(completionFence);
+                    Volatile.Write(ref _completionFence, completionFence);
+                }
+
+                internal void SetCommandStorage(
+                    ID3D12CommandAllocator* commandAllocator,
+                    ID3D12GraphicsCommandList* commandList)
+                {
+                    _commandAllocator = commandAllocator;
+                    _commandList = commandList;
+                }
+
+                private void ReleaseCommandStorage()
+                {
+                    var commandList = _commandList;
+                    _commandList = null;
+
+                    if (commandList is not null)
+                    {
+                        _ = commandList->Release();
+                    }
+
+                    var commandAllocator = _commandAllocator;
+                    _commandAllocator = null;
+
+                    if (commandAllocator is not null)
+                    {
+                        _ = commandAllocator->Release();
+                    }
+                }
+            }
+
+            private readonly struct ReadbackCopyAction(byte* source) : IAction<Span<byte>>
+            {
+                private readonly byte* _source = source;
+
+                public void Invoke(scoped Span<byte> argument)
+                    => new ReadOnlySpan<byte>(_source, argument.Length).CopyTo(argument);
+            }
         }
 
         private unsafe class D3D12PipelineBuilder
@@ -5522,6 +5753,7 @@ public static unsafe class D3D12GraphicsBackend
 
             private ID3D12GraphicsCommandList* _activeCommandList;
             private int _activeGraphFrameSlotIndex = -1;
+            private ID3D12CommandAllocator* _activeReadbackAllocator;
             private ID3D12CommandAllocator* _commandAllocator;
             private ID3D12GraphicsCommandList* _commandList;
             private ID3D12CommandQueue* _commandQueue;
@@ -5706,6 +5938,7 @@ public static unsafe class D3D12GraphicsBackend
             internal int ActiveGraphFrameSlotIndex => _activeGraphFrameSlotIndex;
             internal ID3D12CommandQueue* CommandQueue => _commandQueue;
             internal bool HasUncertainSubmission => _hasUncertainSubmission;
+            internal bool IsRecording => _isRecording;
 
             private static void ThrowLastWin32Error(string message)
             {
@@ -5824,6 +6057,69 @@ public static unsafe class D3D12GraphicsBackend
                 throw new InvalidOperationException("The configured D3D12 graph frame slots are all in flight.");
             }
 
+            internal ID3D12GraphicsCommandList* BeginReadbackRecording(
+                out ID3D12CommandAllocator* commandAllocator)
+            {
+                EnsureOwnerThread();
+
+                if (_hasUncertainSubmission)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer queue is quarantined after an uncertain submission.");
+                }
+
+                if (_isRecording)
+                {
+                    throw new InvalidOperationException("A D3D12 transfer command list is already recording.");
+                }
+
+                var allocatorId = typeof(ID3D12CommandAllocator).GUID;
+                var commandListId = typeof(ID3D12GraphicsCommandList).GUID;
+                ID3D12CommandAllocator* allocator = null;
+                ID3D12GraphicsCommandList* commandList = null;
+
+                try
+                {
+                    ThrowIfFailed(_device->CreateCommandAllocator(
+                        D3D12_COMMAND_LIST_TYPE.D3D12_COMMAND_LIST_TYPE_DIRECT,
+                        &allocatorId,
+                        (void**)&allocator));
+                    ThrowIfFailed(_device->CreateCommandList(
+                        0,
+                        D3D12_COMMAND_LIST_TYPE.D3D12_COMMAND_LIST_TYPE_DIRECT,
+                        allocator,
+                        null,
+                        &commandListId,
+                        (void**)&commandList));
+
+                    if ((allocator is null) || (commandList is null))
+                    {
+                        throw new InvalidOperationException("D3D12 readback command storage was incomplete.");
+                    }
+
+                    _activeCommandList = commandList;
+                    _activeReadbackAllocator = allocator;
+                    _activeGraphFrameSlotIndex = -1;
+                    _isRecording = true;
+                    commandAllocator = allocator;
+                    return commandList;
+                }
+                catch
+                {
+                    if (commandList is not null)
+                    {
+                        _ = commandList->Release();
+                    }
+
+                    if (allocator is not null)
+                    {
+                        _ = allocator->Release();
+                    }
+
+                    commandAllocator = null;
+                    throw;
+                }
+            }
+
             internal ID3D12GraphicsCommandList* BeginRecording()
             {
                 EnsureOwnerThread();
@@ -5892,6 +6188,7 @@ public static unsafe class D3D12GraphicsBackend
                     _isRecording = false;
                     ThrowIfFailed(_activeCommandList->Close());
                     _activeCommandList = null;
+                    _activeReadbackAllocator = null;
                     _activeGraphFrameSlotIndex = -1;
                 }
             }
@@ -6010,6 +6307,44 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 graphFrameSlot.FenceValue = fenceValue;
+                _hasUncertainSubmission = false;
+                return checked((long)fenceValue);
+            }
+
+            internal long SubmitReadbackWithoutWait(Action<long>? onSubmitted = null)
+            {
+                EnsureOwnerThread();
+
+                if (!_isRecording || (_activeReadbackAllocator is null))
+                {
+                    throw new InvalidOperationException("A D3D12 buffer-readback command list is not recording.");
+                }
+
+                var commandList = _activeCommandList;
+                ThrowIfFailed(commandList->Close());
+                _isRecording = false;
+                _activeCommandList = null;
+                _activeReadbackAllocator = null;
+                _activeGraphFrameSlotIndex = -1;
+
+                if (_nextFenceValue >= long.MaxValue)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer fence value space is exhausted.");
+                }
+
+                var fenceValue = ++_nextFenceValue;
+                _hasUncertainSubmission = true;
+                var commandLists = stackalloc ID3D12CommandList*[1];
+                commandLists[0] = (ID3D12CommandList*)commandList;
+                _commandQueue->ExecuteCommandLists(1, commandLists);
+                var signalResult = _commandQueue->Signal(_fence, fenceValue);
+
+                if (signalResult.FAILED)
+                {
+                    throw new GraphicsDeviceLostException(signalResult.Value);
+                }
+
+                onSubmitted?.Invoke(checked((long)fenceValue));
                 _hasUncertainSubmission = false;
                 return checked((long)fenceValue);
             }

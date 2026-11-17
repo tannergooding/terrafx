@@ -1,0 +1,98 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+
+namespace TerraFX.Graphics;
+
+internal readonly struct CommandRecorderRecordingCapacity
+{
+    internal CommandRecorderRecordingCapacity(
+        int commandCount,
+        int useLeaseCount,
+        int pendingStorageWriteCount,
+        int bindingCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(commandCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(useLeaseCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(pendingStorageWriteCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(bindingCount);
+
+        CommandCount = commandCount;
+        UseLeaseCount = useLeaseCount;
+        PendingStorageWriteCount = pendingStorageWriteCount;
+        BindingCount = bindingCount;
+        IsBounded = true;
+    }
+
+    internal int BindingCount { get; }
+
+    internal int CommandBackingCapacity => GetBackingCapacity(CommandCount);
+
+    internal int CommandCount { get; }
+
+    internal bool IsBounded { get; }
+
+    internal long KnownBackingArrayBytes => CalculateKnownBackingArrayBytes(CommandCount, UseLeaseCount);
+
+    internal int PendingStorageWriteCount { get; }
+
+    internal int UseLeaseBackingCapacity => GetBackingCapacity(UseLeaseCount);
+
+    internal int UseLeaseCount { get; }
+
+    internal static long CalculateKnownBackingArrayBytes(long commandCount, long useLeaseCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(commandCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(useLeaseCount);
+        long bytes = 0;
+
+        if (commandCount != 0)
+        {
+            bytes = checked(
+                ArrayCharge(Math.Max(4, commandCount), Unsafe.SizeOf<RecordedGraphicsCommand>())
+                + ArrayCharge(commandCount, Unsafe.SizeOf<RecordedGraphicsCommand>()));
+        }
+
+        if (useLeaseCount != 0)
+        {
+            bytes = checked(
+                bytes
+                + ArrayCharge(Math.Max(4, useLeaseCount), IntPtr.Size)
+                + ArrayCharge(useLeaseCount, IntPtr.Size));
+        }
+
+        return bytes;
+    }
+
+    private static long ArrayCharge(long capacity, long stride)
+        => checked(64 + ((checked(capacity * stride) + 15) & ~15L));
+
+    private static int GetBackingCapacity(int count)
+        => (count == 0) ? 0 : Math.Max(4, count);
+
+    [SuppressMessage(
+        "Usage",
+        "CA2201:Do not raise reserved exception types",
+        Justification = "A known backing-array minimum above the unchanged joint ceiling cannot be admitted.")]
+    internal void ValidateKnownBackingArrayMinimum()
+    {
+        if (!IsBounded)
+        {
+            return;
+        }
+
+        try
+        {
+            if (KnownBackingArrayBytes > (32L * 1024 * 1024))
+            {
+                throw new OutOfMemoryException("The recording/freeze command and use-reference arrays alone exceed the joint diagnostic CPU allowance.");
+            }
+        }
+        catch (OverflowException exception)
+        {
+            throw new OutOfMemoryException("The recording/freeze backing-array minimum cannot be represented.", exception);
+        }
+    }
+}

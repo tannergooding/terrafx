@@ -22,11 +22,13 @@ public sealed partial class GraphicsDevice
     internal const int MaximumGraphFrameSlotCount = 4;
     internal const int MinimumGraphFrameSlotCount = 1;
     private const long DefaultOwnedAllocationBudgetBytes = 512L * 1024 * 1024;
+    private const int MaximumPendingBufferReadbackCount = 256;
 
     // Keep an owner rooted if native disposal cannot confirm that its resources were released.
     private static readonly ConcurrentBag<IGraphicsBackendDevice> s_quarantinedBackendDevices = [];
     private static readonly ConcurrentBag<IGraphicsBackendResource> s_quarantinedBackendResources = [];
     private static readonly ConcurrentBag<IGraphicsBackendSurface> s_quarantinedBackendSurfaces = [];
+    private static readonly ConcurrentBag<ReadbackBufferRequest> s_quarantinedBufferReadbacks = [];
     private static readonly ConcurrentBag<GraphicsDevice> s_quarantinedGraphicsDevices = [];
     private static readonly ConcurrentBag<GraphicsResourceOwner> s_quarantinedResources = [];
 
@@ -51,6 +53,10 @@ public sealed partial class GraphicsDevice
     private readonly Thread _ownerThread;
     private readonly GraphicsPlatformKind _platformKind;
     private readonly List<SubmitGraphRequest> _pendingGraphSubmissions = [];
+    private readonly List<ReadbackBufferRequest> _pendingBufferReadbacks = [];
+    private readonly SemaphoreSlim _bufferReadbackCompletionSlots = new(
+        MaximumPendingBufferReadbackCount,
+        MaximumPendingBufferReadbackCount);
     private readonly HashSet<GraphicsResourceOwner> _resources = [];
     private Exception? _retirementFailure;
     private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -72,6 +78,7 @@ public sealed partial class GraphicsDevice
         _ownerThread = Thread.CurrentThread;
         _platformKind = platformKind;
         _ = _pendingGraphSubmissions.EnsureCapacity(frameSlotCount);
+        _ = _pendingBufferReadbacks.EnsureCapacity(MaximumPendingBufferReadbackCount);
         _graphFrameSlots = new SemaphoreSlim(frameSlotCount, frameSlotCount);
         DeviceEpoch = deviceEpoch;
         _status = (int)GraphicsDeviceStatus.Ready;
@@ -773,41 +780,12 @@ public sealed partial class GraphicsDevice
         long sourceOffset,
         nint byteLength,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(source);
-        cancellationToken.ThrowIfCancellationRequested();
-        ValidateBufferForTransfer(this, source, BufferUsage.CopySource, nameof(source));
-        ValidateBufferTransferRange(source.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
-
-        if (Status != GraphicsDeviceStatus.Ready)
-        {
-            throw new InvalidOperationException("The GraphicsDevice is not accepting buffer readbacks.");
-        }
-
-        var sourceUse = source.ResourceOwner.AcquireUse(nameof(source));
-
-        try
-        {
-            var request = new ReadbackBufferRequest(this, source, sourceUse, sourceOffset, byteLength, cancellationToken);
-            sourceUse = null;
-
-            try
-            {
-                await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                request.AdmissionFailed();
-                throw;
-            }
-
-            return await request.Task.ConfigureAwait(false);
-        }
-        finally
-        {
-            sourceUse?.Dispose();
-        }
-    }
+        => await ReadbackBufferCoreAsync(
+            source,
+            sourceOffset,
+            byteLength,
+            completionStorage: null,
+            cancellationToken).ConfigureAwait(false);
 
     /// <summary>Reads one complete same-device texture subresource into owned CPU storage.</summary>
     /// <param name="source">The GPU source texture.</param>
@@ -1087,6 +1065,36 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    private void AddPendingBufferReadback(
+        ReadbackBufferRequest readback,
+        IGraphicsBackendDevice backendDevice)
+    {
+        ArgumentNullException.ThrowIfNull(readback);
+        ArgumentNullException.ThrowIfNull(backendDevice);
+
+        if (!IsOwnerThread)
+        {
+            throw new InvalidOperationException("Buffer readbacks must be tracked on the Graphics owner thread.");
+        }
+
+        if (_pendingBufferReadbacks.Count >= _pendingBufferReadbacks.Capacity)
+        {
+            throw new InvalidOperationException("The bounded Graphics buffer-readback completion slots are exhausted.");
+        }
+
+        _pendingBufferReadbacks.Add(readback);
+
+        try
+        {
+            readback.StartFenceWait(backendDevice);
+        }
+        catch
+        {
+            _pendingBufferReadbacks.RemoveAt(_pendingBufferReadbacks.Count - 1);
+            throw;
+        }
+    }
+
     private void AddPendingGraphSubmission(
         SubmitGraphRequest submission,
         IGraphicsBackendDevice backendDevice)
@@ -1115,6 +1123,34 @@ public sealed partial class GraphicsDevice
             _pendingGraphSubmissions.RemoveAt(_pendingGraphSubmissions.Count - 1);
             throw;
         }
+    }
+
+    private IGraphicsBackendBufferReadback BeginBufferReadbackOnOwner(
+        GpuBuffer source,
+        GraphicsResourceOwner.UseLease sourceUse,
+        long sourceOffset,
+        nint byteLength)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the readback request was executed.");
+        }
+
+        ValidateBufferForTransfer(this, source, BufferUsage.CopySource, nameof(source), allowRetiring: true);
+
+        if (source.ResourceOwner.BackendResource is not IGraphicsBackendBuffer backendBuffer)
+        {
+            throw new InvalidOperationException("The source buffer has no backend buffer owner.");
+        }
+
+        var sourceRange = new GraphBufferRange(sourceOffset, checked((long)byteLength));
+        var (sourceState, _, _, _) = source.ResourceOwner.CaptureGraphImportState(sourceRange, sourceUse);
+
+        return backendDevice.BeginBufferReadback(backendBuffer, sourceState, sourceOffset, byteLength)
+            ?? throw new InvalidOperationException("The Graphics backend returned no buffer-readback owner.");
     }
 
     private GpuBuffer CreateBufferOnOwner(
@@ -1479,6 +1515,20 @@ public sealed partial class GraphicsDevice
             _pendingGraphSubmissions.RemoveAt(index);
         }
 
+        for (var index = _pendingBufferReadbacks.Count - 1; index >= 0; index--)
+        {
+            try
+            {
+                _pendingBufferReadbacks[index].Fail(exception);
+            }
+            catch (Exception failureException)
+            {
+                exception = new AggregateException(exception, failureException);
+            }
+
+            _pendingBufferReadbacks.RemoveAt(index);
+        }
+
         while (_ownerQueue.TryReadRequest(out var request))
         {
             try
@@ -1548,40 +1598,90 @@ public sealed partial class GraphicsDevice
         resource.RetirementReservation.Dispose();
     }
 
-    private OwnedBuffer<byte> ReadbackBufferOnOwner(
+    private async Task<OwnedBuffer<byte>> ReadbackBufferCoreAsync(
         GpuBuffer source,
-        GraphicsResourceOwner.UseLease sourceUse,
         long sourceOffset,
-        nint byteLength)
+        nint byteLength,
+        GraphicsBufferReadbackStorage? completionStorage,
+        CancellationToken cancellationToken)
     {
-        var backendDevice = _backendDevice
-            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+        ArgumentNullException.ThrowIfNull(source);
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateBufferForTransfer(this, source, BufferUsage.CopySource, nameof(source));
+        ValidateBufferTransferRange(source.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
 
         if (Status != GraphicsDeviceStatus.Ready)
         {
-            throw new InvalidOperationException("The GraphicsDevice stopped before the readback request was executed.");
+            throw new InvalidOperationException("The GraphicsDevice is not accepting buffer readbacks.");
         }
 
-        ValidateBufferForTransfer(this, source, BufferUsage.CopySource, nameof(source), allowRetiring: true);
+        await _bufferReadbackCompletionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var completionSlotOwned = true;
+        var completionStorageTransferred = false;
+        var requestCreated = false;
+        GraphicsResourceOwner.UseLease? sourceUse = null;
 
-        if (source.ResourceOwner.BackendResource is not IGraphicsBackendBuffer backendBuffer)
+        try
         {
-            throw new InvalidOperationException("The source buffer has no backend buffer owner.");
+            if (Status != GraphicsDeviceStatus.Ready)
+            {
+                throw new InvalidOperationException("The GraphicsDevice is not accepting buffer readbacks.");
+            }
+
+            completionStorage ??= GraphicsBufferReadbackStorage.Create(this, byteLength);
+            sourceUse = source.ResourceOwner.AcquireUse(nameof(source));
+            completionStorage.TransferToRequest(this, byteLength);
+            completionStorageTransferred = true;
+            var request = new ReadbackBufferRequest(
+                this,
+                source,
+                sourceUse,
+                sourceOffset,
+                byteLength,
+                completionStorage,
+                cancellationToken);
+            requestCreated = true;
+            sourceUse = null;
+            completionSlotOwned = false;
+
+            try
+            {
+                await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                request.AdmissionFailed();
+                throw;
+            }
+
+            return await request.Task.ConfigureAwait(false);
         }
-
-        var sourceRange = new GraphBufferRange(sourceOffset, checked((long)byteLength));
-        var (sourceState, _, _, _) = source.ResourceOwner.CaptureGraphImportState(sourceRange, sourceUse);
-        var result = backendDevice.ReadbackBuffer(backendBuffer, sourceState, sourceOffset, byteLength);
-        var completedFence = backendDevice.GetCompletedGraphFence();
-
-        if (completedFence != long.MaxValue)
+        finally
         {
-            source.ResourceOwner.RecordSubmittedQueueFence(completedFence);
-        }
+            try
+            {
+                sourceUse?.Dispose();
+            }
+            finally
+            {
+                try
+                {
+                    if (completionStorageTransferred && !requestCreated)
+                    {
+                        completionStorage?.ReleaseAfterFailure();
+                    }
 
-        ObserveCompletedQueueFence(completedFence);
-        source.ResourceOwner.RecordBufferReadback();
-        return result;
+                    completionStorage?.Dispose();
+                }
+                finally
+                {
+                    if (completionSlotOwned)
+                    {
+                        _ = _bufferReadbackCompletionSlots.Release();
+                    }
+                }
+            }
+        }
     }
 
     private TextureReadback ReadbackTextureOnOwner(
@@ -1763,6 +1863,60 @@ public sealed partial class GraphicsDevice
         return didWork;
     }
 
+    private bool RetireCompletedReadbackRequestsOnOwner()
+    {
+        if (_pendingBufferReadbacks.Count == 0)
+        {
+            return false;
+        }
+
+        var completedWaitFound = false;
+
+        foreach (var readback in _pendingBufferReadbacks)
+        {
+            if (!readback.IsFenceWaitCompleted)
+            {
+                continue;
+            }
+
+            readback.ObserveFenceWait();
+            completedWaitFound = true;
+        }
+
+        if (!completedWaitFound)
+        {
+            return false;
+        }
+
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+        var completedFence = backendDevice.GetCompletedGraphFence();
+        ObserveCompletedQueueFence(completedFence);
+        var didWork = false;
+
+        for (var index = _pendingBufferReadbacks.Count - 1; index >= 0; index--)
+        {
+            var readback = _pendingBufferReadbacks[index];
+
+            if (!readback.IsFenceWaitCompleted)
+            {
+                continue;
+            }
+
+            if (readback.CompletionFence > completedFence)
+            {
+                throw new InvalidOperationException(
+                    "A Graphics backend reported buffer-readback completion before the timeline reached its fence.");
+            }
+
+            readback.CompleteOnOwner(completedFence);
+            _pendingBufferReadbacks.RemoveAt(index);
+            didWork = true;
+        }
+
+        return didWork;
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -1894,11 +2048,13 @@ public sealed partial class GraphicsDevice
                 }
 
                 didWork |= RetireCompletedGraphSubmissionsOnOwner();
+                didWork |= RetireCompletedReadbackRequestsOnOwner();
                 RetireDeferredResourcesOnOwner();
 
                 if (_ownerQueue.RequestsCompleted && Status == GraphicsDeviceStatus.Stopping)
                 {
                     if ((_pendingGraphSubmissions.Count > 0)
+                        || (_pendingBufferReadbacks.Count > 0)
                         || (Volatile.Read(ref _activeGraphSubmissionCount) > 0))
                     {
                         if (!didWork)
@@ -3050,12 +3206,18 @@ public sealed partial class GraphicsDevice
 
     private sealed class ReadbackBufferRequest : IGraphicsDeviceWork
     {
+        private IGraphicsBackendBufferReadback? _backendReadback;
         private readonly nint _byteLength;
         private readonly CancellationTokenRegistration _cancellationRegistration;
         private readonly CancellationToken _cancellationToken;
         private readonly TaskCompletionSource<OwnedBuffer<byte>> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _completionSlotReleased;
+        private GraphicsBufferReadbackStorage? _completionStorage;
         private readonly GraphicsDevice _device;
+        private Task? _fenceWaitSignalTask;
+        private Task? _fenceWaitTask;
         private int _nativeWorkStarted;
+        private int _quarantined;
         private readonly GpuBuffer _source;
         private readonly long _sourceOffset;
         private GraphicsResourceOwner.UseLease? _sourceUse;
@@ -3067,10 +3229,12 @@ public sealed partial class GraphicsDevice
             GraphicsResourceOwner.UseLease sourceUse,
             long sourceOffset,
             nint byteLength,
+            GraphicsBufferReadbackStorage completionStorage,
             CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(sourceUse);
             _byteLength = byteLength;
+            _completionStorage = completionStorage;
             _cancellationToken = cancellationToken;
             _device = device;
             _source = source;
@@ -3081,73 +3245,67 @@ public sealed partial class GraphicsDevice
                 this);
         }
 
+        internal long CompletionFence
+            => (_backendReadback
+                ?? throw new InvalidOperationException("The readback request has no backend owner."))
+                .CompletionFence;
+
+        internal bool IsFenceWaitCompleted
+            => _fenceWaitTask?.IsCompleted == true;
+
         internal Task<OwnedBuffer<byte>> Task => _completion.Task;
 
         public void Execute(GraphicsDevice device)
         {
             if (Volatile.Read(ref _state) == 1)
             {
+                ReleaseCompletionStorage();
                 ReleaseSourceUse();
                 CompleteCanceled();
                 _cancellationRegistration.Dispose();
+                ReleaseCompletionSlot();
                 return;
             }
 
-            OwnedBuffer<byte>? readback = null;
-            OwnedBuffer<byte>? completedReadback = null;
-            var completeCanceled = false;
-
-            try
-            {
-                Volatile.Write(ref _nativeWorkStarted, 1);
-                readback = device.ReadbackBufferOnOwner(
-                    _source,
-                    _sourceUse ?? throw new InvalidOperationException("The readback request has no retained source use."),
-                    _sourceOffset,
-                    _byteLength);
-
-                if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
-                {
-                    completedReadback = readback;
-                    readback = null;
-                }
-                else
-                {
-                    readback.Dispose();
-                    readback = null;
-                    completeCanceled = true;
-                }
-            }
-            finally
-            {
-                readback?.Dispose();
-                ReleaseSourceUse();
-
-                if (completedReadback is not null)
-                {
-                    if (!_completion.TrySetResult(completedReadback))
-                    {
-                        completedReadback.Dispose();
-                    }
-                }
-                else if (completeCanceled)
-                {
-                    CompleteCanceled();
-                }
-
-                _cancellationRegistration.Dispose();
-            }
+            Volatile.Write(ref _nativeWorkStarted, 1);
+            _backendReadback = device.BeginBufferReadbackOnOwner(
+                _source,
+                _sourceUse ?? throw new InvalidOperationException("The readback request has no retained source use."),
+                _sourceOffset,
+                _byteLength);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(CompletionFence);
+            (_sourceUse
+                ?? throw new InvalidOperationException("The readback request has no retained source use."))
+                .RecordSubmittedQueueFence(CompletionFence);
+            _source.ResourceOwner.RecordBufferReadback();
+            device.AddPendingBufferReadback(this, device._backendDevice
+                ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner."));
         }
 
         public void Fail(Exception exception)
         {
+            ArgumentNullException.ThrowIfNull(exception);
+
             if (exception is GraphicsDeviceLostException deviceLostException)
             {
                 _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             var previousState = Interlocked.Exchange(ref _state, 2);
-            ReleaseSourceUse();
+            var backendDevice = _device._backendDevice;
+            var needsQuarantine = (_backendReadback is not null)
+                || (backendDevice?.HasUncertainSubmission == true);
+
+            if (needsQuarantine)
+            {
+                _device.MarkDeviceLost();
+                Quarantine();
+            }
+            else
+            {
+                ReleaseCompletionStorage();
+                ReleaseSourceUse();
+            }
 
             if ((previousState == 1) && (Volatile.Read(ref _nativeWorkStarted) == 0))
             {
@@ -3159,13 +3317,124 @@ public sealed partial class GraphicsDevice
             }
 
             _cancellationRegistration.Dispose();
+            ReleaseCompletionSlot();
         }
 
         internal void AdmissionFailed()
         {
             _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseCompletionStorage();
             ReleaseSourceUse();
             _cancellationRegistration.Dispose();
+            ReleaseCompletionSlot();
+        }
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "A failed CPU read still retires its already-completed staging owner before failing the public task.")]
+        internal void CompleteOnOwner(long completedFence)
+        {
+            if (!_device.IsOwnerThread)
+            {
+                throw new InvalidOperationException("Buffer readback completion must run on the Graphics owner thread.");
+            }
+
+            var backendReadback = _backendReadback
+                ?? throw new InvalidOperationException("The readback request has no backend owner.");
+
+            if (backendReadback.CompletionFence > completedFence)
+            {
+                throw new InvalidOperationException("The buffer readback fence has not completed.");
+            }
+
+            OwnedBuffer<byte>? result = null;
+            Exception? completionException = null;
+
+            try
+            {
+                var completionStorage = _completionStorage
+                    ?? throw new InvalidOperationException("The readback request has no preallocated CPU destination.");
+                backendReadback.CopyCompleted(completionStorage.WriteLease);
+                result = completionStorage.Complete();
+                _completionStorage = null;
+            }
+            catch (Exception exception)
+            {
+                completionException = exception;
+            }
+
+            try
+            {
+                backendReadback.Dispose();
+                _backendReadback = null;
+            }
+            catch (Exception exception)
+            {
+                result?.Dispose();
+                throw (completionException is null)
+                    ? exception
+                    : new AggregateException(completionException, exception);
+            }
+
+            if (completionException is not null)
+            {
+                result?.Dispose();
+                ReleaseCompletionStorage();
+                CompleteFailureAfterFence(completionException);
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+            {
+                ReleaseSourceUse();
+
+                if (!_completion.TrySetResult(result!))
+                {
+                    result!.Dispose();
+                }
+
+                _cancellationRegistration.Dispose();
+                ReleaseCompletionSlot();
+            }
+            else
+            {
+                result!.Dispose();
+                ReleaseSourceUse();
+                CompleteCanceled();
+                _cancellationRegistration.Dispose();
+                ReleaseCompletionSlot();
+            }
+        }
+
+        internal void ObserveFenceWait()
+        {
+            var fenceWaitTask = _fenceWaitTask
+                ?? throw new InvalidOperationException("A buffer readback has no fence-wait operation.");
+            fenceWaitTask.GetAwaiter().GetResult();
+            var fenceWaitSignalTask = _fenceWaitSignalTask
+                ?? throw new InvalidOperationException("A buffer readback has no fence-wait notification.");
+            fenceWaitSignalTask.GetAwaiter().GetResult();
+        }
+
+        internal void StartFenceWait(IGraphicsBackendDevice backendDevice)
+        {
+            ArgumentNullException.ThrowIfNull(backendDevice);
+            var completionFence = CompletionFence;
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(completionFence);
+
+            var fenceWaitTask = System.Threading.Tasks.Task.Run(
+                () => backendDevice.WaitForGraphFence(completionFence));
+            _fenceWaitTask = fenceWaitTask;
+            _fenceWaitSignalTask = fenceWaitTask.ContinueWith(
+                static (completedTask, state) => {
+                    _ = completedTask.Exception;
+                    ((GraphicsDevice)state!)._ownerQueue.SignalOwnerWork();
+                },
+                _device,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         private void Cancel()
@@ -3177,6 +3446,44 @@ public sealed partial class GraphicsDevice
             {
                 _ = _completion.TrySetCanceled(_cancellationToken);
             }
+        }
+
+        private void CompleteFailureAfterFence(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException deviceLostException)
+            {
+                _device.MarkDeviceLost(deviceLostException.NativeError);
+            }
+
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseSourceUse();
+            _ = _completion.TrySetException(exception);
+            _cancellationRegistration.Dispose();
+            ReleaseCompletionSlot();
+        }
+
+        private void Quarantine()
+        {
+            if (Interlocked.Exchange(ref _quarantined, 1) == 0)
+            {
+                s_quarantinedBufferReadbacks.Add(this);
+                s_quarantinedGraphicsDevices.Add(_device);
+            }
+        }
+
+        private void ReleaseCompletionSlot()
+        {
+            if (Interlocked.Exchange(ref _completionSlotReleased, 1) == 0)
+            {
+                _ = _device._bufferReadbackCompletionSlots.Release();
+            }
+        }
+
+        private void ReleaseCompletionStorage()
+        {
+            var storage = _completionStorage;
+            _completionStorage = null;
+            storage?.ReleaseAfterFailure();
         }
 
         private void ReleaseSourceUse()

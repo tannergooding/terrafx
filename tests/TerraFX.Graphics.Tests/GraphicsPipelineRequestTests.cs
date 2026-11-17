@@ -2,6 +2,8 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,6 +17,15 @@ namespace TerraFX.Graphics.Tests;
 [TestFixture]
 internal sealed class GraphicsPipelineRequestTests
 {
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference<GraphicsResourceOwner.UseLease> Use, WeakReference<GraphicsRecordingUseAdmission> Admission) AcquireUseWithoutCallerRoots(
+        GraphicsResourceOwner owner)
+    {
+        var admission = GraphicsRecordingUseAdmission.Create(1, 272);
+        var use = owner.AcquireUse("retained recording use", admission);
+        return (new WeakReference<GraphicsResourceOwner.UseLease>(use), new WeakReference<GraphicsRecordingUseAdmission>(admission));
+    }
+
     private static GraphicsCapabilities CreateCapabilities(GraphicsLimits? limits = null)
     {
         var features = ImmutableArray.Create(
@@ -237,6 +248,50 @@ internal sealed class GraphicsPipelineRequestTests
         }
 
         return resources.ToImmutable();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (Task<RecordedPassCommandList> Task, WeakReference<byte[]> Capture) StartRecordingWithCapture(GraphicsDevice device)
+    {
+        var payload = new byte[4096];
+        var weak = new WeakReference<byte[]>(payload);
+
+        void Record(scoped ref CommandRecorder recorder)
+        {
+            GC.KeepAlive(payload);
+        }
+
+        return (device.RecordPassAsync(new RenderPassId(200, 0), CommandRecorderPassKind.Copy, [], [], null, Record), weak);
+    }
+
+    [Test]
+    public async Task CompletedRecordingTaskDoesNotRetainTheCallbackCapture()
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            31,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            var recording = StartRecordingWithCapture(device);
+            using var result = await recording.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            result.Dispose();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.That(recording.Capture.TryGetTarget(out _), Is.False);
+            GC.KeepAlive(recording.Task);
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
     }
 
     [TestCase(4, 4, 4, true)]
@@ -1699,6 +1754,534 @@ internal sealed class GraphicsPipelineRequestTests
         }
     }
 
+    [Test]
+    public async Task RecordingArrayMinimumRefusesWithoutWaitingForTheBlockedOwner()
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        using var callbackEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseCallback = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            31,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        Task<RecordedPassCommandList>? blocker = null;
+
+        try
+        {
+            void Block(scoped ref CommandRecorder recorder)
+            {
+                callbackEntered.Set();
+                releaseCallback.Wait();
+            }
+
+            blocker = device.RecordPassAsync(new RenderPassId(201, 0), CommandRecorderPassKind.Copy, [], [], null, Block);
+            Assert.That(callbackEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            var refused = device.RecordPassAsync(
+                new RenderPassId(201, 1),
+                CommandRecorderPassKind.Copy,
+                [],
+                [],
+                null,
+                static (scoped ref CommandRecorder recorder) => { },
+                new CommandRecorderRecordingCapacity(int.MaxValue, 1, 0, 0));
+            Assert.That(refused.IsCompleted, Is.True);
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(async () => await refused.ConfigureAwait(false));
+        }
+        finally
+        {
+            releaseCallback.Set();
+
+            if (blocker is not null)
+            {
+                using var result = await blocker.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task RecordingUseAdmissionRefusesAContendedOwnerWithoutSpendingTheCohort()
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            31,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        using var bytes = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        using var bytecode = bytes.AcquireRead(0, 4);
+        using var pipeline = await device.CreatePipelineAsync(CreateComputePipelineDescription(bytecode, []))
+            .ConfigureAwait(false);
+        var admission = GraphicsRecordingUseAdmission.Create(1, 32L * 1024 * 1024);
+        var gateField = typeof(GraphicsResourceOwner).GetField("_useGate", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The actual Graphics resource gate was not found.");
+        var gate = gateField.GetValue(pipeline.ResourceOwner) as System.Threading.Lock
+            ?? throw new InvalidOperationException("The actual Graphics resource gate has an unexpected type.");
+
+        try
+        {
+            void Acquire(scoped ref CommandRecorder recorder)
+            {
+                using var use = device.AcquirePipelineForRecording(pipeline.Handle, admission).UseLease;
+            }
+
+            gate.Enter();
+
+            try
+            {
+                _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                    async () => await device.RecordPassAsync(
+                        new RenderPassId(401, 0), CommandRecorderPassKind.Copy, [], [], null, Acquire)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                Assert.That(admission.ClaimedUseCount, Is.Zero);
+                Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.False);
+            }
+            finally
+            {
+                gate.Exit();
+            }
+
+            using var recorded = await device.RecordPassAsync(
+                new RenderPassId(401, 1), CommandRecorderPassKind.Copy, [], [], null, Acquire)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            admission.ValidateComplete();
+            Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.False);
+            Assert.That(admission.ManagedByteCharge, Is.EqualTo(272));
+        }
+        finally
+        {
+            pipeline.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(1)]
+    [TestCase(2)]
+    [TestCase(64)]
+    public async Task RecordingUseCohortBoundsActualOwnerAllocationsAndRejectsGrowth(int useCount)
+    {
+        using var proceed = new ManualResetEventSlim(initialState: true);
+        using var entered = new ManualResetEventSlim(initialState: false);
+        var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
+        var device = await GraphicsDevice.CreateAsync(
+            31,
+            new GraphicsBackendRegistration(new FakeBackendFactory(backend)),
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        using var bytes = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        using var bytecode = bytes.AcquireRead(0, 4);
+        using var pipeline = await device.CreatePipelineAsync(CreateComputePipelineDescription(bytecode, []))
+            .ConfigureAwait(false);
+        Assert.That(GraphicsRecordingUseAdmission.IsSupportedProfile, Is.True);
+        var start = GC.GetAllocatedBytesForCurrentThread();
+        var admission = GraphicsRecordingUseAdmission.Create(useCount, 80 + (192L * useCount));
+        var carrierBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        var uses = new GraphicsResourceOwner.UseLease[useCount];
+        var acquiredCount = 0;
+        long allocatedBytes = 0;
+
+        try
+        {
+            void Acquire(scoped ref CommandRecorder recorder)
+            {
+                var before = GC.GetAllocatedBytesForCurrentThread();
+
+                for (var index = 0; index < uses.Length; index++)
+                {
+                    uses[index] = device.AcquirePipelineForRecording(pipeline.Handle, admission).UseLease;
+                    acquiredCount++;
+                }
+
+                allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+            }
+
+            using var result = await device.RecordPassAsync(
+                new RenderPassId(400, 0), CommandRecorderPassKind.Copy, [], [], null, Acquire)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            admission.ValidateComplete();
+            Assert.That(carrierBytes, Is.InRange(1, 80));
+            Assert.That(allocatedBytes, Is.InRange(1, 192L * useCount));
+            Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.True);
+            _ = Assert.Throws<OutOfMemoryException>(() => pipeline.ResourceOwner.AcquireUse("exhausted", admission));
+
+            foreach (var use in uses)
+            {
+                Assert.That(use.IsCoveredBy(admission), Is.True);
+                use.Dispose();
+            }
+
+            Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.False);
+            Assert.That(admission.ManagedByteCharge, Is.EqualTo(80 + (192L * useCount)));
+            TestContext.WriteLine($"D={useCount}: carrier={carrierBytes}, owner-thread use/node allocations={allocatedBytes}, allowance={admission.ManagedByteCharge}");
+
+            if (useCount == 1)
+            {
+                var (retainedUseReference, retainedAdmissionReference) = AcquireUseWithoutCallerRoots(pipeline.ResourceOwner);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                var hasUse = retainedUseReference.TryGetTarget(out var retainedUse);
+
+                try
+                {
+                    Assert.That(hasUse, Is.True);
+                    Assert.That(retainedAdmissionReference.TryGetTarget(out _), Is.True);
+                    Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.True);
+                }
+                finally
+                {
+                    retainedUse?.Dispose();
+                }
+
+                Assert.That(pipeline.ResourceOwner.HasActiveUses, Is.False);
+            }
+        }
+        finally
+        {
+            for (var index = 0; index < acquiredCount; index++)
+            {
+                uses[index].Dispose();
+            }
+
+            pipeline.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task SkinnedNormalDiagnosticRecorderBoundsHazardsAndValidatesNativeWitness()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 31,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        GpuPipeline? pipeline = null;
+        char[][] schedules = [
+            ['A'],
+            ['A', 'A'],
+            ['A', 'B'],
+            ['A', 'A', 'A'],
+            ['A', 'B', 'C'],
+            ['A', 'B', 'A'],
+        ];
+
+        try
+        {
+            ImmutableArray<ShaderResourceSignature> signatures = [
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, arrayCount: 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageBuffer, arrayCount: 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 2, ShaderResourceKind.StorageBuffer, arrayCount: 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 3, ShaderResourceKind.StorageBuffer, arrayCount: 1),
+            ];
+            pipeline = await graphicsDevice.CreatePipelineAsync(
+                CreateComputePipelineDescription(callerBytecodeLease, signatures))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            for (var scheduleIndex = 0; scheduleIndex < schedules.Length; scheduleIndex++)
+            {
+                var schedule = schedules[scheduleIndex];
+                var geometryCount = 0;
+
+                foreach (var geometryLabel in schedule)
+                {
+                    geometryCount = Math.Max(geometryCount, geometryLabel - 'A' + 1);
+                }
+
+                var resources = new GraphResourceRegistry(graphicsDevice, graphOwnerId: checked((uint)(100 + scheduleIndex)));
+                var initializationPass = resources.AddPass(new RenderPassDescription("initialize", 0, [], false));
+                var diagnosticPassId = resources.AddPass(new RenderPassDescription(
+                    "diagnostic",
+                    1,
+                    [initializationPass],
+                    hasExternalSideEffects: false));
+
+                GraphBufferVersion CreateInitializedBuffer(string debugName, long byteLength)
+                {
+                    var initialVersion = resources.CreateTransientBuffer(new BufferDescription(
+                        byteLength,
+                        BufferUsage.Storage,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName));
+                    return resources.WriteBuffer(
+                        initializationPass,
+                        initialVersion,
+                        initialVersion.Range,
+                        GraphBufferUsage.StorageWrite);
+                }
+
+                var unrelatedBuffer = CreateInitializedBuffer("diagnostic-unrelated", 16);
+                var geometryBuffers = new GraphBufferVersion[geometryCount];
+
+                for (var geometryIndex = 0; geometryIndex < geometryCount; geometryIndex++)
+                {
+                    geometryBuffers[geometryIndex] = CreateInitializedBuffer($"diagnostic-geometry-{geometryIndex}", 64);
+                }
+
+                var paletteBuffer = CreateInitializedBuffer("diagnostic-palette", 64);
+                var workBufferLength = checked((long)schedule.Length * 32);
+                var workBuffer = CreateInitializedBuffer("diagnostic-work", workBufferLength);
+                var resultBuffer = CreateInitializedBuffer("diagnostic-results", checked((long)schedule.Length * 16));
+                var diagnosticGeometryBuffers = new GraphBufferVersion[geometryCount];
+
+                for (var geometryIndex = 0; geometryIndex < geometryCount; geometryIndex++)
+                {
+                    diagnosticGeometryBuffers[geometryIndex] = resources.ReadWriteBuffer(
+                        diagnosticPassId,
+                        geometryBuffers[geometryIndex],
+                        geometryBuffers[geometryIndex].Range);
+                }
+
+                var diagnosticPaletteBuffer = resources.ReadWriteBuffer(
+                    diagnosticPassId,
+                    paletteBuffer,
+                    paletteBuffer.Range);
+                var diagnosticWorkBuffer = resources.ReadWriteBuffer(
+                    diagnosticPassId,
+                    workBuffer,
+                    workBuffer.Range);
+                var diagnosticResultBuffer = resources.ReadWriteBuffer(
+                    diagnosticPassId,
+                    resultBuffer,
+                    resultBuffer.Range);
+                var bindingSets = new BindingSet[schedule.Length];
+
+                for (var drawIndex = 0; drawIndex < schedule.Length; drawIndex++)
+                {
+                    var geometryIndex = schedule[drawIndex] - 'A';
+                    bindingSets[drawIndex] = new BindingSet(
+                        [
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                ShaderResourceKind.StorageBuffer,
+                                diagnosticGeometryBuffers[geometryIndex],
+                                diagnosticGeometryBuffers[geometryIndex].Range),
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                1,
+                                ShaderResourceKind.StorageBuffer,
+                                diagnosticPaletteBuffer,
+                                diagnosticPaletteBuffer.Range),
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                2,
+                                ShaderResourceKind.StorageBuffer,
+                                diagnosticWorkBuffer,
+                                new GraphBufferRange(checked((long)drawIndex * 32), 16)),
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                3,
+                                ShaderResourceKind.StorageBuffer,
+                                diagnosticResultBuffer,
+                                diagnosticResultBuffer.Range),
+                        ],
+                        [],
+                        []);
+                }
+
+                var declaredAccessesBuilder = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+                var nativeAccessesBuilder = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+                foreach (var access in resources.Accesses)
+                {
+                    nativeAccessesBuilder.Add(access);
+
+                    if (access.PassId == diagnosticPassId)
+                    {
+                        declaredAccessesBuilder.Add(access);
+                    }
+                }
+
+                var declaredAccesses = declaredAccessesBuilder.ToImmutable();
+                var nativeAccesses = nativeAccessesBuilder.ToImmutable();
+                var expectedBarrierCount = checked((3 * schedule.Length) - geometryCount - 2);
+                var expectedCommandCount = checked((6 * schedule.Length) - geometryCount - 2);
+                var pendingWriteCount = checked(schedule.Length + geometryCount + 2);
+                var capacity = new CommandRecorderRecordingCapacity(
+                    expectedCommandCount,
+                    schedule.Length,
+                    pendingWriteCount,
+                    bindingCount: 4);
+                var pipelineHandle = pipeline.Handle;
+                var recipe = new SkinnedNormalDiagnosticRecordingRecipe(
+                    diagnosticPassId,
+                    graphicsDevice.DeviceEpoch,
+                    pipelineHandle,
+                    bindingSets,
+                    diagnosticGeometryBuffers,
+                    diagnosticPaletteBuffer,
+                    diagnosticWorkBuffer,
+                    diagnosticResultBuffer,
+                    workPacketAlignment: 16,
+                    declaredAccesses,
+                    capacity);
+
+                if (scheduleIndex == 1)
+                {
+                    var overlappingBindingSets = (BindingSet[])bindingSets.Clone();
+                    var secondDrawBindings = overlappingBindingSets[1].Buffers;
+                    overlappingBindingSets[1] = new BindingSet(
+                        [
+                            secondDrawBindings[0],
+                            secondDrawBindings[1],
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                2,
+                                ShaderResourceKind.StorageBuffer,
+                                diagnosticWorkBuffer,
+                                new GraphBufferRange(0, 16)),
+                            secondDrawBindings[3],
+                        ],
+                        [],
+                        []);
+
+                    _ = Assert.Throws<ArgumentException>(() => new SkinnedNormalDiagnosticRecordingRecipe(
+                        diagnosticPassId,
+                        graphicsDevice.DeviceEpoch,
+                        pipelineHandle,
+                        overlappingBindingSets,
+                        diagnosticGeometryBuffers,
+                        diagnosticPaletteBuffer,
+                        diagnosticWorkBuffer,
+                        diagnosticResultBuffer,
+                        workPacketAlignment: 16,
+                        declaredAccesses,
+                        capacity));
+                }
+
+                void RecordDiagnostic(scoped ref CommandRecorder recorder)
+                {
+                    foreach (var bindingSet in bindingSets)
+                    {
+                        recorder.SetPipeline(pipelineHandle);
+                        recorder.SetBindings(bindingSet);
+                        recorder.Dispatch(new DispatchSize(1, 1, 1));
+                    }
+                }
+
+                using var commandList = await graphicsDevice.RecordPassAsync(
+                    diagnosticPassId,
+                    CommandRecorderPassKind.Compute,
+                    declaredAccesses,
+                    [],
+                    depthTargetFormat: null,
+                    RecordDiagnostic,
+                    capacity,
+                    recipe)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+
+                var pipelineCommandCount = 0;
+                Assert.That(recipe.RecordingUseAdmission.ClaimedUseCount, Is.EqualTo(schedule.Length));
+                var bindingCommandCount = 0;
+                var dispatchCommandCount = 0;
+                var barrierCommandCount = 0;
+
+                foreach (var command in commandList.Commands)
+                {
+                    switch (command.Kind)
+                    {
+                        case GraphicsCommandKind.SetPipeline:
+                        {
+                            pipelineCommandCount++;
+                            break;
+                        }
+
+                        case GraphicsCommandKind.SetBindings:
+                        {
+                            bindingCommandCount++;
+                            break;
+                        }
+
+                        case GraphicsCommandKind.Dispatch:
+                        {
+                            dispatchCommandCount++;
+                            break;
+                        }
+
+                        case GraphicsCommandKind.StorageBarrier:
+                        {
+                            barrierCommandCount++;
+
+                            if (command.StorageBarrierBuffer is not GraphBufferVersion barrierBuffer)
+                            {
+                                Assert.Fail("A diagnostic storage barrier must target a graph buffer.");
+                                break;
+                            }
+
+                            Assert.That(command.StorageBarrierBufferRange, Is.EqualTo(barrierBuffer.Range));
+                            Assert.That(command.StorageBarrierSourceReads, Is.True);
+                            Assert.That(command.StorageBarrierSourceWrites, Is.True);
+                            Assert.That(command.StorageBarrierDestinationReads, Is.True);
+                            Assert.That(command.StorageBarrierDestinationWrites, Is.True);
+                            break;
+                        }
+
+                        default:
+                        {
+                            Assert.Fail($"Unexpected diagnostic command kind {command.Kind}.");
+                            break;
+                        }
+                    }
+                }
+
+                Assert.That(commandList.Commands.Length, Is.EqualTo(expectedCommandCount), $"schedule {scheduleIndex}");
+                Assert.That(pipelineCommandCount, Is.EqualTo(schedule.Length), $"schedule {scheduleIndex}");
+                Assert.That(bindingCommandCount, Is.EqualTo(schedule.Length), $"schedule {scheduleIndex}");
+                Assert.That(dispatchCommandCount, Is.EqualTo(schedule.Length), $"schedule {scheduleIndex}");
+                Assert.That(barrierCommandCount, Is.EqualTo(expectedBarrierCount), $"schedule {scheduleIndex}");
+                recipe.ValidateNativeSubmission(
+                    diagnosticPassId,
+                    graphicsDevice.DeviceEpoch,
+                    nativeAccesses,
+                    commandList.Commands);
+                _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
+                    diagnosticPassId,
+                    checked(graphicsDevice.DeviceEpoch + 1),
+                    nativeAccesses,
+                    commandList.Commands));
+                _ = Assert.Throws<InvalidOperationException>(() => recipe.ValidateNativeSubmission(
+                    diagnosticPassId,
+                    graphicsDevice.DeviceEpoch,
+                    nativeAccesses,
+                    []));
+                commandList.Dispose();
+                Assert.That(commandList.Commands.IsEmpty, Is.True);
+                Assert.That(commandList.DiagnosticRecipe, Is.Null);
+                Assert.That(recipe.RecordingUseAdmission.ManagedByteCharge, Is.GreaterThan(0));
+            }
+        }
+        finally
+        {
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     private sealed class FakeBackendDevice : IGraphicsBackendDevice
     {
         private readonly GraphicsCapabilities _capabilities;
@@ -1728,6 +2311,13 @@ internal sealed class GraphicsPipelineRequestTests
         internal int PipelineCreationCount => Volatile.Read(ref _pipelineCreationCount);
 
         internal int PipelineDisposalCount => Volatile.Read(ref _pipelineDisposalCount);
+
+        public IGraphicsBackendBufferReadback BeginBufferReadback(
+            IGraphicsBackendBuffer source,
+            GraphResourceState sourceState,
+            long sourceOffset,
+            nint byteLength)
+            => throw new NotSupportedException();
 
         public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
             => throw new NotSupportedException();
@@ -1773,13 +2363,6 @@ internal sealed class GraphicsPipelineRequestTests
             => throw new NotSupportedException();
 
         public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
-            => throw new NotSupportedException();
-
-        public OwnedBuffer<byte> ReadbackBuffer(
-            IGraphicsBackendBuffer source,
-            GraphResourceState sourceState,
-            long sourceOffset,
-            nint byteLength)
             => throw new NotSupportedException();
 
         public TextureReadback ReadbackTexture(

@@ -10,7 +10,7 @@ namespace TerraFX.Graphics;
 internal sealed class GraphicsResourceOwner : IDisposable
 {
     private int _activeUseCount;
-    private readonly SortedSet<long> _activeUseSequences = [];
+    private readonly SortedSet<UseLease> _activeUseSequences = [];
     private readonly GraphicsResourceAllocationInfo? _allocationInfo;
     private GraphicsResourceAllocationLease? _allocationLease;
     private readonly IGraphicsBackendResource _backendResource;
@@ -130,7 +130,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
                 var sequence = checked(_nextUseSequence + 1);
                 var lease = new UseLease(this, sequence, isExclusive: true);
 
-                if (!_activeUseSequences.Add(sequence))
+                if (!_activeUseSequences.Add(lease))
                 {
                     throw new InvalidOperationException("The Graphics resource use sequence was reused.");
                 }
@@ -143,8 +143,27 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
-    internal UseLease AcquireUse(string parameterName)
+    internal UseLease AcquireUse(string parameterName, GraphicsRecordingUseAdmission? recordingAdmission = null)
     {
+        if (recordingAdmission is not null)
+        {
+            ObjectDisposedException.ThrowIf(!IsLiveForNewWork, parameterName);
+
+            if (!_useGate.TryEnter())
+            {
+                GraphicsRecordingUseAdmission.ThrowUnavailable();
+            }
+
+            try
+            {
+                return AcquireUseUnderGate(parameterName, recordingAdmission);
+            }
+            finally
+            {
+                _useGate.Exit();
+            }
+        }
+
         while (true)
         {
             if (!IsLiveForNewWork)
@@ -159,22 +178,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
                     continue;
                 }
 
-                if (_exclusiveUseInProgress)
-                {
-                    throw new InvalidOperationException("The Graphics resource is being written by the host.");
-                }
-
-                var sequence = checked(_nextUseSequence + 1);
-                var lease = new UseLease(this, sequence);
-
-                if (!_activeUseSequences.Add(sequence))
-                {
-                    throw new InvalidOperationException("The Graphics resource use sequence was reused.");
-                }
-
-                _nextUseSequence = sequence;
-                _ = Interlocked.Increment(ref _activeUseCount);
-                return lease;
+                return AcquireUseUnderGate(parameterName, recordingAdmission: null);
             }
         }
     }
@@ -375,21 +379,44 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
+    private UseLease AcquireUseUnderGate(string parameterName, GraphicsRecordingUseAdmission? recordingAdmission)
+    {
+        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, parameterName);
+
+        if (_exclusiveUseInProgress)
+        {
+            throw new InvalidOperationException("The Graphics resource is being written by the host.");
+        }
+
+        var sequence = checked(_nextUseSequence + 1);
+        recordingAdmission?.ClaimUse();
+        var lease = new UseLease(this, sequence, recordingAdmission: recordingAdmission);
+
+        if (!_activeUseSequences.Add(lease))
+        {
+            throw new InvalidOperationException("The Graphics resource use sequence was reused.");
+        }
+
+        _nextUseSequence = sequence;
+        _ = Interlocked.Increment(ref _activeUseCount);
+        return lease;
+    }
+
     private bool CanCaptureGraphState(UseLease? useLease)
         => (useLease is null)
             ? IsLiveForNewWork
-            : useLease.IsOwnedBy(this) && _activeUseSequences.Contains(useLease.Sequence);
+            : useLease.IsOwnedBy(this) && _activeUseSequences.Contains(useLease);
 
     private bool HasActiveUseAtOrBefore(long sequence)
-        => (_activeUseSequences.Count != 0) && (_activeUseSequences.Min <= sequence);
+        => (_activeUseSequences.Min is UseLease first) && (first.Sequence <= sequence);
 
-    private void ReleaseUse(long sequence, bool isExclusive)
+    private void ReleaseUse(UseLease lease, bool isExclusive)
     {
         int activeUseCount;
 
         lock (_useGate)
         {
-            if (!_activeUseSequences.Remove(sequence))
+            if (!_activeUseSequences.Remove(lease))
             {
                 throw new InvalidOperationException("A Graphics resource use credit was released more than once.");
             }
@@ -429,28 +456,40 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
-    internal sealed class UseLease : IDisposable
+    internal sealed class UseLease : IDisposable, IComparable<UseLease>
     {
         private readonly bool _isExclusive;
         private GraphicsResourceOwner? _owner;
+        private readonly GraphicsRecordingUseAdmission? _recordingAdmission;
         private readonly long _sequence;
 
-        internal UseLease(GraphicsResourceOwner owner, long sequence, bool isExclusive = false)
+        internal UseLease(
+            GraphicsResourceOwner owner,
+            long sequence,
+            bool isExclusive = false,
+            GraphicsRecordingUseAdmission? recordingAdmission = null)
         {
             ArgumentNullException.ThrowIfNull(owner);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
             _owner = owner;
             _isExclusive = isExclusive;
+            _recordingAdmission = recordingAdmission;
             _sequence = sequence;
         }
 
         internal long Sequence => _sequence;
 
+        public int CompareTo(UseLease? other)
+            => (other is null) ? 1 : _sequence.CompareTo(other._sequence);
+
         public void Dispose()
         {
             var owner = Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseUse(_sequence, _isExclusive);
+            owner?.ReleaseUse(this, _isExclusive);
         }
+
+        internal bool IsCoveredBy(GraphicsRecordingUseAdmission admission)
+            => ReferenceEquals(_recordingAdmission, admission);
 
         internal bool IsOwnedBy(GraphicsResourceOwner owner)
             => ReferenceEquals(Volatile.Read(ref _owner), owner);

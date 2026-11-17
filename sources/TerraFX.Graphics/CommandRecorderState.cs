@@ -9,22 +9,30 @@ namespace TerraFX.Graphics;
 
 internal sealed class CommandRecorderState : IDisposable
 {
+    private readonly HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)> _actualBindingsScratch = [];
+    private readonly List<(bool IsTexture, ulong ResourceId)> _barrierResourcesScratch = [];
+    private int _boundStorageUseCount;
+    private StorageResourceUse[] _boundStorageUses;
     private readonly ImmutableArray<TextureFormat> _colorTargetFormats;
     private readonly List<RecordedGraphicsCommand> _commands = [];
     private readonly ImmutableArray<GraphResourceAccess> _declaredAccesses;
     private readonly TextureFormat? _depthTargetFormat;
     private readonly GraphicsDevice _device;
-    private readonly int _ownerThreadId;
-    private readonly RenderPassId _passId;
-    private readonly CommandRecorderPassKind _passKind;
-    private readonly List<GraphicsResourceOwner.UseLease> _useLeases = [];
-    private readonly List<StorageResourceUse> _pendingStorageWrites = [];
-    private ImmutableArray<StorageResourceUse> _boundStorageUses;
+    private readonly SkinnedNormalDiagnosticRecordingState? _diagnosticRecordingState;
+    private PipelineBindingLayout? _expectedBindingsLayout;
+    private readonly Dictionary<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding), ShaderResourceAccess> _expectedBindingsScratch = [];
     private IndexBufferBinding? _indexBuffer;
     private bool _isCompleted;
     private bool _isDisposed;
     private bool _isShaderBindingsSet;
+    private readonly int _ownerThreadId;
+    private readonly RenderPassId _passId;
+    private readonly CommandRecorderPassKind _passKind;
+    private int _pendingStorageWriteHighWater;
+    private readonly List<StorageResourceUse> _pendingStorageWrites = [];
     private PipelineBindingLayout? _pipelineLayout;
+    private readonly CommandRecorderRecordingCapacity _recordingCapacity;
+    private readonly List<GraphicsResourceOwner.UseLease> _useLeases = [];
     private VertexBufferBinding? _vertexBuffer;
 
     internal CommandRecorderState(
@@ -33,7 +41,61 @@ internal sealed class CommandRecorderState : IDisposable
         CommandRecorderPassKind passKind,
         ImmutableArray<GraphResourceAccess> declaredAccesses,
         ImmutableArray<TextureFormat> colorTargetFormats,
-        TextureFormat? depthTargetFormat)
+        TextureFormat? depthTargetFormat,
+        CommandRecorderRecordingCapacity recordingCapacity = default,
+        SkinnedNormalDiagnosticRecordingRecipe? diagnosticRecipe = null)
+    {
+        ValidatePassInputs(device, passId, passKind, declaredAccesses, colorTargetFormats, depthTargetFormat, requireOwnerThread: true);
+        recordingCapacity.ValidateKnownBackingArrayMinimum();
+
+        _colorTargetFormats = [.. colorTargetFormats];
+        _ = _commands.EnsureCapacity(recordingCapacity.CommandBackingCapacity);
+        _declaredAccesses = (diagnosticRecipe is null) ? [.. declaredAccesses] : declaredAccesses;
+        _device = device;
+        _depthTargetFormat = depthTargetFormat;
+
+        if (diagnosticRecipe is not null)
+        {
+            if ((passKind != CommandRecorderPassKind.Compute) || !recordingCapacity.IsBounded)
+            {
+                throw new ArgumentException("A diagnostic recording recipe requires a bounded compute pass.", nameof(diagnosticRecipe));
+            }
+
+            diagnosticRecipe.ValidateRecordingInputs(
+                passId,
+                device.DeviceEpoch,
+                declaredAccesses,
+                recordingCapacity);
+            _diagnosticRecordingState = new SkinnedNormalDiagnosticRecordingState(diagnosticRecipe);
+        }
+
+        _ownerThreadId = Environment.CurrentManagedThreadId;
+        _passId = passId;
+        _passKind = passKind;
+        _recordingCapacity = recordingCapacity;
+        _ = _useLeases.EnsureCapacity(recordingCapacity.UseLeaseBackingCapacity);
+
+        if (diagnosticRecipe is null)
+        {
+            _ = _pendingStorageWrites.EnsureCapacity(recordingCapacity.PendingStorageWriteCount);
+        }
+
+        _boundStorageUses = recordingCapacity.IsBounded
+            ? new StorageResourceUse[recordingCapacity.BindingCount]
+            : [];
+        _ = _expectedBindingsScratch.EnsureCapacity(recordingCapacity.BindingCount);
+        _ = _actualBindingsScratch.EnsureCapacity(recordingCapacity.BindingCount);
+        _ = _barrierResourcesScratch.EnsureCapacity(recordingCapacity.BindingCount);
+    }
+
+    internal static void ValidatePassInputs(
+        GraphicsDevice device,
+        RenderPassId passId,
+        CommandRecorderPassKind passKind,
+        ImmutableArray<GraphResourceAccess> declaredAccesses,
+        ImmutableArray<TextureFormat> colorTargetFormats,
+        TextureFormat? depthTargetFormat,
+        bool requireOwnerThread)
     {
         ArgumentNullException.ThrowIfNull(device);
 
@@ -57,7 +119,7 @@ internal sealed class CommandRecorderState : IDisposable
             throw new InvalidOperationException("The GraphicsDevice is not ready for command recording.");
         }
 
-        if (!device.IsOwnerThread)
+        if (requireOwnerThread && !device.IsOwnerThread)
         {
             throw new InvalidOperationException("A command recorder must be created on the graphics owner thread.");
         }
@@ -75,15 +137,6 @@ internal sealed class CommandRecorderState : IDisposable
         {
             throw new ArgumentException("Only a raster pass can declare attachment target formats.", nameof(colorTargetFormats));
         }
-
-        _colorTargetFormats = [.. colorTargetFormats];
-        _declaredAccesses = [.. declaredAccesses];
-        _device = device;
-        _depthTargetFormat = depthTargetFormat;
-        _ownerThreadId = Environment.CurrentManagedThreadId;
-        _passId = passId;
-        _passKind = passKind;
-        _boundStorageUses = [];
     }
 
     private static GraphBufferUsage GetBufferUsage(ShaderResourceKind kind, ShaderResourceAccess access)
@@ -101,32 +154,7 @@ internal sealed class CommandRecorderState : IDisposable
     {
         var expectedBindings =
             new Dictionary<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding), ShaderResourceAccess>();
-
-        foreach (var reflection in pipelineLayout.ShaderReflections)
-        {
-            foreach (var resource in reflection.Resources)
-            {
-                if (resource.ArrayCount != 1)
-                {
-                    throw new NotSupportedException("The command recorder supports only single-descriptor shader bindings.");
-                }
-
-                var key = (resource.Group, resource.Kind, resource.Binding);
-
-                if (expectedBindings.TryGetValue(key, out var existingAccess))
-                {
-                    if (existingAccess != resource.Access)
-                    {
-                        throw new InvalidOperationException("Shader stages disagree on a shared resource access contract.");
-                    }
-                }
-                else
-                {
-                    expectedBindings.Add(key, resource.Access);
-                }
-            }
-        }
-
+        PopulateExpectedBindings(pipelineLayout, expectedBindings);
         return expectedBindings;
     }
 
@@ -160,6 +188,38 @@ internal sealed class CommandRecorderState : IDisposable
         return false;
     }
 
+    private static void PopulateExpectedBindings(
+        PipelineBindingLayout pipelineLayout,
+        Dictionary<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding), ShaderResourceAccess> expectedBindings)
+    {
+        expectedBindings.Clear();
+
+        foreach (var reflection in pipelineLayout.ShaderReflections)
+        {
+            foreach (var resource in reflection.Resources)
+            {
+                if (resource.ArrayCount != 1)
+                {
+                    throw new NotSupportedException("The command recorder supports only single-descriptor shader bindings.");
+                }
+
+                var key = (resource.Group, resource.Kind, resource.Binding);
+
+                if (expectedBindings.TryGetValue(key, out var existingAccess))
+                {
+                    if (existingAccess != resource.Access)
+                    {
+                        throw new InvalidOperationException("Shader stages disagree on a shared resource access contract.");
+                    }
+                }
+                else
+                {
+                    expectedBindings.Add(key, resource.Access);
+                }
+            }
+        }
+    }
+
     public void Dispose()
     {
         if (_isDisposed)
@@ -168,19 +228,73 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         _isDisposed = true;
+
+        if (!_isCompleted)
+        {
+            _diagnosticRecordingState?.Release();
+        }
+
         ReleaseUseLeases();
+        _commands.Clear();
+        _commands.Capacity = 0;
+        _useLeases.Capacity = 0;
+    }
+
+    internal void AddCommand(RecordedGraphicsCommand command)
+    {
+        if (_recordingCapacity.IsBounded && (_commands.Count >= _recordingCapacity.CommandCount))
+        {
+            throw new InvalidOperationException("The command recorder exceeded its preclaimed command capacity.");
+        }
+
+        _commands.Add(command);
     }
 
     internal RecordedPassCommandList Complete()
     {
         EnsureActive();
-        _isCompleted = true;
+
+        if (_recordingCapacity.IsBounded
+            && ((_commands.Capacity != _recordingCapacity.CommandBackingCapacity)
+                || (_useLeases.Capacity != _recordingCapacity.UseLeaseBackingCapacity)))
+        {
+            throw new InvalidOperationException("The recorder's mutable backing capacities changed after their array footprint was established.");
+        }
+
+        ImmutableArray<RecordedGraphicsCommand> immutableCommands = default;
+
+        if (_diagnosticRecordingState != null)
+        {
+            immutableCommands = [.. _commands];
+            _diagnosticRecordingState.ValidateComplete(
+                _passId,
+                _device.DeviceEpoch,
+                _commands.Count,
+                _useLeases.Count,
+                _pendingStorageWrites.Count,
+                immutableCommands);
+        }
+        else if (_recordingCapacity.IsBounded
+            && ((_commands.Count != _recordingCapacity.CommandCount)
+                || (_useLeases.Count != _recordingCapacity.UseLeaseCount)
+                || (_pendingStorageWriteHighWater != _recordingCapacity.PendingStorageWriteCount)
+                || (_pendingStorageWrites.Count != _recordingCapacity.PendingStorageWriteCount)))
+        {
+            throw new InvalidOperationException("The diagnostic recording did not match its preclaimed command and storage capacities.");
+        }
+
+        if (immutableCommands.IsDefault)
+        {
+            immutableCommands = [.. _commands];
+        }
 
         var commandList = new RecordedPassCommandList(
             _passId,
             _passKind,
-            [.. _commands],
-            [.. _useLeases]);
+            immutableCommands,
+            [.. _useLeases],
+            _diagnosticRecordingState?.Recipe);
+        _isCompleted = true;
         _useLeases.Clear();
         return commandList;
     }
@@ -226,7 +340,7 @@ internal sealed class CommandRecorderState : IDisposable
             throw new ArgumentException("A buffer copy cannot overlap its source and destination ranges.", nameof(destination));
         }
 
-        _commands.Add(new RecordedGraphicsCommand(
+        AddCommand(new RecordedGraphicsCommand(
             GraphicsCommandKind.CopyBuffer,
             copySource: source,
             copyDestination: destination,
@@ -317,7 +431,7 @@ internal sealed class CommandRecorderState : IDisposable
             throw new InvalidOperationException("A texture copy must match exact source and destination ranges declared by this pass.");
         }
 
-        _commands.Add(new RecordedGraphicsCommand(
+        AddCommand(new RecordedGraphicsCommand(
             GraphicsCommandKind.CopyTexture,
             copySourceTexture: source,
             copyDestinationTexture: destination,
@@ -345,13 +459,15 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         ValidateShaderBindings(pipelineLayout);
+        _diagnosticRecordingState?.ValidateDispatch(size);
 
         if ((size.GroupCountX != 0) && (size.GroupCountY != 0) && (size.GroupCountZ != 0))
         {
             RecordStorageBarriers();
         }
 
-        _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.Dispatch, dispatch: size));
+        AddCommand(new RecordedGraphicsCommand(GraphicsCommandKind.Dispatch, dispatch: size));
+        _diagnosticRecordingState?.MarkDispatchRecorded();
     }
 
     internal void Draw(DrawArguments arguments)
@@ -379,7 +495,7 @@ internal sealed class CommandRecorderState : IDisposable
             RecordStorageBarriers();
         }
 
-        _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.Draw, draw: arguments));
+        AddCommand(new RecordedGraphicsCommand(GraphicsCommandKind.Draw, draw: arguments));
     }
 
     internal void DrawIndexed(DrawIndexedArguments arguments)
@@ -413,7 +529,7 @@ internal sealed class CommandRecorderState : IDisposable
             RecordStorageBarriers();
         }
 
-        _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.DrawIndexed, drawIndexed: arguments));
+        AddCommand(new RecordedGraphicsCommand(GraphicsCommandKind.DrawIndexed, drawIndexed: arguments));
     }
 
     internal void SetBindings(BindingSet bindings)
@@ -421,9 +537,13 @@ internal sealed class CommandRecorderState : IDisposable
         EnsureActive();
         ArgumentNullException.ThrowIfNull(bindings);
         var pipelineLayout = RequirePipelineLayout();
-        var expectedBindings = GetExpectedBindings(pipelineLayout);
-        var actualBindings = new HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>();
-        var storageUses = ImmutableArray.CreateBuilder<StorageResourceUse>();
+        _diagnosticRecordingState?.BeginBindingSet(bindings);
+        var expectedBindings = _recordingCapacity.IsBounded
+            ? _expectedBindingsScratch
+            : GetExpectedBindings(pipelineLayout);
+        var actualBindings = _actualBindingsScratch;
+        actualBindings.Clear();
+        var storageUseCount = 0;
 
         foreach (var binding in bindings.Buffers)
         {
@@ -435,12 +555,14 @@ internal sealed class CommandRecorderState : IDisposable
             }
 
             var usage = GetBufferUsage(binding.Kind, access);
+            var diagnosticEntryIndex = _diagnosticRecordingState?.ValidateBufferBinding(binding, access) ?? -1;
 
-            if (!HasBufferAccess(
-                binding.Resource,
-                binding.Range,
-                usage,
-                requiresStorageReadWritePair: access == ShaderResourceAccess.ReadWrite))
+            if ((_diagnosticRecordingState is null)
+                && !HasBufferAccess(
+                    binding.Resource,
+                    binding.Range,
+                    usage,
+                    requiresStorageReadWritePair: access == ShaderResourceAccess.ReadWrite))
             {
                 var requiredAccess = access == ShaderResourceAccess.ReadWrite
                     ? "an explicit storage read-write version pair"
@@ -450,7 +572,9 @@ internal sealed class CommandRecorderState : IDisposable
 
             if (binding.Kind == ShaderResourceKind.StorageBuffer)
             {
-                storageUses.Add(new StorageResourceUse(binding, access));
+                var storageUseIndex = storageUseCount++;
+                SetBoundStorageUse(storageUseIndex, new StorageResourceUse(binding, access));
+                _diagnosticRecordingState?.SetBoundStorageUse(storageUseIndex, diagnosticEntryIndex);
             }
         }
 
@@ -479,11 +603,13 @@ internal sealed class CommandRecorderState : IDisposable
 
             if (binding.Kind == ShaderResourceKind.StorageImage)
             {
-                storageUses.Add(new StorageResourceUse(binding, access));
+                SetBoundStorageUse(storageUseCount++, new StorageResourceUse(binding, access));
             }
         }
 
-        var newUseLeases = new List<GraphicsResourceOwner.UseLease>(bindings.Samplers.Length);
+        var newUseLeases = (bindings.Samplers.Length != 0)
+            ? new List<GraphicsResourceOwner.UseLease>(bindings.Samplers.Length)
+            : null;
 
         try
         {
@@ -507,7 +633,9 @@ internal sealed class CommandRecorderState : IDisposable
                     throw new ArgumentException("A sampler binding must belong to this GraphicsDevice generation.", nameof(bindings));
                 }
 
-                newUseLeases.Add(binding.Sampler.ResourceOwner.AcquireUse(nameof(bindings)));
+                (newUseLeases
+                    ?? throw new InvalidOperationException("A sampler binding has no staged resource-use list."))
+                    .Add(binding.Sampler.ResourceOwner.AcquireUse(nameof(bindings)));
             }
 
             if (expectedBindings.Count != actualBindings.Count)
@@ -515,17 +643,34 @@ internal sealed class CommandRecorderState : IDisposable
                 throw new ArgumentException("The binding set must provide every reflected resource exactly once.", nameof(bindings));
             }
 
-            _useLeases.AddRange(newUseLeases);
-            newUseLeases.Clear();
-            _boundStorageUses = storageUses.ToImmutable();
+            _diagnosticRecordingState?.CompleteBindingSet(storageUseCount);
+
+            if (newUseLeases is not null)
+            {
+                AddUseLeases(newUseLeases);
+                newUseLeases.Clear();
+            }
+
+            if (storageUseCount < _boundStorageUseCount)
+            {
+                Array.Clear(
+                    _boundStorageUses,
+                    storageUseCount,
+                    _boundStorageUseCount - storageUseCount);
+            }
+
+            _boundStorageUseCount = storageUseCount;
             _isShaderBindingsSet = true;
-            _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: bindings));
+            AddCommand(new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: bindings));
         }
         finally
         {
-            foreach (var useLease in newUseLeases)
+            if (newUseLeases is not null)
             {
-                useLease.Dispose();
+                foreach (var useLease in newUseLeases)
+                {
+                    useLease.Dispose();
+                }
             }
         }
     }
@@ -542,14 +687,16 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         _indexBuffer = binding;
-        _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.SetIndexBuffer, indexBuffer: binding));
+        AddCommand(new RecordedGraphicsCommand(GraphicsCommandKind.SetIndexBuffer, indexBuffer: binding));
     }
 
     internal void SetPipeline(GpuPipelineHandle pipeline)
     {
         EnsureActive();
         EnsurePassCanBindPipeline();
-        var (pipelineOwner, layout, useLease) = _device.AcquirePipelineForRecording(pipeline);
+        var (pipelineOwner, layout, useLease) = _device.AcquirePipelineForRecording(
+            pipeline,
+            _diagnosticRecordingState?.Recipe.RecordingUseAdmission);
 
         try
         {
@@ -565,13 +712,23 @@ internal sealed class CommandRecorderState : IDisposable
                 throw new InvalidOperationException("The graphics pipeline target formats do not match the current raster pass.");
             }
 
-            _useLeases.Add(useLease);
+            if (_recordingCapacity.IsBounded && !ReferenceEquals(_expectedBindingsLayout, layout))
+            {
+                var expectedBindings = _expectedBindingsScratch;
+                PopulateExpectedBindings(layout, expectedBindings);
+                _expectedBindingsLayout = layout;
+            }
+
+            _diagnosticRecordingState?.SetPipeline(pipeline, layout, _expectedBindingsScratch);
+
+            AddUseLease(useLease);
             _pipelineLayout = layout;
-            _boundStorageUses = [];
+            Array.Clear(_boundStorageUses, 0, _boundStorageUseCount);
+            _boundStorageUseCount = 0;
             _isShaderBindingsSet = false;
             _indexBuffer = null;
             _vertexBuffer = null;
-            _commands.Add(new RecordedGraphicsCommand(
+            AddCommand(new RecordedGraphicsCommand(
                 GraphicsCommandKind.SetPipeline,
                 pipeline: pipeline,
                 pipelineOwner: pipelineOwner));
@@ -603,7 +760,40 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         _vertexBuffer = binding;
-        _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.SetVertexBuffer, vertexBuffer: binding));
+        AddCommand(new RecordedGraphicsCommand(GraphicsCommandKind.SetVertexBuffer, vertexBuffer: binding));
+    }
+
+    private void AddPendingStorageWrite(StorageResourceUse storageUse)
+    {
+        if (_recordingCapacity.IsBounded
+            && (_pendingStorageWrites.Count >= _recordingCapacity.PendingStorageWriteCount))
+        {
+            throw new InvalidOperationException("The command recorder exceeded its preclaimed storage-write capacity.");
+        }
+
+        _pendingStorageWrites.Add(storageUse);
+        _pendingStorageWriteHighWater = Math.Max(_pendingStorageWriteHighWater, _pendingStorageWrites.Count);
+    }
+
+    private void AddUseLease(GraphicsResourceOwner.UseLease useLease)
+    {
+        if (_recordingCapacity.IsBounded && (_useLeases.Count >= _recordingCapacity.UseLeaseCount))
+        {
+            throw new InvalidOperationException("The command recorder exceeded its preclaimed resource-use capacity.");
+        }
+
+        _useLeases.Add(useLease);
+    }
+
+    private void AddUseLeases(List<GraphicsResourceOwner.UseLease> useLeases)
+    {
+        if (_recordingCapacity.IsBounded
+            && (useLeases.Count > (_recordingCapacity.UseLeaseCount - _useLeases.Count)))
+        {
+            throw new InvalidOperationException("The command recorder exceeded its preclaimed resource-use capacity.");
+        }
+
+        _useLeases.AddRange(useLeases);
     }
 
     private void EnsureActive()
@@ -681,15 +871,24 @@ internal sealed class CommandRecorderState : IDisposable
 
     private void RecordStorageBarriers()
     {
-        if (_boundStorageUses.IsEmpty)
+        if (_diagnosticRecordingState is not null)
+        {
+            _diagnosticRecordingState.RecordStorageBarriers(this, _boundStorageUses.AsSpan(0, _boundStorageUseCount));
+            return;
+        }
+
+        if (_boundStorageUseCount == 0)
         {
             return;
         }
 
-        var barrierResources = new List<(bool IsTexture, ulong ResourceId)>();
+        var barrierResources = _barrierResourcesScratch;
+        barrierResources.Clear();
 
-        foreach (var currentUse in _boundStorageUses)
+        for (var currentUseIndex = 0; currentUseIndex < _boundStorageUseCount; currentUseIndex++)
         {
+            var currentUse = _boundStorageUses[currentUseIndex];
+
             foreach (var pendingWrite in _pendingStorageWrites)
             {
                 if (!pendingWrite.HasHazardWith(currentUse))
@@ -724,8 +923,10 @@ internal sealed class CommandRecorderState : IDisposable
                 sourceWrites |= pendingWrite.Writes;
             }
 
-            foreach (var currentUse in _boundStorageUses)
+            for (var currentUseIndex = 0; currentUseIndex < _boundStorageUseCount; currentUseIndex++)
             {
+                var currentUse = _boundStorageUses[currentUseIndex];
+
                 if ((currentUse.IsTexture != isTexture) || (currentUse.ResourceId != resourceId))
                 {
                     continue;
@@ -744,7 +945,7 @@ internal sealed class CommandRecorderState : IDisposable
 
                 if (pendingWrite.TextureVersion is GraphTextureVersion textureVersion)
                 {
-                    _commands.Add(new RecordedGraphicsCommand(
+                    AddCommand(new RecordedGraphicsCommand(
                         GraphicsCommandKind.StorageBarrier,
                         storageBarrierTexture: textureVersion,
                         storageBarrierTextureRange: textureVersion.Range,
@@ -755,7 +956,7 @@ internal sealed class CommandRecorderState : IDisposable
                 }
                 else if (pendingWrite.BufferVersion is GraphBufferVersion bufferVersion)
                 {
-                    _commands.Add(new RecordedGraphicsCommand(
+                    AddCommand(new RecordedGraphicsCommand(
                         GraphicsCommandKind.StorageBarrier,
                         storageBarrierBuffer: bufferVersion,
                         storageBarrierBufferRange: bufferVersion.Range,
@@ -772,16 +973,24 @@ internal sealed class CommandRecorderState : IDisposable
                 break;
             }
 
-            _ = _pendingStorageWrites.RemoveAll(
-                pendingWrite => (pendingWrite.IsTexture == isTexture)
-                    && (pendingWrite.ResourceId == resourceId));
+            for (var pendingIndex = _pendingStorageWrites.Count - 1; pendingIndex >= 0; pendingIndex--)
+            {
+                var pendingWrite = _pendingStorageWrites[pendingIndex];
+
+                if ((pendingWrite.IsTexture == isTexture) && (pendingWrite.ResourceId == resourceId))
+                {
+                    _pendingStorageWrites.RemoveAt(pendingIndex);
+                }
+            }
         }
 
-        foreach (var currentUse in _boundStorageUses)
+        for (var currentUseIndex = 0; currentUseIndex < _boundStorageUseCount; currentUseIndex++)
         {
+            var currentUse = _boundStorageUses[currentUseIndex];
+
             if (currentUse.Writes)
             {
-                _pendingStorageWrites.Add(currentUse);
+                AddPendingStorageWrite(currentUse);
             }
         }
     }
@@ -810,6 +1019,22 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         return pipelineLayout;
+    }
+
+    private void SetBoundStorageUse(int index, StorageResourceUse storageUse)
+    {
+        if (index >= _boundStorageUses.Length)
+        {
+            if (_recordingCapacity.IsBounded)
+            {
+                throw new InvalidOperationException("The command recorder exceeded its preclaimed storage-binding capacity.");
+            }
+
+            var capacity = Math.Max(index + 1, checked(_boundStorageUses.Length * 2));
+            Array.Resize(ref _boundStorageUses, capacity);
+        }
+
+        _boundStorageUses[index] = storageUse;
     }
 
     private void ValidateShaderBindings(PipelineBindingLayout pipelineLayout)

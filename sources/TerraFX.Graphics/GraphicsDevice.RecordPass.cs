@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,45 +10,82 @@ namespace TerraFX.Graphics;
 
 public sealed partial class GraphicsDevice
 {
+    private static void ClearRecordPassInputs(
+        ref RenderPassCallback? callback,
+        ref ImmutableArray<GraphResourceAccess> declaredAccesses,
+        ref ImmutableArray<TextureFormat> colorTargetFormats,
+        ref SkinnedNormalDiagnosticRecordingRecipe? diagnosticRecipe,
+        bool releaseRecipe)
+    {
+        var recipe = diagnosticRecipe;
+        diagnosticRecipe = null;
+        callback = null;
+        declaredAccesses = [];
+        colorTargetFormats = [];
+
+        if (releaseRecipe)
+        {
+            recipe?.Release();
+        }
+    }
+
     internal async Task<RecordedPassCommandList> RecordPassAsync(
         RenderPassId passId,
         CommandRecorderPassKind passKind,
         ImmutableArray<GraphResourceAccess> declaredAccesses,
         ImmutableArray<TextureFormat> colorTargetFormats,
         TextureFormat? depthTargetFormat,
-        RenderPassCallback callback)
+        RenderPassCallback? callback,
+        CommandRecorderRecordingCapacity recordingCapacity = default,
+        SkinnedNormalDiagnosticRecordingRecipe? diagnosticRecipe = null)
     {
-        ArgumentNullException.ThrowIfNull(callback);
+        RecordPassRequest? request = null;
+        var queued = false;
 
-        if (Status != GraphicsDeviceStatus.Ready)
+        try
         {
-            throw new InvalidOperationException("The GraphicsDevice is not accepting recording requests.");
+            ArgumentNullException.ThrowIfNull(callback);
+            CommandRecorderState.ValidatePassInputs(
+                this, passId, passKind, declaredAccesses, colorTargetFormats, depthTargetFormat, requireOwnerThread: false);
+            recordingCapacity.ValidateKnownBackingArrayMinimum();
+            request = new RecordPassRequest(
+                this,
+                passId,
+                passKind,
+                declaredAccesses,
+                colorTargetFormats,
+                depthTargetFormat,
+                callback,
+                recordingCapacity,
+                diagnosticRecipe);
+            ClearRecordPassInputs(ref callback, ref declaredAccesses, ref colorTargetFormats, ref diagnosticRecipe, releaseRecipe: false);
+            await _ownerQueue.WriteRequestAsync(request, CancellationToken.None).ConfigureAwait(false);
+            queued = true;
+            return await request.Task.ConfigureAwait(false);
         }
+        finally
+        {
+            if (!queued)
+            {
+                request?.Abandon();
+            }
 
-        var request = new RecordPassRequest(
-            this,
-            passId,
-            passKind,
-            declaredAccesses,
-            colorTargetFormats,
-            depthTargetFormat,
-            callback);
-
-        await _ownerQueue.WriteRequestAsync(request, CancellationToken.None).ConfigureAwait(false);
-
-        return await request.Task.ConfigureAwait(false);
+            ClearRecordPassInputs(ref callback, ref declaredAccesses, ref colorTargetFormats, ref diagnosticRecipe, releaseRecipe: !queued);
+        }
     }
 
     private sealed class RecordPassRequest : IGraphicsDeviceWork
     {
-        private readonly RenderPassCallback _callback;
-        private readonly ImmutableArray<TextureFormat> _colorTargetFormats;
+        private RenderPassCallback? _callback;
+        private ImmutableArray<TextureFormat> _colorTargetFormats;
         private readonly TaskCompletionSource<RecordedPassCommandList> _completion;
-        private readonly ImmutableArray<GraphResourceAccess> _declaredAccesses;
+        private ImmutableArray<GraphResourceAccess> _declaredAccesses;
         private readonly TextureFormat? _depthTargetFormat;
         private readonly GraphicsDevice _device;
+        private SkinnedNormalDiagnosticRecordingRecipe? _diagnosticRecipe;
         private readonly RenderPassId _passId;
         private readonly CommandRecorderPassKind _passKind;
+        private readonly CommandRecorderRecordingCapacity _recordingCapacity;
 
         internal RecordPassRequest(
             GraphicsDevice device,
@@ -56,7 +94,9 @@ public sealed partial class GraphicsDevice
             ImmutableArray<GraphResourceAccess> declaredAccesses,
             ImmutableArray<TextureFormat> colorTargetFormats,
             TextureFormat? depthTargetFormat,
-            RenderPassCallback callback)
+            RenderPassCallback callback,
+            CommandRecorderRecordingCapacity recordingCapacity,
+            SkinnedNormalDiagnosticRecordingRecipe? diagnosticRecipe)
         {
             ArgumentNullException.ThrowIfNull(device);
             ArgumentNullException.ThrowIfNull(callback);
@@ -64,10 +104,12 @@ public sealed partial class GraphicsDevice
             _callback = callback;
             _colorTargetFormats = colorTargetFormats;
             _declaredAccesses = declaredAccesses;
+            _diagnosticRecipe = diagnosticRecipe;
             _device = device;
             _depthTargetFormat = depthTargetFormat;
             _passId = passId;
             _passKind = passKind;
+            _recordingCapacity = recordingCapacity;
             _completion = new TaskCompletionSource<RecordedPassCommandList>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
@@ -75,47 +117,59 @@ public sealed partial class GraphicsDevice
 
         public void Execute(GraphicsDevice device)
         {
-            if (!ReferenceEquals(device, _device))
-            {
-                throw new InvalidOperationException("The recording request was delivered to a different GraphicsDevice.");
-            }
-
-            var state = new CommandRecorderState(
-                device,
-                _passId,
-                _passKind,
-                _declaredAccesses,
-                _colorTargetFormats,
-                _depthTargetFormat);
-
             RecordedPassCommandList? commandList = null;
 
             try
             {
-                var recorder = new CommandRecorder(state);
-                _callback(ref recorder);
-                commandList = state.Complete();
+                commandList = RecordOnOwner(device);
+                ClearInputs(releaseRecipe: false);
 
                 if (_completion.TrySetResult(commandList))
                 {
                     commandList = null;
                 }
             }
-            catch
-            {
-                state.Dispose();
-                throw;
-            }
             finally
             {
                 commandList?.Dispose();
+                ClearInputs(releaseRecipe: true);
             }
         }
 
         public void Fail(Exception exception)
         {
             ArgumentNullException.ThrowIfNull(exception);
+            Abandon();
             _ = _completion.TrySetException(exception);
+        }
+
+        internal void Abandon()
+            => ClearInputs(releaseRecipe: true);
+
+        private void ClearInputs(bool releaseRecipe)
+            => ClearRecordPassInputs(ref _callback, ref _declaredAccesses, ref _colorTargetFormats, ref _diagnosticRecipe, releaseRecipe);
+
+        // End recorder/borrowed-callback stack roots before publishing the completed Task.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private RecordedPassCommandList RecordOnOwner(GraphicsDevice device)
+        {
+            if (!ReferenceEquals(device, _device))
+            {
+                throw new InvalidOperationException("The recording request was delivered to a different GraphicsDevice.");
+            }
+
+            using var state = new CommandRecorderState(
+                device,
+                _passId,
+                _passKind,
+                _declaredAccesses,
+                _colorTargetFormats,
+                _depthTargetFormat,
+                _recordingCapacity,
+                _diagnosticRecipe);
+            var recorder = new CommandRecorder(state);
+            (_callback ?? throw new InvalidOperationException("The recording request lost its callback."))(ref recorder);
+            return state.Complete();
         }
     }
 }

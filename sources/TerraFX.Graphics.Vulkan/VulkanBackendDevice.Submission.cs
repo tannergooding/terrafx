@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 using TerraFX.Buffers;
 using TerraFX.Graphics;
 using TerraFX.Interop.Vulkan;
@@ -12,14 +13,30 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
+    private const int MaximumActiveBufferReadbackCount = 256;
     private const ulong TransferWaitTimeoutNanoseconds = 30_000_000_000;
 
+    private readonly List<VulkanBufferReadback> _activeBufferReadbacks = [];
     private bool _hasUncertainSubmission;
     private ulong _timelineValue;
     private readonly List<VulkanBackendBuffer> _uncertainBufferOwners = [];
     private readonly List<VulkanBackendDescriptorSet> _uncertainGraphDescriptorSets = [];
     private readonly List<VkImageView> _uncertainGraphImageViews = [];
     private readonly List<VulkanBackendTexture> _uncertainTextureOwners = [];
+
+    private static void CopyMappedStorageToLease(byte* source, nint byteLength, BufferWriteLease<byte> destination)
+    {
+        nint copiedBytes = 0;
+
+        while (copiedBytes < byteLength)
+        {
+            var remainingBytes = byteLength - copiedBytes;
+            var copyLength = remainingBytes > int.MaxValue ? int.MaxValue : checked((int)remainingBytes);
+            var action = new ReadbackCopyAction(source + copiedBytes);
+            destination.UseWindow(copiedBytes, copyLength, ref action);
+            copiedBytes = checked(copiedBytes + copyLength);
+        }
+    }
 
     private static void CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength, UnmanagedBuffer<byte> destination)
     {
@@ -56,6 +73,34 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    private static void RecordBufferBarrier(
+        VulkanBackendBuffer buffer,
+        long offset,
+        nint byteLength,
+        VkPipelineStageFlags2 sourceStage,
+        VkAccessFlags2 sourceAccess,
+        VkPipelineStageFlags2 destinationStage,
+        VkAccessFlags2 destinationAccess,
+        VkCommandBuffer commandBuffer)
+    {
+        var barrier = default(VkBufferMemoryBarrier2);
+        barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask = sourceStage;
+        barrier.srcAccessMask = sourceAccess;
+        barrier.dstStageMask = destinationStage;
+        barrier.dstAccessMask = destinationAccess;
+        barrier.srcQueueFamilyIndex = uint.MaxValue;
+        barrier.dstQueueFamilyIndex = uint.MaxValue;
+        barrier.buffer = buffer.Buffer;
+        barrier.offset = checked((ulong)offset);
+        barrier.size = checked((ulong)byteLength);
+        var dependencyInfo = default(VkDependencyInfo);
+        dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependencyInfo.bufferMemoryBarrierCount = 1;
+        dependencyInfo.pBufferMemoryBarriers = &barrier;
+        VulkanApi.vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+    }
+
     private static void ValidateTransferRange(
         long bufferByteLength,
         long offset,
@@ -68,6 +113,113 @@ internal sealed unsafe partial class VulkanBackendDevice
         var checkedByteLength = checked((long)byteLength);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, bufferByteLength, offsetName);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(checkedByteLength, bufferByteLength - offset, byteLengthName);
+    }
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "Staging memory and command storage are intentionally retained when transfer completion is uncertain.")]
+    internal VulkanBufferReadback BeginBufferReadback(
+        VulkanBackendBuffer source,
+        GraphResourceState sourceState,
+        long sourceOffset,
+        nint byteLength)
+    {
+        ValidateTransferBuffer(source, BufferUsage.CopySource, nameof(source));
+        ValidateTransferRange(source.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(
+            _activeBufferReadbacks.Count,
+            MaximumActiveBufferReadbackCount);
+        _ = _activeBufferReadbacks.EnsureCapacity(_activeBufferReadbacks.Count + 1);
+        var staging = CreateStagingBuffer(new BufferDescription(
+            checked((long)byteLength),
+            BufferUsage.CopyDestination,
+            GpuMemoryKind.Readback,
+            structuredStride: null,
+            debugName: "Vulkan buffer readback staging"));
+        VkCommandBuffer commandBuffer = default;
+        VulkanBufferReadback? readback = null;
+        var readbackRegistered = false;
+        var isSubmitted = false;
+
+        try
+        {
+            readback = new VulkanBufferReadback(this, staging, byteLength);
+            _activeBufferReadbacks.Add(readback);
+            readbackRegistered = true;
+            commandBuffer = AllocateTransferCommandBuffer();
+            readback.SetCommandBuffer(commandBuffer);
+            BeginOneTimeCommands(commandBuffer);
+            var sourceStage = source.LastStageMask;
+            var sourceAccess = source.LastAccessMask;
+
+            if (sourceState == GraphResourceState.CopySource)
+            {
+                sourceStage = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT;
+                sourceAccess = VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT;
+            }
+
+            RecordBufferBarrier(
+                source,
+                sourceOffset,
+                byteLength,
+                sourceStage,
+                sourceAccess,
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT,
+                commandBuffer);
+            var copy = new VkBufferCopy {
+                srcOffset = checked((ulong)sourceOffset),
+                dstOffset = 0,
+                size = checked((ulong)byteLength),
+            };
+            VulkanApi.vkCmdCopyBuffer(commandBuffer, source.Buffer, staging.Buffer, 1, &copy);
+            RecordBufferBarrier(
+                staging,
+                0,
+                byteLength,
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                VkAccessFlags2.VK_ACCESS_2_HOST_READ_BIT,
+                commandBuffer);
+            var completionFence = SubmitBufferReadbackWithoutWait(commandBuffer);
+            isSubmitted = true;
+            readback.MarkSubmitted(completionFence);
+            source.SetLastAccessScope(
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
+            return readback;
+        }
+        catch
+        {
+            if (readback is not null)
+            {
+                if (_hasUncertainSubmission || isSubmitted)
+                {
+                    _hasUncertainSubmission = true;
+                }
+                else
+                {
+                    readback.AbortUnsubmitted(readbackRegistered);
+                }
+            }
+            else if (_hasUncertainSubmission)
+            {
+                RetainUncertainBuffer(staging);
+            }
+            else
+            {
+                staging.Dispose();
+
+                if (commandBuffer.Value is not null)
+                {
+                    VulkanApi.vkFreeCommandBuffers(_device, _commandPool, 1, &commandBuffer);
+                }
+            }
+
+            throw;
+        }
     }
 
     internal long GetCompletedGraphFence()
@@ -83,65 +235,6 @@ internal sealed unsafe partial class VulkanBackendDevice
         ArgumentOutOfRangeException.ThrowIfGreaterThan(reportedFence, completedFence);
         RetireCompletedGraphFrameSlots(checked((ulong)reportedFence));
         return reportedFence;
-    }
-
-    [SuppressMessage(
-        "Reliability",
-        "CA2000:Dispose objects before losing scope",
-        Justification = "Staging memory is intentionally retained when transfer completion is uncertain.")]
-    internal OwnedBuffer<byte> ReadbackBuffer(VulkanBackendBuffer source, long sourceOffset, nint byteLength)
-    {
-        ValidateTransferBuffer(source, BufferUsage.CopySource, nameof(source));
-        ValidateTransferRange(source.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
-        var staging = CreateStagingBuffer(new BufferDescription(
-            checked((long)byteLength),
-            BufferUsage.CopyDestination,
-            GpuMemoryKind.Readback,
-            structuredStride: null,
-            debugName: "Vulkan buffer readback staging"));
-
-        try
-        {
-            BeginOneTimeCommands();
-            RecordBufferBarrier(
-                source,
-                sourceOffset,
-                byteLength,
-                source.LastStageMask,
-                source.LastAccessMask,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
-                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
-            var copy = new VkBufferCopy {
-                srcOffset = checked((ulong)sourceOffset),
-                dstOffset = 0,
-                size = checked((ulong)byteLength),
-            };
-            VulkanApi.vkCmdCopyBuffer(_commandBuffer, source.Buffer, staging.Buffer, 1, &copy);
-            RecordBufferBarrier(
-                staging,
-                0,
-                byteLength,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
-                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
-                VkAccessFlags2.VK_ACCESS_2_HOST_READ_BIT);
-            _ = SubmitAndWait(source);
-            source.SetLastAccessScope(
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
-                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
-            return ReadMappedBuffer(staging, byteLength);
-        }
-        finally
-        {
-            if (_hasUncertainSubmission)
-            {
-                RetainUncertainBuffer(staging);
-            }
-            else
-            {
-                staging.Dispose();
-            }
-        }
     }
 
     internal long SubmitGraphWithoutWait(
@@ -457,6 +550,27 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    private VkCommandBuffer AllocateTransferCommandBuffer()
+    {
+        EnsureActive();
+        var allocateInfo = default(VkCommandBufferAllocateInfo);
+        allocateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocateInfo.commandPool = _commandPool;
+        allocateInfo.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocateInfo.commandBufferCount = 1;
+        VkCommandBuffer commandBuffer = default;
+        ThrowIfFailed(
+            VulkanApi.vkAllocateCommandBuffers(_device, &allocateInfo, &commandBuffer),
+            "vkAllocateCommandBuffers");
+
+        if (commandBuffer.Value is null)
+        {
+            throw new InvalidOperationException("Vulkan returned no buffer-readback command buffer.");
+        }
+
+        return commandBuffer;
+    }
+
     private void BeginOneTimeCommands()
     {
         EnsureActive();
@@ -465,6 +579,40 @@ internal sealed unsafe partial class VulkanBackendDevice
         beginInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = VkCommandBufferUsageFlags.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         ThrowIfFailed(VulkanApi.vkBeginCommandBuffer(_commandBuffer, &beginInfo), "vkBeginCommandBuffer");
+    }
+
+    private void BeginOneTimeCommands(VkCommandBuffer commandBuffer)
+    {
+        EnsureActive();
+        var beginInfo = default(VkCommandBufferBeginInfo);
+        beginInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VkCommandBufferUsageFlags.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        ThrowIfFailed(
+            VulkanApi.vkBeginCommandBuffer(commandBuffer, &beginInfo),
+            "vkBeginCommandBuffer");
+    }
+
+    private void CopyMappedBufferToLease(VulkanBackendBuffer buffer, nint byteLength, BufferWriteLease<byte> destination)
+    {
+        var mapped = MapHostVisibleMemory(buffer);
+
+        try
+        {
+            if ((buffer.MemoryProperties & VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
+            {
+                var range = default(VkMappedMemoryRange);
+                range.sType = VkStructureType.VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                range.memory = buffer.Memory;
+                range.size = ulong.MaxValue;
+                ThrowIfFailed(VulkanApi.vkInvalidateMappedMemoryRanges(_device, 1, &range), "vkInvalidateMappedMemoryRanges");
+            }
+
+            CopyMappedStorageToLease(mapped, byteLength, destination);
+        }
+        finally
+        {
+            VulkanApi.vkUnmapMemory(_device, buffer.Memory);
+        }
     }
 
     private void FlushMappedMemory(VulkanBackendBuffer buffer)
@@ -550,24 +698,15 @@ internal sealed unsafe partial class VulkanBackendDevice
         VkAccessFlags2 sourceAccess,
         VkPipelineStageFlags2 destinationStage,
         VkAccessFlags2 destinationAccess)
-    {
-        var barrier = default(VkBufferMemoryBarrier2);
-        barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barrier.srcStageMask = sourceStage;
-        barrier.srcAccessMask = sourceAccess;
-        barrier.dstStageMask = destinationStage;
-        barrier.dstAccessMask = destinationAccess;
-        barrier.srcQueueFamilyIndex = uint.MaxValue;
-        barrier.dstQueueFamilyIndex = uint.MaxValue;
-        barrier.buffer = buffer.Buffer;
-        barrier.offset = checked((ulong)offset);
-        barrier.size = checked((ulong)byteLength);
-        var dependencyInfo = default(VkDependencyInfo);
-        dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dependencyInfo.bufferMemoryBarrierCount = 1;
-        dependencyInfo.pBufferMemoryBarriers = &barrier;
-        VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
-    }
+        => RecordBufferBarrier(
+            buffer,
+            offset,
+            byteLength,
+            sourceStage,
+            sourceAccess,
+            destinationStage,
+            destinationAccess,
+            _commandBuffer);
 
     private void RetainUncertainBuffer(VulkanBackendBuffer buffer)
         => _uncertainBufferOwners.Add(buffer);
@@ -669,6 +808,45 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    private long SubmitBufferReadbackWithoutWait(VkCommandBuffer commandBuffer)
+    {
+        EnsureActive();
+
+        var endResult = VulkanApi.vkEndCommandBuffer(commandBuffer);
+
+        if (endResult != VkResult.VK_SUCCESS)
+        {
+            _hasUncertainSubmission = true;
+            ThrowIfFailed(endResult, "vkEndCommandBuffer");
+        }
+
+        if (_timelineValue >= long.MaxValue)
+        {
+            throw new InvalidOperationException("The Vulkan transfer timeline value space is exhausted.");
+        }
+
+        var signalValue = _timelineValue + 1;
+        var commandBufferInfo = default(VkCommandBufferSubmitInfo);
+        commandBufferInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        commandBufferInfo.commandBuffer = commandBuffer;
+        var signalInfo = default(VkSemaphoreSubmitInfo);
+        signalInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        signalInfo.semaphore = _timelineSemaphore;
+        signalInfo.value = signalValue;
+        signalInfo.stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        var submitInfo = default(VkSubmitInfo2);
+        submitInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submitInfo.commandBufferInfoCount = 1;
+        submitInfo.pCommandBufferInfos = &commandBufferInfo;
+        submitInfo.signalSemaphoreInfoCount = 1;
+        submitInfo.pSignalSemaphoreInfos = &signalInfo;
+        _hasUncertainSubmission = true;
+        ThrowIfFailed(VulkanApi.vkQueueSubmit2(_queue, 1, &submitInfo, default), "vkQueueSubmit2");
+        _timelineValue = signalValue;
+        _hasUncertainSubmission = false;
+        return checked((long)signalValue);
+    }
+
     private void ValidateTransferBuffer(VulkanBackendBuffer buffer, BufferUsage requiredUsage, string parameterName)
     {
         ArgumentNullException.ThrowIfNull(buffer, parameterName);
@@ -726,6 +904,125 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    internal sealed class VulkanBufferReadback : IGraphicsBackendBufferReadback
+    {
+        private readonly nint _byteLength;
+        private VkCommandBuffer _commandBuffer;
+        private long _completionFence;
+        private readonly VulkanBackendDevice _device;
+        private VulkanBackendBuffer? _staging;
+        private int _state;
+
+        internal VulkanBufferReadback(
+            VulkanBackendDevice device,
+            VulkanBackendBuffer staging,
+            nint byteLength)
+        {
+            _byteLength = byteLength;
+            _device = device;
+            _staging = staging;
+        }
+
+        public long CompletionFence => Volatile.Read(ref _completionFence);
+
+        public void CopyCompleted(BufferWriteLease<byte> destination)
+        {
+            ArgumentNullException.ThrowIfNull(destination);
+            _device.EnsureOwnerThread();
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(CompletionFence);
+
+            if (destination.Length != _byteLength)
+            {
+                throw new ArgumentException("The readback destination has an unexpected byte extent.", nameof(destination));
+            }
+
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+            {
+                throw new InvalidOperationException("The Vulkan buffer readback has already been copied or disposed.");
+            }
+
+            _device.CopyMappedBufferToLease(
+                _staging ?? throw new ObjectDisposedException(nameof(VulkanBufferReadback)),
+                _byteLength,
+                destination);
+        }
+
+        public void Dispose()
+        {
+            _device.EnsureOwnerThread();
+
+            if (Volatile.Read(ref _state) == 2)
+            {
+                return;
+            }
+
+            if (Volatile.Read(ref _state) != 1)
+            {
+                throw new InvalidOperationException("The Vulkan buffer readback cannot be disposed before completion is copied.");
+            }
+
+            ReleaseNativeStorage();
+
+            if (!_device._activeBufferReadbacks.Remove(this))
+            {
+                throw new InvalidOperationException("The Vulkan buffer-readback owner was not registered.");
+            }
+
+            Volatile.Write(ref _state, 2);
+        }
+
+        internal void AbortUnsubmitted(bool registered)
+        {
+            _device.EnsureOwnerThread();
+
+            if ((Volatile.Read(ref _state) != 0) || (CompletionFence != 0))
+            {
+                throw new InvalidOperationException("Only an unsubmitted Vulkan buffer readback can be aborted.");
+            }
+
+            try
+            {
+                ReleaseNativeStorage();
+
+                if (registered && !_device._activeBufferReadbacks.Remove(this))
+                {
+                    throw new InvalidOperationException("The Vulkan buffer-readback owner was not registered.");
+                }
+
+                Volatile.Write(ref _state, 2);
+            }
+            catch
+            {
+                _device._hasUncertainSubmission = true;
+                throw;
+            }
+        }
+
+        internal void MarkSubmitted(long completionFence)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(completionFence);
+            Volatile.Write(ref _completionFence, completionFence);
+        }
+
+        internal void SetCommandBuffer(VkCommandBuffer commandBuffer)
+            => _commandBuffer = commandBuffer;
+
+        private void ReleaseNativeStorage()
+        {
+            var commandBuffer = _commandBuffer;
+            _commandBuffer = default;
+
+            if (commandBuffer.Value is not null)
+            {
+                VulkanApi.vkFreeCommandBuffers(_device._device, _device._commandPool, 1, &commandBuffer);
+            }
+
+            var staging = _staging;
+            staging?.Dispose();
+            _staging = null;
+        }
+    }
+
     private readonly unsafe struct BufferLeaseCopyAction : IAction<ReadOnlySpan<byte>>
     {
         private readonly byte* _destination;
@@ -737,5 +1034,13 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
             => argument.CopyTo(new Span<byte>(_destination, argument.Length));
+    }
+
+    private readonly struct ReadbackCopyAction(byte* source) : IAction<Span<byte>>
+    {
+        private readonly byte* _source = source;
+
+        public void Invoke(scoped Span<byte> argument)
+            => new ReadOnlySpan<byte>(_source, argument.Length).CopyTo(argument);
     }
 }

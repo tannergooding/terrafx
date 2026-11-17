@@ -15,6 +15,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
 {
     private static readonly nint s_typeAlignment = GetTypeAlignment();
 
+    private readonly BufferCompletionAdmission? _completionAdmission;
     private ReentrantGate _gate;
     private readonly List<LeaseRegistration> _registrations = [];
     private nint _activeOperationCount;
@@ -29,10 +30,23 @@ public sealed class UnmanagedBuffer<T> : IDisposable
     private bool _ownedBufferCreditActive;
     private bool _ownedBufferCreditReleased;
 
-    private UnmanagedBuffer(nint length, nint byteLength, nint alignment, nint stride, INativeMemoryOperations nativeMemoryOperations)
+    private UnmanagedBuffer(
+        nint length,
+        nint byteLength,
+        nint alignment,
+        nint stride,
+        INativeMemoryOperations nativeMemoryOperations,
+        BufferCompletionAdmission? completionAdmission)
     {
         Length = length;
         ByteLength = byteLength;
+        _completionAdmission = completionAdmission;
+
+        if (completionAdmission is not null)
+        {
+            _ = _registrations.EnsureCapacity(BufferCompletionFootprint.RegistrationCapacity);
+        }
+
         _stride = stride;
         _nativeMemoryOperations = nativeMemoryOperations;
         _usesAlignedAllocator = alignment > IntPtr.Size;
@@ -49,7 +63,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
             _ownedBufferCreditReleased = true;
             _leaseCreditCount = 0;
             _activeOperationCount = 0;
-            _registrations.Clear();
+            _registrations?.Clear();
             TryFree();
         }
     }
@@ -72,7 +86,11 @@ public sealed class UnmanagedBuffer<T> : IDisposable
     public static UnmanagedBuffer<T> Allocate(nint length, BufferAllocationOptions options)
         => Allocate(length, options, NativeMemoryOperations.Instance);
 
-    internal static UnmanagedBuffer<T> Allocate(nint length, BufferAllocationOptions options, INativeMemoryOperations nativeMemoryOperations)
+    internal static UnmanagedBuffer<T> Allocate(
+        nint length,
+        BufferAllocationOptions options,
+        INativeMemoryOperations nativeMemoryOperations,
+        BufferCompletionAdmission? completionAdmission = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(length);
         ArgumentNullException.ThrowIfNull(options);
@@ -95,10 +113,21 @@ public sealed class UnmanagedBuffer<T> : IDisposable
         var allocationByteLength = remainder == 0 ? byteLength : checked(byteLength + options.Alignment - remainder);
 
         ArgumentOutOfRangeException.ThrowIfGreaterThan(allocationByteLength, options.MaximumAllocationBytes, nameof(length));
+        completionAdmission?.ClaimAllocation(byteLength, allocationByteLength, options.Alignment);
 
         var nativeByteLength = checked((nuint)allocationByteLength);
         var nativeAlignment = checked((nuint)options.Alignment);
-        var buffer = new UnmanagedBuffer<T>(length, byteLength, options.Alignment, stride, nativeMemoryOperations);
+        UnmanagedBuffer<T> buffer;
+
+        try
+        {
+            buffer = new UnmanagedBuffer<T>(length, byteLength, options.Alignment, stride, nativeMemoryOperations, completionAdmission);
+        }
+        catch
+        {
+            completionAdmission?.ReleaseNativeStorage();
+            throw;
+        }
 
         if (allocationByteLength == 0)
         {
@@ -178,6 +207,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
             ValidateRange(offset, length, Length, nameof(offset), nameof(length));
             ThrowIfConflictingLease(offset, length, BufferAccess.Read);
 
+            _completionAdmission?.ClaimLease(BufferAccess.Read, offset, length, Length);
             var registration = new LeaseRegistration(this, offset, length, BufferAccess.Read, isLeaseCredit: true);
             var lease = new BufferReadLease<T>(this, registration);
             _registrations.Add(registration);
@@ -201,6 +231,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
             ValidateRange(offset, length, Length, nameof(offset), nameof(length));
             ThrowIfConflictingLease(offset, length, BufferAccess.Write);
 
+            _completionAdmission?.ClaimLease(BufferAccess.Write, offset, length, Length);
             var registration = new LeaseRegistration(this, offset, length, BufferAccess.Write, isLeaseCredit: true);
             var lease = new BufferWriteLease<T>(this, registration);
             _registrations.Add(registration);
@@ -271,7 +302,19 @@ public sealed class UnmanagedBuffer<T> : IDisposable
     /// <exception cref="InvalidOperationException">A writable lease or write operation is still active.</exception>
     /// <exception cref="ObjectDisposedException">The allocation owner is already closed.</exception>
     public OwnedBuffer<T> TransferToOwnedBuffer()
-        => new(this);
+    {
+        if (_completionAdmission is null)
+        {
+            return new(this);
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            ValidateOwnedBufferTransfer();
+            _completionAdmission?.ClaimFinalizedOwner();
+            return new(this);
+        }
+    }
 
     internal BufferReadLease<T> AcquireOwnedReadLease(nint offset, nint length)
     {
@@ -281,6 +324,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
 
             ValidateRange(offset, length, Length, nameof(offset), nameof(length));
             ThrowIfConflictingLease(offset, length, BufferAccess.Read);
+            _completionAdmission?.ClaimLease(BufferAccess.Read, offset, length, Length);
             var registration = new LeaseRegistration(this, offset, length, BufferAccess.Read, isLeaseCredit: true);
             var lease = new BufferReadLease<T>(this, registration);
             _registrations.Add(registration);
@@ -294,6 +338,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
         using (ReentrantGate.EnterScope(ref _gate))
         {
             VerifyLease(registration, BufferAccess.Read);
+            _completionAdmission?.ClaimLease(BufferAccess.Read, registration.Offset, registration.Length, Length);
             var clone = new LeaseRegistration(this, registration.Offset, registration.Length, BufferAccess.Read, isLeaseCredit: true);
             var lease = new BufferReadLease<T>(this, clone);
             _registrations.Add(clone);
@@ -368,15 +413,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
     {
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            ThrowIfPublicOwnerClosed();
-
-            foreach (var registration in _registrations)
-            {
-                if (registration.Access == BufferAccess.Write && (!registration.IsDisposed || registration.ActiveOperationCount != 0))
-                {
-                    ThrowHelper.ThrowInvalidOperationException("Writable leases must be disposed before ownership is finalized.");
-                }
-            }
+            ValidateOwnedBufferTransfer();
 
             _ownerCreditActive = false;
             _ownedBufferCreditActive = true;
@@ -448,6 +485,11 @@ public sealed class UnmanagedBuffer<T> : IDisposable
             ThrowIfPublicOwnerClosed();
             ValidateRange(offset, length, Length, nameof(offset), nameof(length));
             ThrowIfConflictingLease(offset, length, access);
+
+            if (_completionAdmission is not null)
+            {
+                throw new InvalidOperationException("Completion storage copies use the pre-admitted write lease window.");
+            }
 
             var registration = new LeaseRegistration(this, offset, length, access, isLeaseCredit: false) {
                 ActiveOperationCount = 1,
@@ -553,6 +595,20 @@ public sealed class UnmanagedBuffer<T> : IDisposable
             }
 
             _isFreed = true;
+            _completionAdmission?.ReleaseNativeStorage();
+        }
+    }
+
+    private void ValidateOwnedBufferTransfer()
+    {
+        ThrowIfPublicOwnerClosed();
+
+        foreach (var registration in _registrations)
+        {
+            if (registration.Access == BufferAccess.Write && (!registration.IsDisposed || registration.ActiveOperationCount != 0))
+            {
+                ThrowHelper.ThrowInvalidOperationException("Writable leases must be disposed before ownership is finalized.");
+            }
         }
     }
 

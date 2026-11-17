@@ -3,12 +3,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Threading;
 
 namespace TerraFX.Graphics;
 
 internal sealed class GraphicsGraphSubmission
 {
     internal const int MaximumNativeColorAttachmentCount = 8;
+
+    private int _recordingOwnershipState;
 
     internal GraphicsGraphSubmission(
         uint deviceEpoch,
@@ -117,13 +120,13 @@ internal sealed class GraphicsGraphSubmission
 
     internal GpuTexture OutputColorTarget { get; }
 
-    internal ImmutableArray<GraphicsGraphSubmissionPass> Passes { get; }
+    internal ImmutableArray<GraphicsGraphSubmissionPass> Passes { get; private set; }
 
     internal long? PresentationSequence { get; private set; }
 
     internal GraphTextureVersion PresentationSource { get; }
 
-    internal ImmutableArray<RecordedPassCommandList> RecordedPassCommandLists { get; }
+    internal ImmutableArray<RecordedPassCommandList> RecordedPassCommandLists { get; private set; }
 
     internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
 
@@ -147,7 +150,16 @@ internal sealed class GraphicsGraphSubmission
 
     internal void DisposeRecordedPassCommandLists()
     {
-        foreach (var commandList in RecordedPassCommandLists)
+        if (Interlocked.CompareExchange(ref _recordingOwnershipState, 1, 0) != 0)
+        {
+            return;
+        }
+
+        var commandLists = RecordedPassCommandLists;
+        RecordedPassCommandLists = [];
+        Passes = [];
+
+        foreach (var commandList in commandLists)
         {
             commandList.Dispose();
         }
@@ -281,6 +293,17 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    internal void RetainRecordingForUncertainSubmission()
+    {
+        var previousState = Interlocked.CompareExchange(ref _recordingOwnershipState, 2, 0);
+        ObjectDisposedException.ThrowIf(previousState == 1, this);
+
+        foreach (var commandList in RecordedPassCommandLists)
+        {
+            commandList.RetainForUncertainSubmission();
+        }
+    }
+
     internal void SetPresentationSequence(long presentationSequence)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
@@ -300,6 +323,8 @@ internal sealed class GraphicsGraphSubmission
 
     internal void ValidateNativeRasterSubmission()
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
+
         if ((TextureImports.Length < 1)
             || !ReferenceEquals(TextureImports[0].Texture, OutputColorTarget))
         {
@@ -962,6 +987,16 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var pass in Passes)
         {
+            if (pass.DiagnosticRecipe is SkinnedNormalDiagnosticRecordingRecipe diagnosticRecipe)
+            {
+                if (pass.Kind != CommandRecorderPassKind.Compute)
+                {
+                    throw new InvalidOperationException("The skinned-normal diagnostic witness must belong to a compute pass.");
+                }
+
+                diagnosticRecipe.ValidateNativeSubmission(pass.PassId, DeviceEpoch, Accesses, pass.Commands);
+            }
+
             TextureFormat? passDepthTargetFormat = null;
             var passColorTargetFormats = new List<TextureFormat>();
 
@@ -1329,7 +1364,8 @@ internal sealed class GraphicsGraphSubmission
                         if ((binding.Slot != 0)
                             || (binding.Stride != currentPipeline.BindingLayout.VertexStride)
                             || !vertexBufferImports.TryGetValue(binding.Buffer.ResourceId, out var vertexBufferImport)
-                            || !ReferenceEquals(binding.Buffer, vertexBufferImport.Version)
+                            || (binding.Buffer.DeviceEpoch != vertexBufferImport.Version.DeviceEpoch)
+                            || !ReferenceEquals(binding.Buffer.Description, vertexBufferImport.Version.Description)
                             || !binding.Range.IsWithin(vertexBufferImport.Version.Range))
                         {
                             throw new NotSupportedException("A native graph vertex-buffer binding must match an imported vertex resource and pipeline stride.");
@@ -1518,36 +1554,39 @@ internal sealed class GraphicsGraphSubmission
                                     }
                                     else
                                     {
-                                        GraphResourceAccess? storageReadAccess = null;
-                                        GraphResourceAccess? storageWriteAccess = null;
-
-                                        foreach (var access in Accesses)
+                                        if (pass.DiagnosticRecipe is null)
                                         {
-                                            if (!access.IsTexture
-                                                && (access.PassId == pass.PassId)
-                                                && (access.ResourceId == binding.Resource.ResourceId)
-                                                && (access.RequiredState == GraphResourceState.StorageReadWrite)
-                                                && access.IsStorageReadWritePair
-                                                && binding.Range.IsWithin(access.BufferRange))
+                                            GraphResourceAccess? storageReadAccess = null;
+                                            GraphResourceAccess? storageWriteAccess = null;
+
+                                            foreach (var access in Accesses)
                                             {
-                                                if (access.IsWrite
-                                                    && ReferenceEquals(access.BufferVersion, binding.Resource))
+                                                if (!access.IsTexture
+                                                    && (access.PassId == pass.PassId)
+                                                    && (access.ResourceId == binding.Resource.ResourceId)
+                                                    && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                                                    && access.IsStorageReadWritePair
+                                                    && binding.Range.IsWithin(access.BufferRange))
                                                 {
-                                                    storageWriteAccess = access;
-                                                }
-                                                else if (!access.IsWrite)
-                                                {
-                                                    storageReadAccess = access;
+                                                    if (access.IsWrite
+                                                        && ReferenceEquals(access.BufferVersion, binding.Resource))
+                                                    {
+                                                        storageWriteAccess = access;
+                                                    }
+                                                    else if (!access.IsWrite)
+                                                    {
+                                                        storageReadAccess = access;
+                                                    }
                                                 }
                                             }
-                                        }
 
-                                        if ((storageReadAccess is not GraphResourceAccess readAccess)
-                                            || (storageWriteAccess is not GraphResourceAccess writeAccess)
-                                            || !readAccess.ContentsValid
-                                            || !readAccess.IsStorageReadWritePairOf(writeAccess))
-                                        {
-                                            throw new InvalidOperationException("The storage-buffer binding has no matching initialized StorageReadWrite version pair.");
+                                            if ((storageReadAccess is not GraphResourceAccess readAccess)
+                                                || (storageWriteAccess is not GraphResourceAccess writeAccess)
+                                                || !readAccess.ContentsValid
+                                                || !readAccess.IsStorageReadWritePairOf(writeAccess))
+                                            {
+                                                throw new InvalidOperationException("The storage-buffer binding has no matching initialized StorageReadWrite version pair.");
+                                            }
                                         }
                                     }
 
@@ -2238,6 +2277,7 @@ internal sealed class GraphicsGraphSubmission
                     GraphResourceState.General
                     or GraphResourceState.CopySource
                     or GraphResourceState.CopyDestination
+                    or GraphResourceState.StorageReadWrite
                     or GraphResourceState.VertexRead)
                 && vertexBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
             {

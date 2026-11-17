@@ -48,6 +48,39 @@ internal sealed class NativeBufferLifetimeTests
     }
 
     [Test]
+    public void CompletionNativeChargeSurvivesLeaseDisposalUntilAnActiveWindowEnds()
+    {
+        using var nativeMemory = new FakeNativeMemoryOperations();
+        var admission = BufferCompletionAdmission.Create(4, 4, 16 * 1024 * 1024);
+        using var storage = UnmanagedBuffer<int>.Allocate(1, s_allocationOptions, nativeMemory, admission);
+        using var owned = storage.TransferToOwnedBuffer();
+        using var lease = owned.AcquireReadLease(0, 1);
+        using var entered = new ManualResetEventSlim();
+        using var resume = new ManualResetEventSlim();
+        var action = new BlockingReadAction(entered, resume);
+        var operation = Task.Run(() => lease.UseWindow(0, 1, ref action));
+
+        try
+        {
+            Assert.That(entered.Wait(TimeSpan.FromSeconds(10)), Is.True);
+            owned.Dispose();
+            lease.Dispose();
+            Assert.That(admission.NativeByteCharge, Is.EqualTo(4));
+            Assert.That(nativeMemory.ReleaseCount, Is.Zero);
+        }
+        finally
+        {
+            resume.Set();
+            Assert.That(operation.Wait(TimeSpan.FromSeconds(10)), Is.True);
+            operation.GetAwaiter().GetResult();
+        }
+
+        Assert.That(admission.NativeByteCharge, Is.Zero);
+        Assert.That(nativeMemory.ReleaseCount, Is.EqualTo(1));
+        Assert.That(admission.ManagedByteCharge, Is.GreaterThan(0));
+    }
+
+    [Test]
     public void DisposedLeaseCannotAccessReusedNativeAddressAndDisposalReleasesOnce()
     {
         using var nativeMemory = new FakeNativeMemoryOperations();

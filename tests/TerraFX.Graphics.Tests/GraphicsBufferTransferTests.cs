@@ -156,6 +156,49 @@ internal sealed class GraphicsBufferTransferTests
     [SuppressMessage(
         "Usage",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "This test disposes the source buffer during an admitted readback to verify its independent use lease.")]
+    public async Task AdmittedBufferReadbackRetainsSourceUntilBackendCompletion()
+    {
+        using var readbackWaitEntered = new ManualResetEventSlim(initialState: false);
+        using var continueReadback = new ManualResetEventSlim(initialState: false);
+        using var cancellationSource = new CancellationTokenSource();
+        var backendDevice = new FakeBackendDevice(readbackWaitEntered, continueReadback, isReadbackWait: true);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var source = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        var readbackTask = graphicsDevice.ReadbackBufferAsync(
+            source,
+            sourceOffset: 0,
+            byteLength: 1,
+            cancellationSource.Token);
+
+        try
+        {
+            Assert.That(readbackWaitEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+            source.Dispose();
+
+            Assert.That(readbackTask.IsCompleted, Is.False);
+            Assert.That(backendDevice.BufferDisposalCount, Is.Zero);
+
+            continueReadback.Set();
+            _ = Assert.ThrowsAsync<TaskCanceledException>(
+                async () => await readbackTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            continueReadback.Set();
+            source.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Usage",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "This test disposes caller owners while an admitted texture transfer is blocked to verify its independent credits.")]
     public async Task AdmittedTextureUploadRetainsSourceAndDestinationUntilBackendCompletion()
     {
@@ -434,6 +477,118 @@ internal sealed class GraphicsBufferTransferTests
         }
         finally
         {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Usage",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The queued readbacks retain their own source-use leases; shutdown joins pending reads on failure paths.")]
+    public async Task BufferReadbackCompletionAdmissionIsBounded()
+    {
+        const int maximumReadbackCount = 256;
+        using var uploadEntered = new ManualResetEventSlim(initialState: false);
+        using var continueUpload = new ManualResetEventSlim(initialState: false);
+        using var readbackWaitEntered = new ManualResetEventSlim(initialState: false);
+        using var continueReadback = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            uploadEntered,
+            continueUpload,
+            readbackWaitEntered,
+            continueReadback);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var uploadBlocker = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        var readbackSource = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        var readbackTasks = new Task<OwnedBuffer<byte>>[maximumReadbackCount];
+
+        try
+        {
+            var blockingUpload = graphicsDevice.UploadBufferAsync(uploadBlocker, destinationOffset: 0, [0x42]);
+            Assert.That(uploadEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+
+            for (var index = 0; index < readbackTasks.Length; index++)
+            {
+                readbackTasks[index] = graphicsDevice.ReadbackBufferAsync(
+                    readbackSource,
+                    sourceOffset: 0,
+                    byteLength: 1);
+            }
+
+            var overflowReadback = graphicsDevice.ReadbackBufferAsync(
+                readbackSource,
+                sourceOffset: 0,
+                byteLength: 1);
+            Assert.That(overflowReadback.IsCompleted, Is.False);
+            continueUpload.Set();
+            _ = await blockingUpload.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(
+                SpinWait.SpinUntil(
+                    () => (backendDevice.ReadbackBeginCount == maximumReadbackCount)
+                        && readbackWaitEntered.IsSet,
+                    TimeSpan.FromSeconds(5)),
+                Is.True);
+            Assert.That(overflowReadback.IsCompleted, Is.False);
+
+            continueReadback.Set();
+
+            for (var index = 0; index < readbackTasks.Length; index++)
+            {
+                using var readback = await readbackTasks[index]
+                    .WaitAsync(TimeSpan.FromSeconds(10))
+                    .ConfigureAwait(false);
+                Assert.That(readback.ByteLength, Is.EqualTo((nint)1));
+            }
+
+            using var overflowResult = await overflowReadback.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.That(overflowResult.ByteLength, Is.EqualTo((nint)1));
+            Assert.That(backendDevice.ReadbackBeginCount, Is.EqualTo(maximumReadbackCount + 1));
+        }
+        finally
+        {
+            continueUpload.Set();
+            continueReadback.Set();
+            uploadBlocker.Dispose();
+            readbackSource.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task BufferReadbackWaitRunsOffOwnerWhileOwnerProcessesRequests()
+    {
+        using var readbackWaitEntered = new ManualResetEventSlim(initialState: false);
+        using var continueReadback = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(readbackWaitEntered, continueReadback, isReadbackWait: true);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var source = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        GpuBuffer? ownerResponsiveBuffer = null;
+
+        try
+        {
+            var readbackTask = graphicsDevice.ReadbackBufferAsync(source, sourceOffset: 0, byteLength: 1);
+            Assert.That(readbackWaitEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            Assert.That(readbackTask.IsCompleted, Is.False);
+
+            ownerResponsiveBuffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            Assert.That(readbackTask.IsCompleted, Is.False);
+            continueReadback.Set();
+            using var readback = await readbackTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(readback.ByteLength, Is.EqualTo((nint)1));
+            Assert.That(backendDevice.ReadbackWaitThreadId, Is.Not.EqualTo(backendDevice.ReadbackBeginThreadId));
+            Assert.That(backendDevice.ReadbackCopyThreadId, Is.EqualTo(backendDevice.ReadbackBeginThreadId));
+        }
+        finally
+        {
+            continueReadback.Set();
+            source.Dispose();
+            ownerResponsiveBuffer?.Dispose();
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
@@ -1481,6 +1636,140 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task PreclaimedReadbackAccountsForActualCpuBackingThroughLeaseDisposal()
+    {
+        var backend = new FakeBackendDevice();
+        var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
+        using var source = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        var footprint = new BufferCompletionFootprint(1, alignment: 16);
+        using var destination = GraphicsBufferReadbackStorage.Create(device, 1, footprint.TotalByteAllowance, alignment: 16);
+        var admission = destination.Admission ?? throw new InvalidOperationException("The readback has no Core admission.");
+
+        try
+        {
+            _ = await device.UploadBufferAsync(source, 0, [0x42]).ConfigureAwait(false);
+            Assert.That(admission.NativeByteCharge, Is.EqualTo(16));
+            using var result = await device.ReadbackBufferAsync(source, 0, 1, destination, CancellationToken.None).ConfigureAwait(false);
+            using var lease = result.AcquireReadLease(0, 1);
+            var action = new AdmittedByteReadAction();
+            lease.UseWindow(0, 1, ref action);
+            Assert.That(action.Value, Is.EqualTo(0x42));
+            Assert.That(result.ByteLength, Is.EqualTo((nint)1));
+            Assert.That(backend.ReadbackBeginCount, Is.EqualTo(1));
+            result.Dispose();
+            destination.Dispose();
+            Assert.That(admission.NativeByteCharge, Is.EqualTo(16));
+            lease.Dispose();
+            Assert.That(admission.NativeByteCharge, Is.Zero);
+            Assert.That(admission.ManagedByteCharge, Is.EqualTo(BufferCompletionFootprint.ManagedByteAllowance));
+        }
+        finally
+        {
+            source.Dispose();
+            await device.ShutdownAsync().ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PreclaimedReadbackRefusesAnInsufficientCoreAllowanceBeforeBackendAdmission()
+    {
+        var backend = new FakeBackendDevice();
+        var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
+
+        try
+        {
+            var footprint = new BufferCompletionFootprint(1, alignment: 16);
+            _ = Assert.Throws<OutOfMemoryException>(
+                () => GraphicsBufferReadbackStorage.Create(device, 1, footprint.TotalByteAllowance - 1, alignment: 16));
+            Assert.That(backend.ReadbackBeginCount, Is.Zero);
+        }
+        finally
+        {
+            await device.ShutdownAsync().ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PreclaimedReadbackRejectsAnUnqualifiedDestination()
+    {
+        var backend = new FakeBackendDevice();
+        var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
+        using var source = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        using var destination = GraphicsBufferReadbackStorage.Create(device, 1);
+
+        try
+        {
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await device.ReadbackBufferAsync(source, 0, 1, destination, CancellationToken.None).ConfigureAwait(false));
+            Assert.That(backend.ReadbackBeginCount, Is.Zero);
+        }
+        finally
+        {
+            source.Dispose();
+            await device.ShutdownAsync().ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PreclaimedReadbackRemainsCallerOwnedOnPreCancellation()
+    {
+        var backend = new FakeBackendDevice();
+        var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
+        using var source = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        using var destination = GraphicsBufferReadbackStorage.Create(device, 1, 16 * 1024 * 1024);
+        var admission = destination.Admission ?? throw new InvalidOperationException("The readback has no Core admission.");
+        using var cancellation = new CancellationTokenSource();
+
+        try
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await device.ReadbackBufferAsync(source, 0, 1, destination, cancellation.Token).ConfigureAwait(false));
+            Assert.That(backend.ReadbackBeginCount, Is.Zero);
+            Assert.That(admission.NativeByteCharge, Is.EqualTo(1));
+            destination.Dispose();
+            Assert.That(admission.NativeByteCharge, Is.Zero);
+        }
+        finally
+        {
+            source.Dispose();
+            await device.ShutdownAsync().ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PreclaimedReadbackRetainsItsCoreChargeInUncertainWorkQuarantine()
+    {
+        var backend = new FakeBackendDevice {
+            FailReadbackFenceWait = true,
+        };
+        var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
+        using var source = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        using var destination = GraphicsBufferReadbackStorage.Create(device, 1, 16 * 1024 * 1024);
+        var admission = destination.Admission ?? throw new InvalidOperationException("The readback has no Core admission.");
+
+        try
+        {
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await device.ReadbackBufferAsync(source, 0, 1, destination, CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            destination.Dispose();
+            Assert.That(device.Status, Is.AnyOf(GraphicsDeviceStatus.Lost, GraphicsDeviceStatus.Stopping, GraphicsDeviceStatus.Disposed));
+            Assert.That(admission.NativeByteCharge, Is.EqualTo(1));
+            Assert.That(admission.ManagedByteCharge, Is.GreaterThan(0));
+        }
+        finally
+        {
+            backend.FailReadbackFenceWait = false;
+            source.Dispose();
+            var failure = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(failure?.Message, Is.EqualTo("The controlled readback fence wait failed."));
+            Assert.That(admission.NativeByteCharge, Is.EqualTo(1));
+        }
+    }
+
+    [Test]
     [SuppressMessage(
         "Usage",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -1770,6 +2059,68 @@ internal sealed class GraphicsBufferTransferTests
         {
             buffer.Dispose();
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task SubmissionRecordingRootsDetachOnlyAfterSafeRelease(bool quarantine)
+    {
+        var backend = new FakeBackendDevice();
+        var device = await CreateGraphicsDeviceAsync(backend).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+
+        try
+        {
+            var version = new GraphTextureVersion(
+                device.DeviceEpoch,
+                1,
+                0,
+                target.Description,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+            var passId = new RenderPassId(300, 0);
+            using var recorded = new RecordedPassCommandList(
+                passId,
+                CommandRecorderPassKind.Compute,
+                [new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: new BindingSet([], [], []))],
+                []);
+            var submission = new GraphicsGraphSubmission(
+                device.DeviceEpoch,
+                target,
+                surfaceTarget: null,
+                version,
+                surfaceEpoch: 0,
+                swapchainEpoch: 0,
+                [passId],
+                [new GraphicsGraphSubmissionPass(passId, CommandRecorderPassKind.Compute, null, recorded.Commands, [])],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [new GraphTextureImportRecord(
+                    target,
+                    version,
+                    new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle))],
+                [recorded]);
+            Assert.That(submission.Passes[0].Commands == recorded.Commands, Is.True);
+
+            if (quarantine)
+            {
+                submission.RetainRecordingForUncertainSubmission();
+            }
+
+            submission.DisposeRecordedPassCommandLists();
+            recorded.Dispose();
+            Assert.That(recorded.Commands.IsEmpty, Is.EqualTo(!quarantine));
+            Assert.That(submission.Passes.IsEmpty, Is.EqualTo(!quarantine));
+            Assert.That(submission.RecordedPassCommandLists.IsEmpty, Is.EqualTo(!quarantine));
+            _ = Assert.Throws<ObjectDisposedException>(submission.ValidateNativeRasterSubmission);
+        }
+        finally
+        {
+            target.Dispose();
+            await device.ShutdownAsync().ConfigureAwait(false);
         }
     }
 
@@ -2540,6 +2891,14 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
+    private struct AdmittedByteReadAction : IAction<ReadOnlySpan<byte>>
+    {
+        public byte Value { get; private set; }
+
+        public void Invoke(scoped ReadOnlySpan<byte> argument)
+            => Value = argument[0];
+    }
+
     private sealed class FakeBackendBuffer : IGraphicsBackendBuffer
     {
         private readonly FakeBackendDevice _device;
@@ -2581,15 +2940,55 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
+    private sealed class FakeBackendBufferReadback : IGraphicsBackendBufferReadback
+    {
+        private byte[]? _bytes;
+        private readonly Action? _copyObserver;
+        private int _state;
+
+        internal FakeBackendBufferReadback(byte[] bytes, Action? copyObserver)
+        {
+            _copyObserver = copyObserver;
+            _bytes = bytes;
+        }
+
+        public long CompletionFence => 1;
+
+        public void CopyCompleted(BufferWriteLease<byte> destination)
+        {
+            ArgumentNullException.ThrowIfNull(destination);
+
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+            {
+                throw new InvalidOperationException("The fake buffer readback has already been copied or disposed.");
+            }
+
+            _copyObserver?.Invoke();
+            var bytes = Interlocked.Exchange(ref _bytes, null)
+                ?? throw new InvalidOperationException("The fake buffer readback has no owned bytes.");
+            var action = new ReadbackCopyAction(bytes);
+            destination.UseWindow(0, bytes.Length, ref action);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _state, 2) != 2)
+            {
+                _ = Interlocked.Exchange(ref _bytes, null);
+            }
+        }
+
+        private readonly struct ReadbackCopyAction(byte[] bytes) : IAction<Span<byte>>
+        {
+            private readonly byte[] _bytes = bytes;
+
+            public void Invoke(scoped Span<byte> argument)
+                => _bytes.AsSpan().CopyTo(argument);
+        }
+    }
+
     private sealed class FakeBackendDevice : IGraphicsBackendDevice
     {
-        private readonly GraphicsCapabilities _capabilities;
-        private ManualResetEventSlim? _continueSamplerCreation;
-        private readonly ManualResetEventSlim? _continueUpload;
-        private ManualResetEventSlim? _samplerCreationEntered;
-        private ManualResetEventSlim? _samplerDisposed;
-        private readonly ManualResetEventSlim? _uploadEntered;
-        private readonly List<byte[]> _buffers = [];
         private int _bufferAllocationCreationCount;
         private int _bufferAllocationDisposalCount;
         private readonly long? _bufferAllocationSizeBytes;
@@ -2597,16 +2996,28 @@ internal sealed class GraphicsBufferTransferTests
         private int _bufferCreationCount;
         private readonly int _bufferCreationFailureAt;
         private int _bufferDisposalCount;
+        private readonly List<byte[]> _buffers = [];
+        private readonly GraphicsCapabilities _capabilities;
         private long _completedFence;
+        private readonly ManualResetEventSlim? _continueReadback;
+        private ManualResetEventSlim? _continueSamplerCreation;
+        private readonly ManualResetEventSlim? _continueUpload;
         private int _deviceDisposalCount;
         private int _effectiveSamplerAnisotropyBits;
         private byte[]? _lastBufferBytes;
+        private int _readbackBeginCount;
+        private int _readbackBeginThreadId;
+        private int _readbackCopyThreadId;
+        private readonly ManualResetEventSlim? _readbackWaitEntered;
+        private int _readbackWaitThreadId;
         private int _remainingBufferAllocationCreationFailures;
         private int _remainingBufferCreationFailures;
         private int _remainingTextureAllocationCreationFailures;
         private int _remainingTextureCreationFailures;
         private int _samplerCreationCount;
+        private ManualResetEventSlim? _samplerCreationEntered;
         private int _samplerDisposalCount;
+        private ManualResetEventSlim? _samplerDisposed;
         private int _textureAllocationCreationCount;
         private int _textureAllocationDisposalCount;
         private readonly long? _textureAllocationSizeBytes;
@@ -2615,6 +3026,43 @@ internal sealed class GraphicsBufferTransferTests
         private readonly int _textureCreationFailureAt;
         private int _textureDisposalCount;
         private readonly bool _throwOnDispose;
+        private readonly ManualResetEventSlim? _uploadEntered;
+
+        internal FakeBackendDevice(
+            ManualResetEventSlim entered,
+            ManualResetEventSlim continueWork,
+            bool isReadbackWait = false)
+        {
+            if (isReadbackWait)
+            {
+                _readbackWaitEntered = entered;
+                _continueReadback = continueWork;
+            }
+            else
+            {
+                _uploadEntered = entered;
+                _continueUpload = continueWork;
+            }
+
+            _bufferBudgetBytes = 3L * 1024 * 1024 * 1024;
+            _textureBudgetBytes = 3L * 1024 * 1024 * 1024;
+            _capabilities = CreateCapabilities();
+        }
+
+        internal FakeBackendDevice(
+            ManualResetEventSlim uploadEntered,
+            ManualResetEventSlim continueUpload,
+            ManualResetEventSlim readbackWaitEntered,
+            ManualResetEventSlim continueReadback)
+        {
+            _uploadEntered = uploadEntered;
+            _continueUpload = continueUpload;
+            _readbackWaitEntered = readbackWaitEntered;
+            _continueReadback = continueReadback;
+            _bufferBudgetBytes = 3L * 1024 * 1024 * 1024;
+            _textureBudgetBytes = 3L * 1024 * 1024 * 1024;
+            _capabilities = CreateCapabilities();
+        }
 
         internal FakeBackendDevice(
             long textureBudgetBytes = 3L * 1024 * 1024 * 1024,
@@ -2663,15 +3111,6 @@ internal sealed class GraphicsBufferTransferTests
             _throwOnDispose = throwOnDispose;
         }
 
-        internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
-        {
-            _uploadEntered = uploadEntered;
-            _continueUpload = continueUpload;
-            _bufferBudgetBytes = 3L * 1024 * 1024 * 1024;
-            _textureBudgetBytes = 3L * 1024 * 1024 * 1024;
-            _capabilities = CreateCapabilities();
-        }
-
         public GraphicsCapabilities Capabilities => _capabilities;
 
         internal int BufferAllocationCreationCount => Volatile.Read(ref _bufferAllocationCreationCount);
@@ -2687,7 +3126,17 @@ internal sealed class GraphicsBufferTransferTests
         internal float EffectiveSamplerAnisotropy
             => BitConverter.Int32BitsToSingle(Volatile.Read(ref _effectiveSamplerAnisotropyBits));
 
+        internal bool FailReadbackFenceWait { get; set; }
+
         internal byte[]? LastBufferBytes => _lastBufferBytes;
+
+        internal int ReadbackBeginCount => Volatile.Read(ref _readbackBeginCount);
+
+        internal int ReadbackBeginThreadId => Volatile.Read(ref _readbackBeginThreadId);
+
+        internal int ReadbackCopyThreadId => Volatile.Read(ref _readbackCopyThreadId);
+
+        internal int ReadbackWaitThreadId => Volatile.Read(ref _readbackWaitThreadId);
 
         internal int SamplerCreationCount => Volatile.Read(ref _samplerCreationCount);
 
@@ -2708,6 +3157,21 @@ internal sealed class GraphicsBufferTransferTests
         private static FakeBackendTexture GetTexture(IGraphicsBackendTexture texture)
             => texture as FakeBackendTexture
                 ?? throw new ArgumentException("The texture belongs to a different fake backend.", nameof(texture));
+
+        public IGraphicsBackendBufferReadback BeginBufferReadback(
+            IGraphicsBackendBuffer source,
+            GraphResourceState sourceState,
+            long sourceOffset,
+            nint byteLength)
+        {
+            var buffer = GetBuffer(source);
+            var bytes = buffer.Bytes.AsSpan(checked((int)sourceOffset), checked((int)byteLength)).ToArray();
+            _ = Interlocked.Increment(ref _readbackBeginCount);
+            Volatile.Write(ref _readbackBeginThreadId, Environment.CurrentManagedThreadId);
+            return new FakeBackendBufferReadback(
+                bytes,
+                () => Volatile.Write(ref _readbackCopyThreadId, Environment.CurrentManagedThreadId));
+        }
 
         public IGraphicsBackendBuffer CreateBuffer(
             BufferDescription description,
@@ -2832,18 +3296,6 @@ internal sealed class GraphicsBufferTransferTests
                 alignment: 1,
                 heapIndex: 0,
                 budgetBytes: _textureBudgetBytes);
-        }
-
-        public OwnedBuffer<byte> ReadbackBuffer(
-            IGraphicsBackendBuffer source,
-            GraphResourceState sourceState,
-            long sourceOffset,
-            nint byteLength)
-        {
-            var buffer = GetBuffer(source);
-            var storage = UnmanagedBuffer<byte>.Allocate(byteLength, new BufferAllocationOptions(byteLength, 1));
-            storage.CopyFrom(buffer.Bytes.AsSpan(checked((int)sourceOffset), checked((int)byteLength)), 0);
-            return storage.TransferToOwnedBuffer();
         }
 
         public TextureReadback ReadbackTexture(
@@ -2983,6 +3435,27 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             return Interlocked.Increment(ref _completedFence);
+        }
+
+        public void WaitForGraphFence(long fenceValue)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+
+            var readbackWaitEntered = _readbackWaitEntered;
+
+            if (readbackWaitEntered is not null)
+            {
+                Volatile.Write(ref _readbackWaitThreadId, Environment.CurrentManagedThreadId);
+                readbackWaitEntered.Set();
+                (_continueReadback
+                    ?? throw new InvalidOperationException("The fake readback wait has no release signal."))
+                    .Wait();
+            }
+
+            if (FailReadbackFenceWait)
+            {
+                throw new InvalidOperationException("The controlled readback fence wait failed.");
+            }
         }
 
         public void WriteUploadBuffer(

@@ -11,6 +11,8 @@ namespace TerraFX.Rendering;
 
 public sealed partial class Renderer
 {
+    private int _activeSkinnedNormalDiagnosticSubmission;
+
     private static bool MatchesTextureDescription(TextureDescription expected, TextureDescription actual)
         => (expected.Dimension == actual.Dimension)
             && (expected.Width == actual.Width)
@@ -91,6 +93,20 @@ public sealed partial class Renderer
             }
         }
 
+        var skinnedNormalDiagnosticPass = graph.BuiltInSpriteState?.MeshNormalDiagnosticPass;
+        var bufferReadbackExport = graph.BufferReadbackExport;
+
+        if (skinnedNormalDiagnosticPass.HasValue != bufferReadbackExport.HasValue)
+        {
+            throw new InvalidOperationException("The graph's skinned-normal diagnostic pass and readback export are incomplete.");
+        }
+
+        if (skinnedNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass diagnosticPass
+            && (bufferReadbackExport?.Version.ResourceId != diagnosticPass.ResultBuffer.ResourceId))
+        {
+            throw new InvalidOperationException("The graph's skinned-normal result export does not match its diagnostic pass.");
+        }
+
         var graphResourceOwners = new HashSet<GraphicsResourceOwner>();
 
         if (offscreenOutputTarget is not null)
@@ -126,6 +142,7 @@ public sealed partial class Renderer
         GpuPipeline? skinnedMeshShadowPipeline = null;
         GpuPipeline? skinnedMeshAlphaMaskPipeline = null;
         GpuPipeline? skinnedMeshBlendPipeline = null;
+        GpuPipeline? skinnedNormalDiagnosticComputePipeline = null;
         GpuPipeline? meshBlendPipeline = null;
         GpuPipeline? normalMappedMeshPipeline = null;
         GpuPipeline? skinnedNormalMappedMeshPipeline = null;
@@ -145,17 +162,35 @@ public sealed partial class Renderer
         GraphicsDevice.GraphFrameSlotReservation? graphFrameSlotReservation = null;
         var graphResourceUseLeasesTransferred = false;
         IDisposable? spriteSubmissionLease = null;
-
-        if (graph.BuiltInSpriteState is not null)
-        {
-            spriteSubmissionLease = await (_gpuResidencyService
-                ?? throw new InvalidOperationException("The built-in Sprite graph has no GPU residency service."))
-                .AcquireSpriteSubmissionLeaseAsync(cancellationToken)
-                .ConfigureAwait(false);
-        }
+        var diagnosticBatchReserved = false;
+        GraphicsBufferReadbackStorage? diagnosticReadbackStorage = null;
+        var skinnedNormalDiagnostics = ImmutableArray<RenderSkinnedNormalDiagnostic>.Empty;
 
         try
         {
+            if (skinnedNormalDiagnosticPass.HasValue)
+            {
+                if (Interlocked.CompareExchange(ref _activeSkinnedNormalDiagnosticSubmission, 1, 0) != 0)
+                {
+                    throw new InvalidOperationException("A skinned-normal diagnostic submission is already active for this Renderer.");
+                }
+
+                diagnosticBatchReserved = true;
+                var readbackFootprint = skinnedNormalDiagnosticPass.Value.ReadbackFootprint;
+                diagnosticReadbackStorage = GraphicsBufferReadbackStorage.Create(
+                    device,
+                    readbackFootprint.ByteLength,
+                    maximumCoreCpuBytes: Math.Min(readbackFootprint.TotalByteAllowance, 16L * 1024 * 1024));
+            }
+
+            if (graph.BuiltInSpriteState is not null)
+            {
+                spriteSubmissionLease = await (_gpuResidencyService
+                    ?? throw new InvalidOperationException("The built-in Sprite graph has no GPU residency service."))
+                    .AcquireSpriteSubmissionLeaseAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             graphResourceUseLeases = device.AcquireGraphResourceUseLeases(graphResourceOwners);
             graphFrameSlotReservation = await device.AcquireGraphFrameSlotAsync(cancellationToken).ConfigureAwait(false);
 
@@ -373,6 +408,12 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                if (spriteState.MeshNormalDiagnosticPass.HasValue)
+                {
+                    skinnedNormalDiagnosticComputePipeline = await CreateSkinnedNormalDiagnosticComputePipelineAsync(
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (hasSkinnedTexturedMeshPass)
                 {
                     skinnedTexturedMeshPipeline = await CreateSkinnedTexturedMeshC0PipelineAsync(
@@ -481,6 +522,8 @@ public sealed partial class Renderer
                     || (hasSkinnedMeshPass && (skinnedMeshPipeline is null))
                     || (hasSkinnedAlphaMaskPass && (skinnedMeshAlphaMaskPipeline is null))
                     || (hasSkinnedBlendPass && (skinnedMeshBlendPipeline is null))
+                    || (spriteState.MeshNormalDiagnosticPass.HasValue
+                        && (skinnedNormalDiagnosticComputePipeline is null))
                     || (hasSkinnedTexturedMeshPass && (skinnedTexturedMeshPipeline is null))
                     || (hasSkinnedTexturedAlphaMaskPass && (skinnedTexturedMeshAlphaMaskPipeline is null))
                     || (hasSkinnedTexturedBlendPass && (skinnedTexturedMeshBlendPipeline is null))
@@ -541,6 +584,7 @@ public sealed partial class Renderer
                 if (spriteState.Passes.Count != 0
                     || spriteState.MeshPasses.Count != 0
                     || spriteState.MeshShadowPasses.Count != 0
+                    || spriteState.MeshNormalDiagnosticPass.HasValue
                     || spriteState.ToneMapPasses.Count != 0)
                 {
                     builtInResources = new RenderBuiltInSubmissionResources(
@@ -552,6 +596,7 @@ public sealed partial class Renderer
                         skinnedMeshShadowPipeline,
                         skinnedMeshAlphaMaskPipeline,
                         skinnedMeshBlendPipeline,
+                        skinnedNormalDiagnosticComputePipeline,
                         meshBlendPipeline,
                         normalMappedMeshPipeline,
                         skinnedNormalMappedMeshPipeline,
@@ -782,13 +827,33 @@ public sealed partial class Renderer
             graphResourceUseLeasesTransferred = true;
             graphFrameSlotReservation = null;
             var result = await submissionTask.ConfigureAwait(false);
+
+            if (skinnedNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass selectedDiagnosticPass)
+            {
+                var export = bufferReadbackExport
+                    ?? throw new InvalidOperationException("The skinned-normal diagnostic has no result-buffer export.");
+                var resultBuffer = transientBuffersByResourceId[export.Version.ResourceId];
+                using var diagnosticReadback = await device.ReadbackBufferAsync(
+                    resultBuffer,
+                    export.Range.ByteOffset,
+                    checked((nint)export.Range.ByteLength),
+                    diagnosticReadbackStorage
+                        ?? throw new InvalidOperationException("The diagnostic has no preclaimed Core readback destination."),
+                    CancellationToken.None).ConfigureAwait(false);
+                using var diagnosticReadbackLease = diagnosticReadback.AcquireReadLease(
+                    0,
+                    diagnosticReadback.Length);
+                skinnedNormalDiagnostics = selectedDiagnosticPass.CreateResults(diagnosticReadbackLease);
+            }
+
             return new RenderSubmissionReceipt(
                 result.SubmissionSequence,
                 result.CompletedFence,
                 result.PresentationSequence,
                 result.DeviceEpoch,
                 result.SurfaceEpoch,
-                result.SwapchainEpoch);
+                result.SwapchainEpoch,
+                skinnedNormalDiagnostics);
         }
         finally
         {
@@ -802,6 +867,7 @@ public sealed partial class Renderer
                 graphFrameSlotReservation?.Dispose();
                 spriteSampler?.Dispose();
                 shadowSampler?.Dispose();
+                skinnedNormalDiagnosticComputePipeline?.Dispose();
                 spriteToneMapPipeline?.Dispose();
                 meshAlphaMaskPipeline?.Dispose();
                 meshBlendPipeline?.Dispose();
@@ -850,7 +916,18 @@ public sealed partial class Renderer
             }
             finally
             {
-                spriteSubmissionLease?.Dispose();
+                try
+                {
+                    diagnosticReadbackStorage?.Dispose();
+                    spriteSubmissionLease?.Dispose();
+                }
+                finally
+                {
+                    if (diagnosticBatchReserved)
+                    {
+                        Volatile.Write(ref _activeSkinnedNormalDiagnosticSubmission, 0);
+                    }
+                }
             }
         }
     }

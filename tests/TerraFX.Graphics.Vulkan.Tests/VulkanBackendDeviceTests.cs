@@ -49,6 +49,50 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(actual, Is.EqualTo(expected));
     }
 
+    private static OwnedBuffer<byte> CompleteBufferReadbackOnTestThread(
+        VulkanBackendDevice device,
+        VulkanBackendBuffer source,
+        long sourceOffset,
+        nint byteLength)
+    {
+        using var storage = UnmanagedBuffer<byte>.Allocate(byteLength, new BufferAllocationOptions(byteLength, 1));
+        using var writer = storage.AcquireWrite(0, byteLength);
+        var readback = device.BeginBufferReadback(
+            source,
+            GraphResourceState.CopySource,
+            sourceOffset,
+            byteLength);
+        OwnedBuffer<byte>? result = null;
+
+        try
+        {
+            System.Threading.Tasks.Task.Run(
+                () => device.WaitForGraphFence(readback.CompletionFence))
+                .GetAwaiter()
+                .GetResult();
+            var completedFence = device.GetCompletedGraphFence();
+
+            if (completedFence < readback.CompletionFence)
+            {
+                throw new InvalidOperationException("Vulkan buffer-readback completion preceded its timeline value.");
+            }
+
+            readback.CopyCompleted(writer);
+            writer.Dispose();
+            result = storage.TransferToOwnedBuffer();
+            readback.Dispose();
+            var completedReadback = result
+                ?? throw new InvalidOperationException("Vulkan buffer readback returned no owned bytes.");
+            result = null;
+            return completedReadback;
+        }
+        catch
+        {
+            result?.Dispose();
+            throw;
+        }
+    }
+
     private static OwnedBuffer<byte> CreateBytecodeStorage(byte[] bytecode)
     {
         var storage = UnmanagedBuffer<byte>.Allocate(
@@ -1332,7 +1376,11 @@ internal sealed class VulkanBackendDeviceTests
             device.UploadBuffer(destination, 0, payload.AsSpan(0, exactBudgetByteLength)),
             Is.GreaterThan(0));
 
-        using (var exactReadback = device.ReadbackBuffer(destination, 0, exactBudgetByteLength))
+        using (var exactReadback = CompleteBufferReadbackOnTestThread(
+            device,
+            destination,
+            0,
+            exactBudgetByteLength))
         using (var exactReadLease = exactReadback.AcquireReadLease(0, exactBudgetByteLength))
         {
             var prefix = new byte[1];
@@ -1347,9 +1395,13 @@ internal sealed class VulkanBackendDeviceTests
         }
 
         Assert.That(
-            () => device.ReadbackBuffer(destination, 0, overBudgetByteLength),
+            () => device.BeginBufferReadback(
+                destination,
+                GraphResourceState.CopySource,
+                0,
+                overBudgetByteLength),
             Throws.InvalidOperationException.With.Message.Contains("staging budget is exhausted"));
-        using (var recoveryReadback = device.ReadbackBuffer(destination, 0, 1))
+        using (var recoveryReadback = CompleteBufferReadbackOnTestThread(device, destination, 0, 1))
         {
             AssertReadback(recoveryReadback, [0x42]);
         }
@@ -1392,7 +1444,11 @@ internal sealed class VulkanBackendDeviceTests
 
             var recoveryBytes = new byte[] { 0xA5, 0x5A, 0xC3 };
             Assert.That(device.UploadBuffer(destination, 7, recoveryBytes), Is.GreaterThan(0));
-            using var readback = device.ReadbackBuffer(destination, 7, recoveryBytes.Length);
+            using var readback = CompleteBufferReadbackOnTestThread(
+                device,
+                destination,
+                7,
+                recoveryBytes.Length);
             AssertReadback(readback, recoveryBytes);
         }
 
@@ -1406,7 +1462,7 @@ internal sealed class VulkanBackendDeviceTests
                 debugName: "dedicated-staging destination")))
         {
             Assert.That(device.UploadBuffer(destination, 0, oversizedBytes), Is.GreaterThan(0));
-            using var readback = device.ReadbackBuffer(destination, 0, 3);
+            using var readback = CompleteBufferReadbackOnTestThread(device, destination, 0, 3);
             AssertReadback(readback, [0x42, 0x17, 0x9C]);
         }
     }
@@ -1446,9 +1502,9 @@ internal sealed class VulkanBackendDeviceTests
                 device.UploadBuffer(buffer, 513, sourceLease, 0, payload.Length),
                 Is.GreaterThan(0));
 
-            using var firstReadback = device.ReadbackBuffer(buffer, 0, payload.Length);
+            using var firstReadback = CompleteBufferReadbackOnTestThread(device, buffer, 0, payload.Length);
             AssertReadback(firstReadback, payload);
-            using var secondReadback = device.ReadbackBuffer(buffer, 513, payload.Length);
+            using var secondReadback = CompleteBufferReadbackOnTestThread(device, buffer, 513, payload.Length);
             AssertReadback(secondReadback, payload);
         }
         catch (DllNotFoundException exception)

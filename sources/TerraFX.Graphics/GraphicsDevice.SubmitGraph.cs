@@ -216,6 +216,7 @@ public sealed partial class GraphicsDevice
         List<GraphicsResourceOwner.UseLease> useLeases,
         Exception exception)
     {
+        submission.RetainRecordingForUncertainSubmission();
         s_quarantinedGraphSubmissions.Add(submission);
         s_quarantinedGraphUseLeases.Add([.. useLeases]);
         useLeases.Clear();
