@@ -13,6 +13,9 @@ internal sealed class WorldResourceOperationControl
     private readonly int _ownerThreadId;
     private readonly int _partitionCount;
     private readonly Type _partitionType;
+    private IWorldRestoreSourceOwner? _preparedSourceOwner;
+    private IWorldResourceRegistration? _preparedSourceRegistration;
+    private WorldResourceReferenceBinding? _references;
     private readonly Guid _resourceId;
     private readonly ContentSchemaReference _schema;
 
@@ -45,15 +48,76 @@ internal sealed class WorldResourceOperationControl
 
     internal Exception? Failure => _failure;
 
+    internal object FamilyControl => _familyControl;
+
+    internal bool HasReferences => _references is not null;
+
     internal WorldResourceOperationKind Operation => _operation;
 
     internal int PartitionCount => _partitionCount;
 
     internal Type PartitionType => _partitionType;
 
+    internal IWorldRestoreSourceOwner? PreparedSourceOwner => _preparedSourceOwner;
+
+    internal IWorldResourceRegistration? PreparedSourceRegistration => _preparedSourceRegistration;
+
+    internal WorldResourceReferenceBinding References
+    {
+        get
+        {
+            EnsureActive(_operation);
+            return _references
+                ?? throw RecordFailure(new InvalidOperationException("This resource operation has no issued reference or persistence-limit context."));
+        }
+    }
+
     internal Guid ResourceId => _resourceId;
 
     internal ContentSchemaReference Schema => _schema;
+
+    internal void BindPreparedSource(IWorldResourceRegistration registration, IWorldRestoreSourceOwner owner)
+    {
+        EnsureActive(WorldResourceOperationKind.Restore);
+        ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(owner);
+
+        if (_preparedSourceOwner is not null)
+        {
+            throw RecordFailure(new InvalidOperationException("A prepared resource source can be bound only once."));
+        }
+
+        _preparedSourceRegistration = registration;
+        _preparedSourceOwner = owner;
+    }
+
+    internal void BindReferences(
+        ValidatedWorldIdentityHistory history,
+        long completedTick,
+        EbinReadLimits limits,
+        WorldRestoreSourceControl sourceControl)
+    {
+        EnsureActive(WorldResourceOperationKind.Validation);
+
+        if (_references is not null)
+        {
+            throw RecordFailure(new InvalidOperationException("A resource source reference context can be bound only once."));
+        }
+
+        _references = new WorldResourceReferenceBinding(this, history, completedTick, limits, sourceControl);
+    }
+
+    internal void BindReferences(World world, long? requiredRequestTick)
+    {
+        EnsureActive(_operation);
+
+        if (_references is not null)
+        {
+            throw RecordFailure(new InvalidOperationException("A resource operation reference context can be bound only once."));
+        }
+
+        _references = new WorldResourceReferenceBinding(this, world, requiredRequestTick);
+    }
 
     internal void EnsureActive(WorldResourceOperationKind expectedOperation)
     {
@@ -94,5 +158,10 @@ internal sealed class WorldResourceOperationControl
         return _failure;
     }
 
-    internal void Revoke() => _isActive = false;
+    internal void Revoke()
+    {
+        _isActive = false;
+        _references?.Revoke();
+        _references = null;
+    }
 }

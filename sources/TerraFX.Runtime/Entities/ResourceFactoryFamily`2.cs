@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.IO;
 
 namespace TerraFX.Entities;
 
@@ -9,19 +10,25 @@ internal sealed class ResourceFactoryFamily<T, TAuthor> : IWorldResourceFactoryD
     where T : unmanaged
     where TAuthor : notnull
 {
+    private readonly IWorldResourcePartitionRecordsValidator<T, TAuthor>? _recordsValidator;
+
     internal ResourceFactoryFamily(
         WorldResourceFactoryDescriptor descriptor,
         ImmutableArray<WorldResourceFieldBinding<T, TAuthor>> fields,
-        IWorldResourceDefaultProvider<T> defaults)
+        IWorldResourceDefaultProvider<T> defaults,
+        IWorldResourcePartitionRecordsValidator<T, TAuthor>? recordsValidator = null)
     {
         Descriptor = descriptor;
         Fields = fields;
         Defaults = defaults;
+        _recordsValidator = recordsValidator;
         Control = new ResourceFactoryControl<T>(this);
         RegistrationBinding = new WorldResourceFactoryBinding<T>(Control);
     }
 
     public WorldResourceFactoryDescriptor Descriptor { get; }
+
+    public bool IsAggregate => _recordsValidator is not null;
 
     internal ResourceFactoryControl<T> Control { get; }
 
@@ -65,8 +72,13 @@ internal sealed class ResourceFactoryFamily<T, TAuthor> : IWorldResourceFactoryD
 
             for (var index = 0; index < partitionCount; index++)
             {
-                _ = access.ReadAuthorElement(typedAuthor, index);
+                access.ValidateAuthorElement(typedAuthor, index);
             }
+        }
+
+        if (_recordsValidator is { } validator && !validator.IsValidAuthor(in typedAuthor))
+        {
+            throw new InvalidOperationException("The resource author violates its complete partition-record predicate.");
         }
     }
 
@@ -74,7 +86,20 @@ internal sealed class ResourceFactoryFamily<T, TAuthor> : IWorldResourceFactoryD
     {
         foreach (var field in Fields)
         {
-            _ = field.FieldAccess.ReadPartition(in partition);
+            field.FieldAccess.ValidatePartition(in partition);
+        }
+    }
+
+    public void ValidateRuntimePartitions(scoped ReadOnlySpan<T> partitions)
+    {
+        foreach (ref readonly var partition in partitions)
+        {
+            ValidateRuntimePartition(in partition);
+        }
+
+        if (_recordsValidator is { } validator && !validator.IsValidRuntime(partitions))
+        {
+            throw new InvalidDataException("The resource violates its complete partition-record predicate.");
         }
     }
 }

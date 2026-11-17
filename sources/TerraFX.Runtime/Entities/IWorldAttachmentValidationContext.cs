@@ -17,6 +17,8 @@ internal interface IWorldAttachmentValidationContext
 
     void ValidateEntity(Entity entity);
 
+    void ValidateEntityId(Guid entityId);
+
     ImmutableArray<Diagnostic> ValidateFields<T>(T value)
         where T : class;
 }

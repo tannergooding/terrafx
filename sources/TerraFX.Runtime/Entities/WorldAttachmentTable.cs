@@ -2,19 +2,39 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace TerraFX.Entities;
 
 internal sealed class WorldAttachmentTable
 {
     private const int ArrayHeaderBytes = 64;
-    private const int EntryBytes = 32;
+    private static readonly int s_entryBytes = Unsafe.SizeOf<AttachmentEntry>();
 
     private int _count;
     private AttachmentEntry[] _entries = [];
     private long _ownedByteReservation;
 
     internal int Count => _count;
+
+    internal bool HasTransferredAggregateEntries
+    {
+        get
+        {
+            for (var index = 0; index < _count; index++)
+            {
+                var entry = _entries[index];
+
+                if ((entry.Ownership == AttachmentOwnership.Transferred)
+                    && (entry.Registration?.Descriptor.IsAggregate ?? false))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
 
     internal bool HasTransferredEntries
     {
@@ -54,7 +74,7 @@ internal sealed class WorldAttachmentTable
     }
 
     private static long ArrayBytes(int capacity)
-        => checked(ArrayHeaderBytes + ((checked((long)capacity * EntryBytes) + 7L) & ~7L));
+        => checked(ArrayHeaderBytes + ((checked((long)capacity * s_entryBytes) + 7L) & ~7L));
 
     internal AttachmentEntry[] CaptureTransferredEntries()
         => CaptureTransferredEntries(ownerEntityId: null, includeWorldScope: true);
@@ -227,7 +247,8 @@ internal sealed class WorldAttachmentTable
         object value,
         AttachmentOwnership ownership = AttachmentOwnership.CallerOwned,
         ulong installationId = 0,
-        IWorldAttachmentRegistration? registration = null)
+        IWorldAttachmentRegistration? registration = null,
+        IDisposable? sourceStorage = null)
     {
         ArgumentNullException.ThrowIfNull(valueType);
         ArgumentNullException.ThrowIfNull(value);
@@ -241,7 +262,7 @@ internal sealed class WorldAttachmentTable
 
         if (index >= 0)
         {
-            _entries[index] = new AttachmentEntry(valueType, ownerEntityId, value, ownership, installationId, registration);
+            _entries[index] = new AttachmentEntry(valueType, ownerEntityId, value, ownership, installationId, registration, sourceStorage);
             return;
         }
 
@@ -250,7 +271,7 @@ internal sealed class WorldAttachmentTable
             throw new InvalidOperationException("The World attachment table has no prepared append capacity.");
         }
 
-        _entries[_count++] = new AttachmentEntry(valueType, ownerEntityId, value, ownership, installationId, registration);
+        _entries[_count++] = new AttachmentEntry(valueType, ownerEntityId, value, ownership, installationId, registration, sourceStorage);
     }
 
     internal bool TryGet(Type valueType, Guid? ownerEntityId, out object? value)
@@ -299,9 +320,10 @@ internal sealed class WorldAttachmentTable
         return true;
     }
 
-    internal void ValidateAllEntityReferences(World world)
+    internal void ValidateAllEntityReferences(World world, WorldAttachmentMembershipSource membershipSource)
     {
         ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(membershipSource);
 
         for (var index = 0; index < _count; index++)
         {
@@ -317,13 +339,18 @@ internal sealed class WorldAttachmentTable
             registration.ValidateEntityReferences(
                 world,
                 entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
-                default(Entity));
+                membershipSource);
         }
     }
 
-    internal void ValidateEntityReferences(World world, Entity target, Guid excludedOwnerId)
+    internal void ValidateEntityReferences(
+        World world,
+        Entity target,
+        Guid excludedOwnerId,
+        WorldAttachmentMembershipSource membershipSource)
     {
         ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(membershipSource);
         ArgumentOutOfRangeException.ThrowIfEqual(excludedOwnerId, Guid.Empty);
 
         for (var index = 0; index < _count; index++)
@@ -341,18 +368,21 @@ internal sealed class WorldAttachmentTable
             registration.ValidateEntityReferences(
                 world,
                 entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
-                target);
+                target,
+                membershipSource);
         }
     }
 
     internal void ValidateEntityReferencesExcludingOwners(
         World world,
         IReadOnlySet<Guid> excludedOwnerIds,
-        IReadOnlySet<Entity> excludedEntities)
+        IReadOnlySet<Entity> excludedEntities,
+        WorldAttachmentMembershipSource membershipSource)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(excludedOwnerIds);
         ArgumentNullException.ThrowIfNull(excludedEntities);
+        ArgumentNullException.ThrowIfNull(membershipSource);
 
         for (var index = 0; index < _count; index++)
         {
@@ -369,7 +399,8 @@ internal sealed class WorldAttachmentTable
             registration.ValidateEntityReferences(
                 world,
                 entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
-                excludedEntities);
+                excludedEntities,
+                membershipSource);
         }
     }
 
@@ -440,7 +471,8 @@ internal sealed class WorldAttachmentTable
             object value,
             AttachmentOwnership ownership,
             ulong installationId,
-            IWorldAttachmentRegistration? registration)
+            IWorldAttachmentRegistration? registration,
+            IDisposable? sourceStorage = null)
         {
             ValueType = valueType;
             OwnerEntityId = ownerEntityId;
@@ -448,6 +480,7 @@ internal sealed class WorldAttachmentTable
             Ownership = ownership;
             InstallationId = installationId;
             Registration = registration;
+            SourceStorage = sourceStorage;
         }
 
         internal ulong InstallationId { get; }
@@ -457,6 +490,8 @@ internal sealed class WorldAttachmentTable
         internal AttachmentOwnership Ownership { get; }
 
         internal IWorldAttachmentRegistration? Registration { get; }
+
+        internal IDisposable? SourceStorage { get; }
 
         internal object? Value { get; }
 

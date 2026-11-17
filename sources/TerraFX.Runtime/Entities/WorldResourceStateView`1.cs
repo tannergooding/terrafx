@@ -65,6 +65,15 @@ public readonly ref struct WorldResourceStateView<T>
 
     internal WorldResourceOperationControl Operation => GetOperation();
 
+    internal ReadOnlySpan<T> Partitions
+    {
+        get
+        {
+            _ = GetOperation();
+            return _partitions;
+        }
+    }
+
     /// <summary>Reads one copied resource partition value.</summary>
     /// <param name="partitionIndex">The zero-based partition index.</param>
     /// <returns>The copied resource partition.</returns>

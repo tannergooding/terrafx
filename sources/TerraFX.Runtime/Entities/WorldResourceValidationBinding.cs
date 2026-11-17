@@ -22,6 +22,8 @@ public sealed class WorldResourceValidationBinding
         _operation = operation;
     }
 
+    internal WorldResourceReferenceBinding References => _operation.References;
+
     /// <summary>Validates any common schema-field constraints for the selected partitions.</summary>
     /// <typeparam name="T">The unmanaged resource partition type.</typeparam>
     /// <param name="value">The scoped read-only resource state view.</param>
@@ -38,6 +40,12 @@ public sealed class WorldResourceValidationBinding
             if ((_operation.PartitionType != typeof(T)) || !ReferenceEquals(value.Operation, _operation))
             {
                 throw new ArgumentException("The resource state view does not match this validation binding.", nameof(value));
+            }
+
+            if (_operation.FamilyControl is ResourceFactoryControl<T> factory
+                && factory.Dispatch.IsAggregate)
+            {
+                factory.Dispatch.ValidateRuntimePartitions(value.Partitions);
             }
 
             return [];

@@ -16,4 +16,8 @@ internal interface IWorldResourceFieldAccess<T>
     object ReadAuthorElement(object author, int index);
 
     object ReadPartition(in T partition);
+
+    void ValidateAuthorElement(object author, int index);
+
+    void ValidatePartition(in T partition);
 }

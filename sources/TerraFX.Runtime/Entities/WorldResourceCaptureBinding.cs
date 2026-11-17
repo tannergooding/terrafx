@@ -35,7 +35,11 @@ public sealed class WorldResourceCaptureBinding
     /// <summary>Gets the exact resource state schema tuple.</summary>
     public ContentSchemaReference Schema => GetOperation().Schema;
 
-    /// <summary>Gets the complete fixed-array count for one selected resource field.</summary>
+    internal EbinReadLimits PersistenceLimits => GetOperation().References.PersistenceLimits;
+
+    internal WorldResourceReferenceBinding References => GetOperation().References;
+
+    /// <summary>Gets the complete partition-domain count for one selected resource field.</summary>
     /// <param name="field">The exact registered resource field.</param>
     /// <returns>The resource's complete partition count.</returns>
     /// <exception cref="ArgumentException"><paramref name="field"/> is not from this registration.</exception>
@@ -43,13 +47,21 @@ public sealed class WorldResourceCaptureBinding
     public int GetCount(WorldResourceFieldDescriptor field)
     {
         var operation = GetOperation();
-        var data = _data
-            ?? throw operation.RecordFailure(new InvalidOperationException("The resource capture binding has no active field data."));
-        return data.GetCount(field);
+
+        try
+        {
+            var data = _data
+                ?? throw operation.RecordFailure(new InvalidOperationException("The resource capture binding has no active field data."));
+            return data.GetCount(field);
+        }
+        catch (Exception exception) when (operation.HasReferences)
+        {
+            throw operation.RecordFailure(exception);
+        }
     }
 
     /// <summary>Reads one field element from the selected resource partition.</summary>
-    /// <typeparam name="TElement">The unmanaged fixed-array element type.</typeparam>
+    /// <typeparam name="TElement">The unmanaged fixed-array element or partition-record type.</typeparam>
     /// <param name="field">The exact registered resource field.</param>
     /// <param name="partitionIndex">The zero-based resource partition index.</param>
     /// <returns>The copied field element.</returns>
@@ -60,12 +72,20 @@ public sealed class WorldResourceCaptureBinding
         where TElement : unmanaged
     {
         var operation = GetOperation();
-        var data = _data
-            ?? throw operation.RecordFailure(new InvalidOperationException("The resource capture binding has no active field data."));
-        var value = data.GetElement(field, partitionIndex, typeof(TElement));
-        return value is TElement element
-            ? element
-            : throw operation.RecordFailure(new InvalidOperationException("The captured resource field returned an invalid element type."));
+
+        try
+        {
+            var data = _data
+                ?? throw operation.RecordFailure(new InvalidOperationException("The resource capture binding has no active field data."));
+            var value = data.GetElement(field, partitionIndex, typeof(TElement));
+            return value is TElement element
+                ? element
+                : throw operation.RecordFailure(new InvalidOperationException("The captured resource field returned an invalid element type."));
+        }
+        catch (Exception exception) when (operation.HasReferences)
+        {
+            throw operation.RecordFailure(exception);
+        }
     }
 
     internal void Revoke()

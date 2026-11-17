@@ -12,7 +12,8 @@ public sealed class WorldAttachmentFactoryDescriptor
         ContentSchemaReference schema,
         Guid factoryId,
         int factoryVersion,
-        ImmutableArray<WorldAttachmentFieldDescriptor> fields)
+        ImmutableArray<WorldAttachmentFieldDescriptor> fields,
+        bool isAggregate = false)
     {
         if ((schema.Scope != ContentSchemaScope.Content)
             || (schema.SchemaId == Guid.Empty)
@@ -44,6 +45,7 @@ public sealed class WorldAttachmentFactoryDescriptor
         FactoryId = factoryId;
         FactoryVersion = factoryVersion;
         Fields = ImmutableArrayCopy.Create(fields);
+        IsAggregate = isAggregate;
     }
 
     /// <summary>Gets the stable factory identity.</summary>
@@ -57,4 +59,6 @@ public sealed class WorldAttachmentFactoryDescriptor
 
     /// <summary>Gets the exact AttachmentState schema tuple.</summary>
     public ContentSchemaReference Schema { get; }
+
+    internal bool IsAggregate { get; }
 }

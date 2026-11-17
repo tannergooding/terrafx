@@ -157,6 +157,16 @@ public sealed partial class World
     internal void RestoreEcsRows(
         ReadOnlyMemory<byte> ecsRecord,
         WorldPersistenceEcsContents contents,
+        CancellationToken cancellationToken,
+        long? completedTick = null)
+        => RestoreEcsRows(ecsRecord, contents, completedTick ?? checked(_nextTickIndex - 1), [], [], cancellationToken);
+
+    internal void RestoreEcsRows(
+        ReadOnlyMemory<byte> ecsRecord,
+        WorldPersistenceEcsContents contents,
+        long completedTick,
+        ImmutableArray<IWorldPreparedResourceSource> preparedSources,
+        ImmutableArray<IWorldPreparedAttachmentSource> preparedAttachments,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(contents);
@@ -168,6 +178,21 @@ public sealed partial class World
         if (!_isRestoreCandidate || !_isCandidateInitialized || _isRestoreEcsRowsRestored)
         {
             throw new InvalidOperationException("ECS rows can be restored only once into an initialized restore candidate.");
+        }
+
+        if (preparedSources.IsDefault || preparedAttachments.IsDefault
+            || ((_restoreSourceControl is null) && (!preparedSources.IsEmpty || !preparedAttachments.IsEmpty)))
+        {
+            throw new ArgumentException("Prepared restore sources must be initialized and bound to this exact candidate.");
+        }
+
+        _restoreSourceControl?.ValidatePreparedSources(preparedSources, preparedAttachments);
+
+        if ((_restoreSourceControl is not null)
+            && ((completedTick != _restoreSourceControl.Owner.CompletedTick)
+                || (completedTick != checked(_nextTickIndex - 1))))
+        {
+            throw new InvalidOperationException("The cached source completed tick does not match the candidate construction plan.");
         }
 
         var restoreEcsPlan = _restoreEcsPlan
@@ -423,11 +448,12 @@ public sealed partial class World
                 throw new InvalidOperationException("The empty restore candidate has unexpected ECS storage reservations.");
             }
 
-            RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
+            RestoreResourceStateRecords(root, contents.ResourceCount, completedTick, preparedSources, cancellationToken);
             RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
-            RestoreTransferredAttachmentStateRecords(root, contents.AttachmentCount, cancellationToken);
+            RestoreTransferredAttachmentStateRecords(root, contents.AttachmentCount, preparedAttachments, cancellationToken);
             _isRestoreEcsRowsRestored = true;
             _restoreEcsPlan = null;
+            _restoreSourceControl = null;
             return;
         }
 
@@ -730,11 +756,12 @@ public sealed partial class World
             _restoreComponentWorkspaceByteReservation = 0;
         }
 
-        RestoreResourceStateRecords(root, contents.ResourceCount, cancellationToken);
+        RestoreResourceStateRecords(root, contents.ResourceCount, completedTick, preparedSources, cancellationToken);
         RestoreSystemStateRecords(root, contents.SystemCount, cancellationToken);
-        RestoreTransferredAttachmentStateRecords(root, contents.AttachmentCount, cancellationToken);
+        RestoreTransferredAttachmentStateRecords(root, contents.AttachmentCount, preparedAttachments, cancellationToken);
         _isRestoreEcsRowsRestored = true;
         _restoreEcsPlan = null;
+        _restoreSourceControl = null;
     }
 
     internal void RestoreHierarchyLinks(
@@ -802,9 +829,41 @@ public sealed partial class World
         _isRestoreHierarchyInstalled = true;
     }
 
+    internal IWorldRestoreSourceOwner ValidatePreparedResourceSource(
+        IWorldResourceRegistration registration,
+        IWorldPreparedResourceSource source,
+        long completedTick)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(source);
+        ThrowIfDisposed();
+        EnsureOwnerThread();
+        var owner = _restoreSourceControl?.Owner
+            ?? throw new InvalidOperationException("The candidate has no captured prepared source owner.");
+        var registered = false;
+
+        foreach (var resource in Registration.Resources)
+        {
+            registered |= ReferenceEquals(resource, registration);
+        }
+
+        if (!_isRestoreCandidate || !_isCandidateInitialized || _isRestoreEcsRowsRestored
+            || !registered || !ReferenceEquals(Registration, owner.Registration)
+            || (completedTick != owner.CompletedTick) || (completedTick != checked(_nextTickIndex - 1))
+            || (source.ResourceId != registration.ResourceId) || (source.Schema != registration.Schema)
+            || (source.PartitionCount != registration.PartitionCount))
+        {
+            throw new InvalidOperationException("The resource source does not belong to this candidate's frozen registration and completed tick.");
+        }
+
+        return owner;
+    }
+
     private void RestoreResourceStateRecords(
         EbinRecordReadView ecsRecord,
         int resourceCount,
+        long completedTick,
+        ImmutableArray<IWorldPreparedResourceSource> preparedSources,
         CancellationToken cancellationToken)
     {
         for (var resourceIndex = 0; resourceIndex < resourceCount; resourceIndex++)
@@ -836,10 +895,20 @@ public sealed partial class World
                 throw new ArgumentException("A candidate state/resource-state row does not match its exact registration.", nameof(ecsRecord));
             }
 
-            registration.RestoreStateRecord(
-                payload.EncodedBytes,
-                _resourceStorage[resourceIndex],
-                cancellationToken);
+            if (!preparedSources.IsEmpty && (preparedSources[0].ResourceId == resourceId))
+            {
+                registration.RestorePreparedSource(
+                    preparedSources[0], _resourceStorage[resourceIndex], this, completedTick, cancellationToken);
+            }
+            else
+            {
+                registration.RestoreStateRecord(
+                    payload.EncodedBytes,
+                    _resourceStorage[resourceIndex],
+                    cancellationToken,
+                    this,
+                    completedTick);
+            }
         }
     }
 
@@ -929,8 +998,11 @@ public sealed partial class World
     private void RestoreTransferredAttachmentStateRecords(
         EbinRecordReadView ecsRecord,
         int attachmentCount,
+        ImmutableArray<IWorldPreparedAttachmentSource> preparedAttachments,
         CancellationToken cancellationToken)
     {
+        var limits = WorldPersistenceEbinLimits.Create(Options);
+
         for (var attachmentIndex = 0; attachmentIndex < attachmentCount; attachmentIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -947,32 +1019,48 @@ public sealed partial class World
                 : null;
             var scope = ownerEntityId.HasValue ? AttachmentScope.Entity : AttachmentScope.World;
             var registration = Registration.GetAttachmentRegistration(scope, schema);
-            var author = RunAttachmentStateRead(registration, payload.EncodedBytes, cancellationToken);
+            var prepared = (scope == AttachmentScope.World) && !preparedAttachments.IsEmpty
+                && (preparedAttachments[0].Schema == schema) ? preparedAttachments[0] : null;
+            var author = prepared is null
+                ? RunAttachmentStateRead(registration, payload.EncodedBytes, limits, cancellationToken)
+                : prepared.GetAuthor(registration, _restoreSourceControl?.Owner
+                    ?? throw new InvalidOperationException("The restored attachment lost its captured source owner."));
+            var sourceStorage = (prepared as IWorldPreparedAttachmentStorage)?.RetainStorage();
             var context = new WorldAttachmentRestoreContext(this, registration);
             var binding = new WorldAttachmentRestoreBinding(context);
-            object value;
+            object? value = null;
+            var installationId = checked(_nextAttachmentInstallationId + 1);
 
             try
             {
-                value = RunAttachmentStateRestore(registration, author, binding, cancellationToken);
+                RunAttachmentStateRestore(registration, author, binding, out value, cancellationToken);
                 context.ThrowIfFailed();
             }
             finally
             {
-                binding.Revoke();
-                context.Revoke();
+                try
+                {
+                    binding.Revoke();
+                    context.Revoke();
+
+                    if (value is not null)
+                    {
+                        // Even a returned value followed by sticky failure belongs to the candidate's release family.
+                        _attachments.Set(
+                            registration.ValueType, ownerEntityId, value, AttachmentOwnership.Transferred,
+                            installationId, registration, sourceStorage);
+                        _nextAttachmentInstallationId = installationId;
+                        sourceStorage = null;
+                    }
+                }
+                finally
+                {
+                    sourceStorage?.Dispose();
+                }
             }
 
-            var installationId = checked(_nextAttachmentInstallationId + 1);
-            _attachments.Set(
-                registration.ValueType,
-                ownerEntityId,
-                value,
-                AttachmentOwnership.Transferred,
-                installationId,
-                registration);
-            _nextAttachmentInstallationId = installationId;
-            var diagnostics = RunAttachmentChecks(registration, value);
+            var diagnostics = RunAttachmentChecks(
+                registration, value ?? throw new InvalidOperationException("The attachment restore provider omitted its runtime value."));
 
             if (!diagnostics.IsEmpty)
             {
@@ -988,6 +1076,7 @@ public sealed partial class World
     private object RunAttachmentStateRead(
         IWorldAttachmentRegistration registration,
         scoped ReadOnlySpan<byte> source,
+        EbinReadLimits limits,
         CancellationToken cancellationToken)
     {
         StartAttachmentCallback();
@@ -996,7 +1085,7 @@ public sealed partial class World
 
         try
         {
-            author = registration.ReadStateRecord(source, cancellationToken);
+            author = registration.ReadStateRecord(source, limits, cancellationToken);
         }
         catch (Exception exception)
         {
@@ -1026,14 +1115,15 @@ public sealed partial class World
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "The restore wrapper must prefer the first sticky reentrancy failure and revoke the attachment callback boundary.")]
-    private object RunAttachmentStateRestore(
+    private void RunAttachmentStateRestore(
         IWorldAttachmentRegistration registration,
         object author,
         WorldAttachmentRestoreBinding binding,
+        out object? value,
         CancellationToken cancellationToken)
     {
         StartAttachmentCallback();
-        object? value = null;
+        value = null;
         Exception? callbackFailure = null;
 
         try
@@ -1061,7 +1151,10 @@ public sealed partial class World
             throw callbackFailure;
         }
 
-        return value ?? throw new InvalidOperationException("The attachment restore provider returned a null value.");
+        if (value is null)
+        {
+            throw new InvalidOperationException("The attachment restore provider returned a null value.");
+        }
     }
 
     private sealed class WorldAttachmentRestoreContext : IWorldAttachmentRestoreContext

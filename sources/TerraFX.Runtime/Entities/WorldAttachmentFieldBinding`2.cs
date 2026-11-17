@@ -103,83 +103,7 @@ public sealed class WorldAttachmentFieldBinding<T, TAuthor>
             new ValueAccessor<TValue, TRuntime, TAuthorReader>(runtime, author));
     }
 
-    private static WorldAttachmentFieldDescriptor ResolveField(
-        CompiledContentSchemaRegistry schemas,
-        ContentSchemaReference schema,
-        ComponentFieldPath path)
-    {
-        ArgumentNullException.ThrowIfNull(schemas);
-        ArgumentNullException.ThrowIfNull(path);
-
-        if ((schema.Scope != ContentSchemaScope.Content)
-            || !schemas.TryGetSchema(schema, out var rootSchema)
-            || (rootSchema.Role != ContentSchemaRole.AttachmentState))
-        {
-            throw new ArgumentException("The exact Content schema tuple is not a registered AttachmentState schema.", nameof(schema));
-        }
-
-        var segments = path.Segments;
-        var currentSchema = rootSchema;
-        var index = 0;
-
-        while (index < segments.Length)
-        {
-            var segment = segments[index];
-
-            if (segment.Kind != ComponentPropertySegmentKind.FieldTag)
-            {
-                throw new ArgumentException("A field tag must select the next attachment schema field.", nameof(path));
-            }
-
-            ContentFieldDescriptor? field = null;
-
-            foreach (var candidate in currentSchema.Fields)
-            {
-                if (candidate.Tag == segment.Value)
-                {
-                    field = candidate;
-                    break;
-                }
-            }
-
-            if (field is null)
-            {
-                throw new ArgumentException("The field tag is not declared at this attachment schema path.", nameof(path));
-            }
-
-            if (index == (segments.Length - 1))
-            {
-                return new WorldAttachmentFieldDescriptor(schema, path, field, currentSchema, schemas);
-            }
-
-            var nextSegment = segments[index + 1];
-
-            if (nextSegment.Kind == ComponentPropertySegmentKind.FixedArrayIndex)
-            {
-                if ((field.WireKind != 23)
-                    || (nextSegment.Value >= field.MaximumCount)
-                    || (index + 2 != segments.Length))
-                {
-                    throw new ArgumentException("The FixedArray index is not valid at this attachment schema path.", nameof(path));
-                }
-
-                return new WorldAttachmentFieldDescriptor(schema, path, field, currentSchema, schemas);
-            }
-
-            if ((nextSegment.Kind != ComponentPropertySegmentKind.FieldTag)
-                || (field.WireKind != 22)
-                || !TryResolveNestedSchema(schemas, field, out currentSchema))
-            {
-                throw new ArgumentException("The record path is unresolved or ambiguous in this attachment schema.", nameof(path));
-            }
-
-            index++;
-        }
-
-        throw new ArgumentException("The attachment field path is invalid.", nameof(path));
-    }
-
-    private static ushort ToWireKind<TValue>()
+    internal static ushort ToWireKind<TValue>()
         where TValue : unmanaged
     {
         var type = typeof(TValue);
@@ -280,6 +204,82 @@ public sealed class WorldAttachmentFieldBinding<T, TAuthor>
         }
 
         return 0;
+    }
+
+    private static WorldAttachmentFieldDescriptor ResolveField(
+        CompiledContentSchemaRegistry schemas,
+        ContentSchemaReference schema,
+        ComponentFieldPath path)
+    {
+        ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(path);
+
+        if ((schema.Scope != ContentSchemaScope.Content)
+            || !schemas.TryGetSchema(schema, out var rootSchema)
+            || (rootSchema.Role != ContentSchemaRole.AttachmentState))
+        {
+            throw new ArgumentException("The exact Content schema tuple is not a registered AttachmentState schema.", nameof(schema));
+        }
+
+        var segments = path.Segments;
+        var currentSchema = rootSchema;
+        var index = 0;
+
+        while (index < segments.Length)
+        {
+            var segment = segments[index];
+
+            if (segment.Kind != ComponentPropertySegmentKind.FieldTag)
+            {
+                throw new ArgumentException("A field tag must select the next attachment schema field.", nameof(path));
+            }
+
+            ContentFieldDescriptor? field = null;
+
+            foreach (var candidate in currentSchema.Fields)
+            {
+                if (candidate.Tag == segment.Value)
+                {
+                    field = candidate;
+                    break;
+                }
+            }
+
+            if (field is null)
+            {
+                throw new ArgumentException("The field tag is not declared at this attachment schema path.", nameof(path));
+            }
+
+            if (index == (segments.Length - 1))
+            {
+                return new WorldAttachmentFieldDescriptor(schema, path, field, currentSchema, schemas);
+            }
+
+            var nextSegment = segments[index + 1];
+
+            if (nextSegment.Kind == ComponentPropertySegmentKind.FixedArrayIndex)
+            {
+                if ((field.WireKind != 23)
+                    || (nextSegment.Value >= field.MaximumCount)
+                    || (index + 2 != segments.Length))
+                {
+                    throw new ArgumentException("The FixedArray index is not valid at this attachment schema path.", nameof(path));
+                }
+
+                return new WorldAttachmentFieldDescriptor(schema, path, field, currentSchema, schemas);
+            }
+
+            if ((nextSegment.Kind != ComponentPropertySegmentKind.FieldTag)
+                || (field.WireKind != 22)
+                || !TryResolveNestedSchema(schemas, field, out currentSchema))
+            {
+                throw new ArgumentException("The record path is unresolved or ambiguous in this attachment schema.", nameof(path));
+            }
+
+            index++;
+        }
+
+        throw new ArgumentException("The attachment field path is invalid.", nameof(path));
     }
 
     private static bool TryResolveNestedSchema(

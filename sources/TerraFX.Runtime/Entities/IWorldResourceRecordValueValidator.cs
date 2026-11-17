@@ -1,0 +1,12 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+namespace TerraFX.Entities;
+
+internal interface IWorldResourceRecordValueValidator<T, TAuthor>
+    where T : unmanaged
+    where TAuthor : notnull
+{
+    bool IsValidAuthor(in TAuthor value);
+
+    bool IsValidRuntime(in T value);
+}

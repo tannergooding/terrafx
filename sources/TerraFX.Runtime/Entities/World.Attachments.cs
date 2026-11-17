@@ -160,13 +160,130 @@ public sealed partial class World
         return false;
     }
 
-    internal void ValidateAttachmentEntityReference(Entity entity)
+    internal void RevokeAttachmentMembershipSource(long currentSourceToken)
+    {
+        if (Environment.CurrentManagedThreadId != _ownerThreadId)
+        {
+            throw new InvalidOperationException("Attachment membership validation requires the World owner thread.");
+        }
+
+        if ((currentSourceToken == 0)
+            || (_activeAttachmentMembershipSourceToken != currentSourceToken))
+        {
+            throw new InvalidOperationException("The Current attachment membership source is not active.");
+        }
+
+        _activeAttachmentMembershipSourceToken = 0;
+    }
+
+    internal bool TryResolveAttachmentEntityReference(Guid stableEntityId, out Entity entity)
+    {
+        if (Environment.CurrentManagedThreadId != _ownerThreadId)
+        {
+            throw new InvalidOperationException("Attachment Entity identity validation requires the World owner thread.");
+        }
+
+        if (stableEntityId == Guid.Empty)
+        {
+            throw new ArgumentException("A nonempty stable Entity identity is required.", nameof(stableEntityId));
+        }
+
+        if (!_identityLedger.TryGetLiveLocator(stableEntityId, IdentityKind.Entity, out var locator))
+        {
+            entity = default;
+            return false;
+        }
+
+        if (!_entitySlots.TryGetLive(locator, out var generation))
+        {
+            throw new InvalidOperationException("The attachment Entity identity references a non-live World slot.");
+        }
+
+        if (!_entitySlots.TryGetLocation(locator, generation, out _, out _, out _))
+        {
+            throw new InvalidOperationException("The attachment Entity identity references a slot without live storage.");
+        }
+
+        entity = CreateEntityHandle(locator, generation);
+        return true;
+    }
+
+    internal Guid ValidateAttachmentEntityReference(Entity entity)
     {
         _ = GetLiveArchetype(entity, out _, out _);
+        var stableEntityId = _identityLedger.GetAssignedId(IdentityKind.Entity, entity.Index);
 
-        if (_identityLedger.GetAssignedId(IdentityKind.Entity, entity.Index) == Guid.Empty)
+        if (stableEntityId == Guid.Empty)
         {
             throw new InvalidOperationException("The live attachment Entity reference has no stable identity.");
+        }
+
+        return stableEntityId;
+    }
+
+    internal void ValidateAttachmentMembershipSourceIssuance(
+        bool projected,
+        WorldCommandStaging? sealedCommandRoot = null,
+        long currentSourceToken = 0)
+    {
+        if (Environment.CurrentManagedThreadId != _ownerThreadId)
+        {
+            throw new InvalidOperationException("Attachment membership validation requires the World owner thread.");
+        }
+
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+        if (projected)
+        {
+            if ((sealedCommandRoot is null)
+                || !ReferenceEquals(_activeCommandMembershipRoot, sealedCommandRoot)
+                || (currentSourceToken != 0)
+                || (_activeAttachmentMembershipSourceToken != 0)
+                || (_activeCommandProjectedEntityHandles is not null)
+                || (_activeCommandExcludedEntityHandles is not null))
+            {
+                throw new InvalidOperationException("Projected membership must be issued by the active sealed owner-command root.");
+            }
+        }
+        else if ((sealedCommandRoot is not null)
+            || (currentSourceToken == 0)
+            || (_activeAttachmentMembershipSourceToken != currentSourceToken)
+            || (_activeCommandMembershipRoot is not null)
+            || (_activeCommandProjectedEntityHandles is not null)
+            || (_activeCommandExcludedEntityHandles is not null))
+        {
+            throw new InvalidOperationException("Current attachment membership is unavailable during projected reference validation.");
+        }
+    }
+
+    internal void ValidateAttachmentMembershipSourceUse(
+        bool projected,
+        WorldCommandStaging? sealedCommandRoot = null,
+        long currentSourceToken = 0)
+    {
+        if (Environment.CurrentManagedThreadId != _ownerThreadId)
+        {
+            throw new InvalidOperationException("Attachment membership validation requires the World owner thread.");
+        }
+
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+        if (projected)
+        {
+            if ((sealedCommandRoot is null)
+                || !ReferenceEquals(_activeCommandMembershipRoot, sealedCommandRoot)
+                || (currentSourceToken != 0)
+                || (_activeAttachmentMembershipSourceToken != 0))
+            {
+                throw new InvalidOperationException("The projected attachment membership source is not active.");
+            }
+        }
+        else if ((sealedCommandRoot is not null)
+            || (currentSourceToken == 0)
+            || (_activeAttachmentMembershipSourceToken != currentSourceToken)
+            || (_activeCommandMembershipRoot is not null))
+        {
+            throw new InvalidOperationException("The Current attachment membership source is not active.");
         }
     }
 
@@ -181,6 +298,34 @@ public sealed partial class World
         }
 
         return entityId;
+    }
+
+    private WorldAttachmentMembershipSource CreateCurrentAttachmentMembershipSource()
+    {
+        if (_activeAttachmentMembershipSourceToken != 0)
+        {
+            throw new InvalidOperationException("A Current attachment membership source is already active.");
+        }
+
+        var currentSourceToken = checked(_attachmentMembershipSourceTokenSequence + 1);
+        _attachmentMembershipSourceTokenSequence = currentSourceToken;
+        _activeAttachmentMembershipSourceToken = currentSourceToken;
+
+        var sourceCreated = false;
+
+        try
+        {
+            var source = WorldAttachmentMembershipSource.CreateCurrent(this, currentSourceToken);
+            sourceCreated = true;
+            return source;
+        }
+        finally
+        {
+            if (!sourceCreated)
+            {
+                _activeAttachmentMembershipSourceToken = 0;
+            }
+        }
     }
 
     private bool DetachAttachment(Type valueType, Guid? ownerEntityId)
@@ -453,13 +598,14 @@ public sealed partial class World
     [SuppressMessage("Usage", "CA1031:Do not catch general exception types", Justification = "The callback wrapper must prefer its first sticky reentrancy failure over an exception caught or replaced by the provider.")]
     private ImmutableArray<Diagnostic> RunAttachmentChecks(IWorldAttachmentRegistration registration, object value)
     {
+        using var membershipSource = CreateCurrentAttachmentMembershipSource();
         StartAttachmentCallback();
         var diagnostics = default(ImmutableArray<Diagnostic>);
         Exception? callbackFailure = null;
 
         try
         {
-            diagnostics = registration.Validate(this, value);
+            diagnostics = registration.Validate(this, value, membershipSource);
         }
         catch (Exception exception)
         {
@@ -524,13 +670,16 @@ public sealed partial class World
             {
                 throw callbackFailure;
             }
+
+            entry.SourceStorage?.Dispose();
         }
         catch (Exception exception)
         {
             WorldAttachmentInstanceRegistry.Quarantine(
                 entry.Value ?? throw new InvalidOperationException("The failed attachment release has no value."),
                 quarantineReservation,
-                _domainReservation);
+                _domainReservation,
+                entry.SourceStorage);
             releasePreparation.RecordFailure(binding, exception);
         }
     }
@@ -568,12 +717,13 @@ public sealed partial class World
         Justification = "Captured attachment field readers must not swallow a reentrant World-operation protocol failure during validation.")]
     private void ValidateAllAttachmentEntityReferences()
     {
+        using var membershipSource = CreateCurrentAttachmentMembershipSource();
         StartAttachmentCallback();
         Exception? callbackFailure = null;
 
         try
         {
-            _attachments.ValidateAllEntityReferences(this);
+            _attachments.ValidateAllEntityReferences(this, membershipSource);
         }
         catch (Exception exception)
         {
@@ -600,12 +750,13 @@ public sealed partial class World
     [SuppressMessage("Usage", "CA1031:Do not catch general exception types", Justification = "Captured attachment field readers must not swallow a reentrant World-operation protocol failure during Entity retirement.")]
     private void ValidateAttachmentEntityReferences(Entity target, Guid excludedOwnerId)
     {
+        using var membershipSource = CreateCurrentAttachmentMembershipSource();
         StartAttachmentCallback();
         Exception? callbackFailure = null;
 
         try
         {
-            _attachments.ValidateEntityReferences(this, target, excludedOwnerId);
+            _attachments.ValidateEntityReferences(this, target, excludedOwnerId, membershipSource);
         }
         catch (Exception exception)
         {
@@ -635,16 +786,22 @@ public sealed partial class World
         Justification = "Captured attachment field readers must not swallow a reentrant World-operation protocol failure during Entity retirement.")]
     private void ValidateAttachmentEntityReferencesExcludingOwners(
         IReadOnlySet<Guid> excludedOwnerIds,
-        IReadOnlySet<Entity> excludedEntities)
+        IReadOnlySet<Entity> excludedEntities,
+        WorldAttachmentMembershipSource membershipSource)
     {
         ArgumentNullException.ThrowIfNull(excludedOwnerIds);
         ArgumentNullException.ThrowIfNull(excludedEntities);
+        ArgumentNullException.ThrowIfNull(membershipSource);
         StartAttachmentCallback();
         Exception? callbackFailure = null;
 
         try
         {
-            _attachments.ValidateEntityReferencesExcludingOwners(this, excludedOwnerIds, excludedEntities);
+            _attachments.ValidateEntityReferencesExcludingOwners(
+                this,
+                excludedOwnerIds,
+                excludedEntities,
+                membershipSource);
         }
         catch (Exception exception)
         {

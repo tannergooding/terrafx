@@ -15,6 +15,7 @@ public sealed class WorldAttachmentFactoryBinding<T, TAuthor>
     where T : class
     where TAuthor : notnull
 {
+    private readonly WorldAttachmentRecordBinding<T, TAuthor>? _aggregate;
     private readonly WorldAttachmentFactoryDescriptor _descriptor;
     private readonly ImmutableArray<WorldAttachmentFieldBinding<T, TAuthor>> _fields;
     private readonly IWorldAttachmentStateProvider<T, TAuthor> _provider;
@@ -24,8 +25,10 @@ public sealed class WorldAttachmentFactoryBinding<T, TAuthor>
         WorldAttachmentFactoryDescriptor descriptor,
         ImmutableArray<WorldAttachmentFieldBinding<T, TAuthor>> fields,
         IWorldAttachmentStateProvider<T, TAuthor> provider,
-        CompiledContentSchemaRegistry schemas)
+        CompiledContentSchemaRegistry schemas,
+        WorldAttachmentRecordBinding<T, TAuthor>? aggregate)
     {
+        _aggregate = aggregate;
         _descriptor = descriptor;
         _fields = fields;
         _provider = provider;
@@ -85,7 +88,41 @@ public sealed class WorldAttachmentFactoryBinding<T, TAuthor>
             factoryId,
             factoryVersion,
             descriptors.MoveToImmutable());
-        return new WorldAttachmentFactoryBinding<T, TAuthor>(descriptor, capturedFields, provider, schemas);
+        return new WorldAttachmentFactoryBinding<T, TAuthor>(descriptor, capturedFields, provider, schemas, aggregate: null);
+    }
+
+    internal static WorldAttachmentFactoryBinding<T, TAuthor> CreateAggregate(
+        Guid factoryId,
+        int factoryVersion,
+        CompiledContentSchemaRegistry schemas,
+        ContentSchemaReference schema,
+        WorldAttachmentRecordBinding<T, TAuthor> root,
+        IWorldAttachmentStateProvider<T, TAuthor> provider)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(factoryId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(factoryVersion);
+        ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(provider);
+
+        if ((schema.Scope != ContentSchemaScope.Content)
+            || !schemas.TryGetSchema(schema, out var metadata)
+            || (metadata.Role != ContentSchemaRole.AttachmentState)
+            || (root.Schema != schema)
+            || !ReferenceEquals(root.Schemas, schemas))
+        {
+            throw new ArgumentException("The selected aggregate root is not the exact registered Content AttachmentState schema.", nameof(schema));
+        }
+
+        root.ValidateNestedRoles();
+        var descriptors = CreateAggregateFieldDescriptors(schema, root, schemas);
+        var descriptor = new WorldAttachmentFactoryDescriptor(
+            schema,
+            factoryId,
+            factoryVersion,
+            descriptors,
+            isAggregate: true);
+        return new WorldAttachmentFactoryBinding<T, TAuthor>(descriptor, [], provider, schemas, root);
     }
 
     private static ImmutableArray<WorldAttachmentFieldBinding<T, TAuthor>> CopyAndValidateFields(
@@ -182,6 +219,26 @@ public sealed class WorldAttachmentFactoryBinding<T, TAuthor>
         schemaStack.RemoveAt(schemaStack.Count - 1);
     }
 
+    private static ImmutableArray<WorldAttachmentFieldDescriptor> CreateAggregateFieldDescriptors(
+        ContentSchemaReference schema,
+        WorldAttachmentRecordBinding<T, TAuthor> root,
+        CompiledContentSchemaRegistry schemas)
+    {
+        var fields = ImmutableArray.CreateBuilder<WorldAttachmentFieldDescriptor>(root.Fields.Length);
+
+        foreach (var binding in root.Fields)
+        {
+            fields.Add(new WorldAttachmentFieldDescriptor(
+                schema,
+                new ComponentFieldPath([ComponentPropertySegment.FieldTag(binding.Field.Tag)]),
+                binding.Field,
+                root.DataSchema,
+                schemas));
+        }
+
+        return fields.MoveToImmutable();
+    }
+
     private static bool TryResolveNestedSchema(
         CompiledContentSchemaRegistry schemas,
         ContentFieldDescriptor field,
@@ -222,5 +279,36 @@ public sealed class WorldAttachmentFactoryBinding<T, TAuthor>
 
         dataSchema = null!;
         return false;
+    }
+
+    internal void ValidateAuthor(in TAuthor author)
+    {
+        if (_aggregate is { } aggregate)
+        {
+            aggregate.ValidateAuthor(in author);
+            return;
+        }
+
+        foreach (var field in _fields)
+        {
+            field.ValidateAuthor(in author);
+        }
+    }
+
+    internal void ValidateRuntime(T value, IWorldAttachmentValidationContext context)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (_aggregate is { } aggregate)
+        {
+            aggregate.ValidateRuntime(value, context);
+            return;
+        }
+
+        foreach (var field in _fields)
+        {
+            field.ValidateRuntime(value, context);
+        }
     }
 }

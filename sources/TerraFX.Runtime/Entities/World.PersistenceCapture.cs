@@ -225,6 +225,7 @@ public sealed partial class World
     internal nint CountAttachmentStateRecord(
         WorldPersistenceCaptureLease lease,
         int attachmentIndex,
+        EbinReadLimits limits,
         CancellationToken cancellationToken)
     {
         lease.ValidateCurrent();
@@ -237,7 +238,7 @@ public sealed partial class World
         var entry = GetAttachmentCaptureEntry(attachmentIndex);
         var registration = entry.Registration
             ?? throw new InvalidOperationException("The transferred attachment has no captured state provider.");
-        var context = new AttachmentStateCaptureContext(this, registration.Descriptor);
+        var context = new AttachmentStateCaptureContext(this, registration.Descriptor, limits);
         var binding = new WorldAttachmentCaptureBinding(context);
 
         try
@@ -305,7 +306,7 @@ public sealed partial class World
         }
 
         var registration = GetResourceCaptureRegistration(resourceIndex, out var storage);
-        var count = registration.CountStateRecord(storage, cancellationToken);
+        var count = registration.CountStateRecord(storage, cancellationToken, this, lease.CompletedTick);
         lease.ValidateCurrent();
         return count;
     }
@@ -702,6 +703,7 @@ public sealed partial class World
     internal nint WriteAttachmentStateRecord(
         WorldPersistenceCaptureLease lease,
         int attachmentIndex,
+        EbinReadLimits limits,
         scoped Span<byte> destination,
         CancellationToken cancellationToken)
     {
@@ -715,7 +717,7 @@ public sealed partial class World
         var entry = GetAttachmentCaptureEntry(attachmentIndex);
         var registration = entry.Registration
             ?? throw new InvalidOperationException("The transferred attachment has no captured state provider.");
-        var context = new AttachmentStateCaptureContext(this, registration.Descriptor);
+        var context = new AttachmentStateCaptureContext(this, registration.Descriptor, limits);
         var binding = new WorldAttachmentCaptureBinding(context);
 
         try
@@ -786,7 +788,7 @@ public sealed partial class World
         }
 
         var registration = GetResourceCaptureRegistration(resourceIndex, out var storage);
-        var written = registration.WriteStateRecord(storage, destination, cancellationToken);
+        var written = registration.WriteStateRecord(storage, destination, cancellationToken, this, lease.CompletedTick);
         lease.ValidateCurrent();
         return written;
     }
@@ -1010,14 +1012,20 @@ public sealed partial class World
         private readonly WorldAttachmentFactoryDescriptor _descriptor;
         private Exception? _failure;
         private bool _isActive = true;
+        private readonly EbinReadLimits _limits;
         private World? _world;
 
-        internal AttachmentStateCaptureContext(World world, WorldAttachmentFactoryDescriptor descriptor)
+        internal AttachmentStateCaptureContext(
+            World world,
+            WorldAttachmentFactoryDescriptor descriptor,
+            EbinReadLimits limits)
         {
             ArgumentNullException.ThrowIfNull(world);
             ArgumentNullException.ThrowIfNull(descriptor);
+            ArgumentNullException.ThrowIfNull(limits);
             _world = world;
             _descriptor = descriptor;
+            _limits = limits;
             OwnerThreadId = world._ownerThreadId;
         }
 
@@ -1026,6 +1034,8 @@ public sealed partial class World
         public Exception? Failure => _failure;
 
         public bool IsActive => _isActive && (_world is not null);
+
+        public EbinReadLimits Limits => _limits;
 
         public int OwnerThreadId { get; }
 

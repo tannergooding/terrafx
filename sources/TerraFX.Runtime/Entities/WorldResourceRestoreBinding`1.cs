@@ -39,6 +39,8 @@ public sealed class WorldResourceRestoreBinding<T>
     /// <summary>Gets the exact resource state schema tuple.</summary>
     public ContentSchemaReference Schema => GetOperation().Schema;
 
+    internal WorldResourceReferenceBinding References => GetOperation().References;
+
     /// <summary>Installs one restored partition value at its exact index.</summary>
     /// <param name="partitionIndex">The zero-based resource partition index.</param>
     /// <param name="value">The restored resource partition value.</param>

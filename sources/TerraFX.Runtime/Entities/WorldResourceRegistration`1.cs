@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -33,6 +34,8 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
 
     public WorldResourceRegistrationDescriptor Descriptor { get; }
 
+    public bool IsAggregate => _factory.Dispatch.IsAggregate;
+
     public int PartitionCount => _description.PartitionCount;
 
     public Guid ResourceId => _description.ResourceId;
@@ -41,13 +44,16 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
 
     public ContentSchemaReference Schema => _factory.Descriptor.Schema;
 
+    public Type SourceAuthorType => _codec.SourceAuthorType;
+
     private static long ArrayBytes(int count, int stride)
         => checked(ArrayHeaderBytes + ((checked((long)count * stride) + 7) & ~7L));
 
-    public nint CountStateRecord(object storage, CancellationToken cancellationToken)
+    public nint CountStateRecord(object storage, CancellationToken cancellationToken, World? world = null, long? completedTick = null)
     {
+        using var reservation = ReserveOperation(world, WorldResourceOperationKind.Count);
         var partitions = GetPartitions(storage);
-        var operation = CreateOperation(WorldResourceOperationKind.Count);
+        var operation = CreateOperation(WorldResourceOperationKind.Count, world, completedTick);
         return _codec.Count(operation, partitions, _factory.Dispatch.CreateCaptureData(partitions), cancellationToken);
     }
 
@@ -57,8 +63,9 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
     public long GetStorageByteReservation()
         => ArrayBytes(PartitionCount, Unsafe.SizeOf<T>());
 
-    public void InitializeAndValidate(object storage)
+    public void InitializeAndValidate(object storage, World? world = null)
     {
+        using var reservation = ReserveOperation(world, WorldResourceOperationKind.Validation);
         ArgumentNullException.ThrowIfNull(storage);
 
         if (storage is not T[] partitions || (partitions.Length != PartitionCount))
@@ -74,13 +81,7 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
             partitions[index] = value;
         }
 
-        var operation = new WorldResourceOperationControl(
-            _factory,
-            ResourceId,
-            _factory.Descriptor.Schema,
-            PartitionCount,
-            typeof(T),
-            WorldResourceOperationKind.Validation);
+        var operation = CreateOperation(WorldResourceOperationKind.Validation, world, null);
         var diagnostics = _codec.Validate(operation, partitions, CancellationToken.None);
 
         if (operation.Failure is { } failure)
@@ -97,13 +98,43 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
         }
     }
 
+    public void RestorePreparedSource(
+        IWorldPreparedResourceSource source,
+        object storage,
+        World candidate,
+        long completedTick,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        cancellationToken.ThrowIfCancellationRequested();
+        var owner = candidate.ValidatePreparedResourceSource(this, source, completedTick);
+        using var reservation = ReserveOperation(candidate, WorldResourceOperationKind.Restore);
+        var operation = CreateOperation(WorldResourceOperationKind.Restore, candidate, completedTick);
+        operation.BindPreparedSource(this, owner);
+
+        try
+        {
+            _codec.RestorePreparedSource(source, operation, GetPartitions(storage), cancellationToken);
+        }
+        finally
+        {
+            operation.Revoke();
+        }
+
+        ValidateForExecution(storage, candidate, completedTick);
+    }
+
     public void RestoreStateRecord(
         scoped ReadOnlySpan<byte> source,
         object storage,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        World? world = null,
+        long? completedTick = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var outcome = _codec.Read(source, ResourceId, Schema, PartitionCount, cancellationToken);
+        using var reservation = ReserveOperation(world, WorldResourceOperationKind.Restore);
+        var readOperation = IsAggregate ? CreateOperation(WorldResourceOperationKind.Validation, world, completedTick) : null;
+        var outcome = _codec.Read(source, ResourceId, Schema, PartitionCount, readOperation, cancellationToken);
 
         if (outcome.Status is WorldResourceReadStatus.Rejected)
         {
@@ -122,14 +153,22 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
         var partitions = GetPartitions(storage);
         _codec.Restore(
             outcome.Author,
-            CreateOperation(WorldResourceOperationKind.Restore),
+            CreateOperation(WorldResourceOperationKind.Restore, world, completedTick),
             partitions,
             cancellationToken);
-        ValidateForExecution(storage);
+        ValidateForExecution(storage, world, completedTick);
     }
 
-    public void ValidateForExecution(object storage)
+    public bool TryReadSource(
+        IWorldRestoreSourceOwner owner,
+        out IWorldPreparedResourceSource? source,
+        out ImmutableArray<Diagnostic> diagnostics,
+        CancellationToken cancellationToken)
+        => _codec.TryReadSource(this, owner, out source, out diagnostics, cancellationToken);
+
+    public void ValidateForExecution(object storage, World? world = null, long? requiredRequestTick = null)
     {
+        using var reservation = ReserveOperation(world, WorldResourceOperationKind.Validation);
         var partitions = GetPartitions(storage);
 
         for (var index = 0; index < partitions.Length; index++)
@@ -137,13 +176,7 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
             _factory.Dispatch.ValidateRuntimePartition(in partitions[index]);
         }
 
-        var operation = new WorldResourceOperationControl(
-            _factory,
-            ResourceId,
-            _factory.Descriptor.Schema,
-            PartitionCount,
-            typeof(T),
-            WorldResourceOperationKind.Validation);
+        var operation = CreateOperation(WorldResourceOperationKind.Validation, world, requiredRequestTick);
         var diagnostics = _codec.Validate(operation, partitions, CancellationToken.None);
 
         if (operation.Failure is { } failure)
@@ -160,10 +193,11 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
         }
     }
 
-    public nint WriteStateRecord(object storage, scoped Span<byte> destination, CancellationToken cancellationToken)
+    public nint WriteStateRecord(object storage, scoped Span<byte> destination, CancellationToken cancellationToken, World? world = null, long? completedTick = null)
     {
+        using var reservation = ReserveOperation(world, WorldResourceOperationKind.Write);
         var partitions = GetPartitions(storage);
-        var operation = CreateOperation(WorldResourceOperationKind.Write);
+        var operation = CreateOperation(WorldResourceOperationKind.Write, world, completedTick);
         return _codec.Write(
             operation,
             partitions,
@@ -172,14 +206,23 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
             cancellationToken);
     }
 
-    private WorldResourceOperationControl CreateOperation(WorldResourceOperationKind operation)
-        => new(
+    private WorldResourceOperationControl CreateOperation(WorldResourceOperationKind operation, World? world, long? requiredRequestTick)
+    {
+        var control = new WorldResourceOperationControl(
             _factory,
             ResourceId,
             Schema,
             PartitionCount,
             typeof(T),
             operation);
+
+        if (IsAggregate)
+        {
+            control.BindReferences(world ?? throw new InvalidOperationException("An aggregate resource operation requires its actual World issuer."), requiredRequestTick);
+        }
+
+        return control;
+    }
 
     private T[] GetPartitions(object storage)
     {
@@ -191,5 +234,30 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
         }
 
         return partitions;
+    }
+
+    private WorldResourceOperationReservation? ReserveOperation(World? world, WorldResourceOperationKind operation)
+    {
+        var bytes = _codec.GetOperationByteReservation(operation);
+
+        if (bytes == 0)
+        {
+            return null;
+        }
+
+        var owner = world ?? throw new InvalidOperationException("An aggregate resource operation requires its actual World admission owner.");
+        var registered = false;
+
+        foreach (var resource in owner.Registration.Resources)
+        {
+            registered |= ReferenceEquals(resource, this);
+        }
+
+        if (!registered)
+        {
+            throw new ArgumentException("The resource operation does not belong to the supplied World registration.", nameof(world));
+        }
+
+        return owner.ReserveResourceOperationBytes(bytes, GetStorageByteReservation());
     }
 }

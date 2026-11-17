@@ -18,6 +18,7 @@ public sealed class WorldResourceReadBinding<TAuthor>
 
     private Exception? _failure;
     private bool _isActive = true;
+    private WorldResourceOperationControl? _operation;
     private readonly int _ownerThreadId;
     private readonly int _partitionCount;
     private readonly Guid _resourceId;
@@ -30,6 +31,16 @@ public sealed class WorldResourceReadBinding<TAuthor>
         ContentSchemaReference schema,
         int partitionCount,
         nint sourceByteLength)
+        : this(resourceId, schema, partitionCount, sourceByteLength, null)
+    {
+    }
+
+    internal WorldResourceReadBinding(
+        Guid resourceId,
+        ContentSchemaReference schema,
+        int partitionCount,
+        nint sourceByteLength,
+        WorldResourceOperationControl? operation)
     {
         if (resourceId == Guid.Empty)
         {
@@ -51,6 +62,7 @@ public sealed class WorldResourceReadBinding<TAuthor>
         _partitionCount = partitionCount;
         _sourceByteLength = sourceByteLength;
         _ownerThreadId = Environment.CurrentManagedThreadId;
+        _operation = operation;
     }
 
     /// <summary>Gets the complete resource partition count.</summary>
@@ -65,7 +77,19 @@ public sealed class WorldResourceReadBinding<TAuthor>
     /// <summary>Gets the exact length of the scoped source record.</summary>
     public nint SourceByteLength => _sourceByteLength;
 
-    internal Exception? Failure => _failure;
+    internal Exception? Failure => _failure ?? _operation?.Failure;
+
+    internal EbinReadLimits PersistenceLimits => References.PersistenceLimits;
+
+    internal WorldResourceReferenceBinding References
+    {
+        get
+        {
+            EnsureActive();
+            return _operation?.References
+                ?? throw RecordFailure(new InvalidOperationException("This resource read has no issued reference or persistence-limit context."));
+        }
+    }
 
     private static Diagnostic CreateDiagnostic(
         string code,
@@ -228,7 +252,20 @@ public sealed class WorldResourceReadBinding<TAuthor>
         return WorldResourceReadResult<TAuthor>.Rejected([resultDiagnostic], this);
     }
 
-    internal void Revoke() => _isActive = false;
+    internal void Revoke()
+    {
+        _isActive = false;
+        _operation?.Revoke();
+        _operation = null;
+    }
+
+    private void EnsureActive()
+    {
+        if (!_isActive || (Environment.CurrentManagedThreadId != _ownerThreadId))
+        {
+            throw RecordFailure(new InvalidOperationException("The resource read binding is not active on its issuing thread."));
+        }
+    }
 
     private void EnsureCanIssueResult()
     {

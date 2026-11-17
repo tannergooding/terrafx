@@ -20,6 +20,15 @@ public sealed class WorldAttachmentCaptureBinding
 
     internal Exception? Failure => _context.Failure;
 
+    internal EbinReadLimits Limits
+    {
+        get
+        {
+            EnsureActive();
+            return _context.Limits;
+        }
+    }
+
     /// <summary>Reads the stable identity for one declared live-Entity reference.</summary>
     /// <param name="referenceField">The selected Entity-reference field descriptor.</param>
     /// <param name="entity">The live same-World Entity.</param>

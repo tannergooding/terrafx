@@ -18,15 +18,18 @@ public sealed class WorldResourceFieldBinding<T, TAuthor>
     private readonly object _accessorState;
     private readonly WorldResourceFieldDescriptor _descriptor;
     private readonly ImmutableArray<ComponentStoragePath> _partitionStoragePaths;
+    private readonly IWorldResourceRecordBindingNode? _recordBinding;
 
     private WorldResourceFieldBinding(
         WorldResourceFieldDescriptor descriptor,
         ImmutableArray<ComponentStoragePath> partitionStoragePaths,
-        object accessorState)
+        object accessorState,
+        IWorldResourceRecordBindingNode? recordBinding = null)
     {
         _descriptor = descriptor;
         _partitionStoragePaths = partitionStoragePaths;
         _accessorState = accessorState;
+        _recordBinding = recordBinding;
     }
 
     /// <summary>Gets the selected Core resource-state field.</summary>
@@ -40,6 +43,8 @@ public sealed class WorldResourceFieldBinding<T, TAuthor>
     internal IWorldResourceFieldAccess<T> FieldAccess
         => _accessorState as IWorldResourceFieldAccess<T>
             ?? throw new InvalidOperationException("The resource field accessor state has the wrong family type.");
+
+    internal IWorldResourceRecordBindingNode? RecordBinding => _recordBinding;
 
     /// <summary>Creates a binding for the complete fixed-array partition domain.</summary>
     /// <typeparam name="TElement">The unmanaged fixed-array element type.</typeparam>
@@ -75,32 +80,7 @@ public sealed class WorldResourceFieldBinding<T, TAuthor>
         return new WorldResourceFieldBinding<T, TAuthor>(field, storagePaths, readers);
     }
 
-    private static ImmutableArray<ComponentStoragePath> CopyStoragePaths(
-        ImmutableArray<ComponentStoragePath> storagePaths)
-    {
-        if (storagePaths.IsDefaultOrEmpty)
-        {
-            throw new ArgumentException("Partition storage paths must be initialized and nonempty.", nameof(storagePaths));
-        }
-
-        for (var index = 0; index < storagePaths.Length; index++)
-        {
-            var path = storagePaths[index]
-                ?? throw new ArgumentException("Partition storage paths cannot contain null entries.", nameof(storagePaths));
-
-            for (var previousIndex = 0; previousIndex < index; previousIndex++)
-            {
-                if (path.Equals(storagePaths[previousIndex]))
-                {
-                    throw new ArgumentException("Partition storage paths must be unique.", nameof(storagePaths));
-                }
-            }
-        }
-
-        return ImmutableArrayCopy.Create(storagePaths);
-    }
-
-    private static ushort GetWireKind<TValue>()
+    internal static ushort GetWireKind<TValue>()
         where TValue : unmanaged
     {
         var type = typeof(TValue);
@@ -208,6 +188,66 @@ public sealed class WorldResourceFieldBinding<T, TAuthor>
         return 0;
     }
 
+    internal static WorldResourceFieldBinding<T, TAuthor> PartitionRecords<TSlotAuthor, TAuthorReader>(
+        WorldResourceFieldDescriptor field,
+        WorldResourceRecordBinding<T, TSlotAuthor> slot,
+        TAuthorReader author)
+        where TSlotAuthor : notnull
+        where TAuthorReader : struct, IComponentArrayReader<TAuthor, TSlotAuthor>
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(slot);
+        var metadata = field.Metadata;
+
+        if ((metadata.WireKind != 24) || !metadata.IsRequired
+            || (metadata.Reference != ContentReferenceKind.None)
+            || (metadata.NestedRoleMask != 0) || (metadata.NestedSchemas.Length != 1)
+            || (metadata.NestedSchemas[0] != slot.Schema)
+            || !ReferenceEquals(field.Schemas, slot.Schemas)
+            || (metadata.DefaultValue is not null))
+        {
+            throw new ArgumentException("The selected resource field is not an exact required partition RecordArray.", nameof(field));
+        }
+
+        var paths = ImmutableArray.CreateBuilder<ComponentStoragePath>();
+
+        foreach (var leaf in slot.Storage.Leaves)
+        {
+            if (leaf.Purpose == ComponentStoragePurpose.SchemaValue)
+            {
+                paths.Add(leaf.Path);
+            }
+        }
+
+        return new WorldResourceFieldBinding<T, TAuthor>(
+            field, paths.ToImmutable(), new RecordReaders<TSlotAuthor, TAuthorReader>(field, slot, author), slot);
+    }
+
+    private static ImmutableArray<ComponentStoragePath> CopyStoragePaths(
+        ImmutableArray<ComponentStoragePath> storagePaths)
+    {
+        if (storagePaths.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("Partition storage paths must be initialized and nonempty.", nameof(storagePaths));
+        }
+
+        for (var index = 0; index < storagePaths.Length; index++)
+        {
+            var path = storagePaths[index]
+                ?? throw new ArgumentException("Partition storage paths cannot contain null entries.", nameof(storagePaths));
+
+            for (var previousIndex = 0; previousIndex < index; previousIndex++)
+            {
+                if (path.Equals(storagePaths[previousIndex]))
+                {
+                    throw new ArgumentException("Partition storage paths must be unique.", nameof(storagePaths));
+                }
+            }
+        }
+
+        return ImmutableArrayCopy.Create(storagePaths);
+    }
+
     private sealed class CapturedReaders<TRuntime, TAuthorReader, TElement> : IWorldResourceFieldAccess<T>
         where TRuntime : struct, IComponentValueReader<T, TElement>
         where TAuthorReader : struct, IComponentArrayReader<TAuthor, TElement>
@@ -252,5 +292,54 @@ public sealed class WorldResourceFieldBinding<T, TAuthor>
 
         public object ReadPartition(in T partition)
             => _runtime.Get(in partition)!;
+
+        public void ValidateAuthorElement(object author, int index)
+            => _ = ReadAuthorElement(author, index);
+
+        public void ValidatePartition(in T partition)
+            => _ = ReadPartition(in partition);
+    }
+
+    private sealed class RecordReaders<TSlotAuthor, TAuthorReader> : IWorldResourceFieldAccess<T>
+        where TSlotAuthor : notnull
+        where TAuthorReader : struct, IComponentArrayReader<TAuthor, TSlotAuthor>
+    {
+        private readonly TAuthorReader _author;
+        private readonly WorldResourceRecordBinding<T, TSlotAuthor> _slot;
+
+        internal RecordReaders(
+            WorldResourceFieldDescriptor descriptor,
+            WorldResourceRecordBinding<T, TSlotAuthor> slot,
+            TAuthorReader author)
+        {
+            Descriptor = descriptor;
+            _slot = slot;
+            _author = author;
+        }
+
+        public WorldResourceFieldDescriptor Descriptor { get; }
+
+        public Type ElementType => typeof(T);
+
+        private static TAuthor GetAuthor(object author)
+            => author is TAuthor value
+                ? value
+                : throw new InvalidOperationException("The resource author root has the wrong type.");
+
+        public int GetAuthorCount(object author)
+            => _author.GetCount(GetAuthor(author));
+
+        public object ReadAuthorElement(object author, int index)
+            => _author.GetElement(GetAuthor(author), index);
+
+        public object ReadPartition(in T partition) => partition;
+
+        public void ValidateAuthorElement(object author, int index)
+        {
+            var value = _author.GetElement(GetAuthor(author), index);
+            _slot.ValidateAuthor(in value);
+        }
+
+        public void ValidatePartition(in T partition) => _slot.ValidateRuntime(in partition);
     }
 }

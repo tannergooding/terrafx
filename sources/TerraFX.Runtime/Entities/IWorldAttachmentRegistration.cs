@@ -13,6 +13,8 @@ internal interface IWorldAttachmentRegistration
 
     AttachmentScope Scope { get; }
 
+    Type SourceAuthorType { get; }
+
     Type ValueType { get; }
 
     nint CountStateRecord(
@@ -21,19 +23,36 @@ internal interface IWorldAttachmentRegistration
         WorldAttachmentCaptureBinding binding,
         CancellationToken cancellationToken);
 
-    object ReadStateRecord(scoped ReadOnlySpan<byte> source, CancellationToken cancellationToken);
+    object ReadStateRecord(
+        scoped ReadOnlySpan<byte> source,
+        EbinReadLimits limits,
+        CancellationToken cancellationToken);
 
     void Release(object value, WorldAttachmentReleaseBinding binding);
 
     object RestoreState(object author, WorldAttachmentRestoreBinding binding, CancellationToken cancellationToken);
 
-    ImmutableArray<Diagnostic> Validate(World world, object value);
+    bool TryReadWorldSource(
+        IWorldRestoreSourceOwner owner,
+        out IWorldPreparedAttachmentSource? source,
+        out ImmutableArray<Diagnostic> diagnostics,
+        CancellationToken cancellationToken);
 
-    void ValidateEntityReferences(World world, object value);
+    ImmutableArray<Diagnostic> Validate(World world, object value, WorldAttachmentMembershipSource membershipSource);
 
-    void ValidateEntityReferences(World world, object value, Entity excludedEntity);
+    void ValidateEntityReferences(
+        World world,
+        object value,
+        Entity excludedEntity,
+        WorldAttachmentMembershipSource membershipSource);
 
-    void ValidateEntityReferences(World world, object value, IReadOnlySet<Entity> excludedEntities);
+    void ValidateEntityReferences(
+        World world,
+        object value,
+        IReadOnlySet<Entity> excludedEntities,
+        WorldAttachmentMembershipSource membershipSource);
+
+    void ValidateEntityReferences(World world, object value, WorldAttachmentMembershipSource membershipSource);
 
     nint WriteStateRecord(
         object value,

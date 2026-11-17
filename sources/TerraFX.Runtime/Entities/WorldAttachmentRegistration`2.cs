@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
 namespace TerraFX.Entities;
@@ -28,6 +29,8 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
     public WorldAttachmentFactoryDescriptor Descriptor => _binding.Descriptor;
 
     public AttachmentScope Scope { get; }
+
+    public Type SourceAuthorType => typeof(TAuthor);
 
     public Type ValueType => typeof(T);
 
@@ -55,40 +58,22 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
         return count;
     }
 
-    public object ReadStateRecord(scoped ReadOnlySpan<byte> source, CancellationToken cancellationToken)
+    public object ReadStateRecord(
+        scoped ReadOnlySpan<byte> source,
+        EbinReadLimits limits,
+        CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var binding = new WorldAttachmentReadBinding<TAuthor>(Descriptor.Schema, source.Length);
+        var result = ReadStateRecordResult(source, limits, cancellationToken);
 
-        try
+        if (result.Status is WorldAttachmentReadStatus.Rejected)
         {
-            var result = binding.ValidateComplete(_binding.Provider.Read(source, binding, cancellationToken));
-
-            if (binding.Failure is { } failure)
-            {
-                throw failure;
-            }
-
-            if (result.Status is WorldAttachmentReadStatus.Rejected)
-            {
-                var diagnostic = result.Diagnostics[0];
-                throw new System.IO.InvalidDataException($"{diagnostic.Code}: {diagnostic.Message}");
-            }
-
-            if ((result.Status is not WorldAttachmentReadStatus.Read)
-                || (result.ConsumedBytes != source.Length)
-                || !result.Diagnostics.IsEmpty
-                || !result.TryGetAuthorValue(out var author))
-            {
-                throw new InvalidOperationException("The successful attachment state read did not return its complete author value.");
-            }
-
-            return author;
+            var diagnostic = result.Diagnostics[0];
+            throw new System.IO.InvalidDataException($"{diagnostic.Code}: {diagnostic.Message}");
         }
-        finally
-        {
-            binding.Revoke();
-        }
+
+        return result.TryGetAuthorValue(out var author)
+            ? author
+            : throw new InvalidOperationException("The attachment state read omitted its immutable author.");
     }
 
     public void Release(object value, WorldAttachmentReleaseBinding binding)
@@ -122,17 +107,83 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
             ?? throw new InvalidOperationException("The attachment restore provider returned null.");
     }
 
-    public ImmutableArray<Diagnostic> Validate(World world, object value)
+    [SuppressMessage("Usage", "CA1031:Do not catch general exception types", Justification = "The exact source operation preserves its first sticky callback failure even when provider code catches it.")]
+    public bool TryReadWorldSource(
+        IWorldRestoreSourceOwner owner,
+        out IWorldPreparedAttachmentSource? source,
+        out ImmutableArray<Diagnostic> diagnostics,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        cancellationToken.ThrowIfCancellationRequested();
+        source = null;
+        diagnostics = [];
+        using var lease = owner.AcquireRead();
+        var payload = lease.ReadAttachment(this);
+        WorldAttachmentReadResult<TAuthor> result;
+        lease.EnterProviderRead();
+
+        try
+        {
+            result = ReadStateRecordResult(payload, owner.Limits, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            throw lease.RecordFailure(exception);
+        }
+        finally
+        {
+            lease.ExitProviderRead();
+        }
+
+        lease.ThrowIfFailed();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (result.Status is WorldAttachmentReadStatus.Rejected)
+        {
+            diagnostics = result.Diagnostics;
+            return false;
+        }
+
+        if (!result.TryGetAuthorValue(out var author))
+        {
+            throw lease.RecordFailure(new InvalidOperationException("The selected World attachment reader omitted its immutable author."));
+        }
+
+        var ownership = lease.RetainStorage();
+
+        try
+        {
+            source = new WorldAttachmentSource<TAuthor>(this, owner, author, ownership);
+            ownership = null;
+            return true;
+        }
+        finally
+        {
+            ownership?.Dispose();
+        }
+    }
+
+    public ImmutableArray<Diagnostic> Validate(
+        World world,
+        object value,
+        WorldAttachmentMembershipSource membershipSource)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(membershipSource);
 
         if (value is not T attachment)
         {
             throw new ArgumentException("The transferred attachment does not match its registered CLR type.", nameof(value));
         }
 
-        var context = new ValidationContext(world, _binding, attachment, excludedEntity: null, excludedEntities: null);
+        var context = new ValidationContext(
+            _binding,
+            attachment,
+            membershipSource,
+            excludedEntity: null,
+            excludedEntities: null);
         var scopedBinding = new WorldAttachmentValidationBinding(context);
 
         try
@@ -150,6 +201,8 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
                 throw new InvalidOperationException("The attachment provider returned a default validation diagnostics array.");
             }
 
+            membershipSource.ValidateForCommit();
+
             foreach (var diagnostic in diagnostics)
             {
                 ArgumentNullException.ThrowIfNull(diagnostic);
@@ -164,17 +217,28 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
         }
     }
 
-    public void ValidateEntityReferences(World world, object value)
-        => ValidateEntityReferences(world, value, excludedEntity: null, excludedEntities: null);
+    public void ValidateEntityReferences(
+        World world,
+        object value,
+        Entity excludedEntity,
+        WorldAttachmentMembershipSource membershipSource)
+        => ValidateEntityReferences(world, value, membershipSource, excludedEntity, excludedEntities: null);
 
-    public void ValidateEntityReferences(World world, object value, Entity excludedEntity)
-        => ValidateEntityReferences(world, value, excludedEntity, excludedEntities: null);
-
-    public void ValidateEntityReferences(World world, object value, IReadOnlySet<Entity> excludedEntities)
+    public void ValidateEntityReferences(
+        World world,
+        object value,
+        IReadOnlySet<Entity> excludedEntities,
+        WorldAttachmentMembershipSource membershipSource)
     {
         ArgumentNullException.ThrowIfNull(excludedEntities);
-        ValidateEntityReferences(world, value, excludedEntity: null, excludedEntities: excludedEntities);
+        ValidateEntityReferences(world, value, membershipSource, excludedEntity: null, excludedEntities: excludedEntities);
     }
+
+    public void ValidateEntityReferences(
+        World world,
+        object value,
+        WorldAttachmentMembershipSource membershipSource)
+        => ValidateEntityReferences(world, value, membershipSource, excludedEntity: null, excludedEntities: null);
 
     public nint WriteStateRecord(
         object value,
@@ -197,6 +261,58 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
         }
 
         return written;
+    }
+
+    private WorldAttachmentReadResult<TAuthor> ReadStateRecordResult(
+        scoped ReadOnlySpan<byte> source,
+        EbinReadLimits limits,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        cancellationToken.ThrowIfCancellationRequested();
+        var binding = new WorldAttachmentReadBinding<TAuthor>(Descriptor.Schema, source.Length, limits);
+
+        try
+        {
+            var result = binding.ValidateComplete(_binding.Provider.Read(source, binding, cancellationToken));
+
+            if (binding.Failure is { } failure)
+            {
+                throw failure;
+            }
+
+            if (result.Status is WorldAttachmentReadStatus.Rejected)
+            {
+                if ((result.ConsumedBytes != 0) || result.Diagnostics.IsDefaultOrEmpty
+                    || result.TryGetAuthorValue(out _))
+                {
+                    throw new InvalidOperationException("The rejected attachment state read returned an inconsistent result.");
+                }
+            }
+            else if ((result.Status is not WorldAttachmentReadStatus.Read)
+                || (result.ConsumedBytes != source.Length) || result.Diagnostics.IsDefault
+                || !result.Diagnostics.IsEmpty || !result.TryGetAuthorValue(out var author))
+            {
+                throw new InvalidOperationException("The successful attachment state read did not return its complete author value.");
+            }
+            else
+            {
+                try
+                {
+                    _binding.ValidateAuthor(in author);
+                }
+                catch (Exception exception) when (exception is ArgumentException or System.IO.InvalidDataException)
+                {
+                    throw new InvalidOperationException("The successful attachment reader returned an author outside its captured family contract.", exception);
+                }
+            }
+
+            return result;
+        }
+        finally
+        {
+            binding.Revoke();
+        }
     }
 
     private T ValidateCaptureOperation(
@@ -228,22 +344,25 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
     private void ValidateEntityReferences(
         World world,
         object value,
+        WorldAttachmentMembershipSource membershipSource,
         Entity? excludedEntity,
         IReadOnlySet<Entity>? excludedEntities)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(membershipSource);
 
         if (value is not T attachment)
         {
             throw new ArgumentException("The attachment does not match its registered CLR type.", nameof(value));
         }
 
-        var context = new ValidationContext(world, _binding, attachment, excludedEntity, excludedEntities);
+        var context = new ValidationContext(_binding, attachment, membershipSource, excludedEntity, excludedEntities);
 
         try
         {
             context.ValidateRuntimeFields(attachment);
+            membershipSource.ValidateForCommit();
         }
         finally
         {
@@ -258,18 +377,18 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
         private readonly Entity? _excludedEntity;
         private Exception? _failure;
         private int _isActive = 1;
+        private readonly WorldAttachmentMembershipSource _membershipSource;
         private readonly T _value;
-        private readonly World _world;
 
         internal ValidationContext(
-            World world,
             WorldAttachmentFactoryBinding<T, TAuthor> binding,
             T value,
+            WorldAttachmentMembershipSource membershipSource,
             Entity? excludedEntity,
             IReadOnlySet<Entity>? excludedEntities)
         {
-            _world = world;
             _binding = binding;
+            _membershipSource = membershipSource;
             _excludedEntity = excludedEntity;
             _excludedEntities = excludedEntities;
             _value = value;
@@ -295,12 +414,34 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
                 throw RecordFailure(new InvalidOperationException("The attachment validation context is expired or used from another thread."));
             }
 
-            _world.ValidateAttachmentEntityReference(entity);
-
-            if (((_excludedEntity is { } excludedEntity) && entity.Equals(excludedEntity))
-                || (_excludedEntities?.Contains(entity) ?? false))
+            try
             {
-                throw new InvalidOperationException("A live attachment reference prevents destruction of its target Entity.");
+                _membershipSource.ValidateEntity(entity, _excludedEntity, _excludedEntities);
+            }
+            catch (Exception exception)
+            {
+                throw RecordFailure(exception);
+            }
+        }
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "A stable-ID attachment reference failure must remain sticky if a provider catches it.")]
+        public void ValidateEntityId(Guid entityId)
+        {
+            if (!IsActive || (Environment.CurrentManagedThreadId != OwnerThreadId))
+            {
+                throw RecordFailure(new InvalidOperationException("The attachment validation context is expired or used from another thread."));
+            }
+
+            try
+            {
+                _membershipSource.ValidateEntityId(entityId, _excludedEntity, _excludedEntities);
+            }
+            catch (Exception exception)
+            {
+                throw RecordFailure(exception);
             }
         }
 
@@ -320,11 +461,6 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
             => Volatile.Write(ref _isActive, 0);
 
         internal void ValidateRuntimeFields(T attachment)
-        {
-            foreach (var field in _binding.Fields)
-            {
-                field.ValidateRuntime(attachment, this);
-            }
-        }
+            => _binding.ValidateRuntime(attachment, this);
     }
 }

@@ -1,11 +1,15 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
+using System;
+
 namespace TerraFX.Entities;
 
 internal interface IWorldResourceFactoryDispatch<T>
     where T : unmanaged
 {
     WorldResourceFactoryDescriptor Descriptor { get; }
+
+    bool IsAggregate { get; }
 
     WorldResourceCaptureData<T> CreateCaptureData(T[] partitions);
 
@@ -14,4 +18,6 @@ internal interface IWorldResourceFactoryDispatch<T>
     void ValidateAuthor(object author, int partitionCount);
 
     void ValidateRuntimePartition(in T partition);
+
+    void ValidateRuntimePartitions(scoped ReadOnlySpan<T> partitions);
 }

@@ -9,11 +9,15 @@ namespace TerraFX.Entities;
 internal interface IWorldResourceCodecDispatch<T>
     where T : unmanaged
 {
+    Type SourceAuthorType { get; }
+
     nint Count(
         WorldResourceOperationControl operation,
         T[] partitions,
         WorldResourceCaptureData<T> data,
         CancellationToken cancellationToken);
+
+    long GetOperationByteReservation(WorldResourceOperationKind operation);
 
     WorldResourceStateCodecReadOutcome Read(
         scoped ReadOnlySpan<byte> source,
@@ -22,10 +26,31 @@ internal interface IWorldResourceCodecDispatch<T>
         int partitionCount,
         CancellationToken cancellationToken);
 
+    WorldResourceStateCodecReadOutcome Read(
+        scoped ReadOnlySpan<byte> source,
+        Guid resourceId,
+        ContentSchemaReference schema,
+        int partitionCount,
+        WorldResourceOperationControl? operation,
+        CancellationToken cancellationToken);
+
     void Restore(
         object author,
         WorldResourceOperationControl operation,
         T[] partitions,
+        CancellationToken cancellationToken);
+
+    void RestorePreparedSource(
+        IWorldPreparedResourceSource source,
+        WorldResourceOperationControl operation,
+        T[] partitions,
+        CancellationToken cancellationToken);
+
+    bool TryReadSource(
+        IWorldResourceRegistration registration,
+        IWorldRestoreSourceOwner owner,
+        out IWorldPreparedResourceSource? source,
+        out ImmutableArray<Diagnostic> diagnostics,
         CancellationToken cancellationToken);
 
     ImmutableArray<Diagnostic> Validate(

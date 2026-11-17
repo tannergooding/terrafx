@@ -11,6 +11,7 @@ internal static class WorldAttachmentInstanceRegistry
     private static readonly Lock s_gate = new();
     private static readonly List<object> s_quarantinedAttachments = [];
     private static readonly List<WorldDomainReservation> s_quarantinedDomainReservations = [];
+    private static readonly List<IDisposable?> s_quarantinedSourceStorage = [];
     private static int s_reservedQuarantineSlots;
 
     internal static bool HasRetainedDomainReservation(WorldDomainReservation reservation)
@@ -34,7 +35,8 @@ internal static class WorldAttachmentInstanceRegistry
     internal static void Quarantine(
         object attachment,
         WorldAttachmentQuarantineReservation reservation,
-        WorldDomainReservation domainReservation)
+        WorldDomainReservation domainReservation,
+        IDisposable? sourceStorage = null)
     {
         ArgumentNullException.ThrowIfNull(attachment);
         ArgumentNullException.ThrowIfNull(reservation);
@@ -46,6 +48,7 @@ internal static class WorldAttachmentInstanceRegistry
             s_reservedQuarantineSlots--;
             s_quarantinedAttachments.Add(attachment);
             s_quarantinedDomainReservations.Add(domainReservation);
+            s_quarantinedSourceStorage.Add(sourceStorage);
         }
     }
 
@@ -68,6 +71,7 @@ internal static class WorldAttachmentInstanceRegistry
             var reservedSlots = checked(s_reservedQuarantineSlots + maximumFailures);
             _ = s_quarantinedAttachments.EnsureCapacity(checked(s_quarantinedAttachments.Count + reservedSlots));
             _ = s_quarantinedDomainReservations.EnsureCapacity(checked(s_quarantinedDomainReservations.Count + reservedSlots));
+            _ = s_quarantinedSourceStorage.EnsureCapacity(checked(s_quarantinedSourceStorage.Count + reservedSlots));
             var reservation = new WorldAttachmentQuarantineReservation(maximumFailures);
             s_reservedQuarantineSlots = reservedSlots;
             return reservation;

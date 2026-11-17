@@ -16,13 +16,19 @@ public sealed class WorldAttachmentReadBinding<TAuthor>
     private Exception? _failure;
     private bool _isActive = true;
     private bool _isIssued;
+    private readonly EbinReadLimits _limits;
     private readonly int _ownerThreadId;
     private WorldAttachmentReadResult<TAuthor>? _result;
     private readonly ContentSchemaReference _schema;
     private readonly nint _sourceByteLength;
 
-    internal WorldAttachmentReadBinding(ContentSchemaReference schema, nint sourceByteLength)
+    internal WorldAttachmentReadBinding(
+        ContentSchemaReference schema,
+        nint sourceByteLength,
+        EbinReadLimits limits)
     {
+        ArgumentNullException.ThrowIfNull(limits);
+
         if ((schema.SchemaId == Guid.Empty)
             || (schema.Major <= 0)
             || (schema.Minor < 0)
@@ -34,7 +40,13 @@ public sealed class WorldAttachmentReadBinding<TAuthor>
         ArgumentOutOfRangeException.ThrowIfNegative(sourceByteLength);
         _schema = schema;
         _sourceByteLength = sourceByteLength;
+        _limits = limits;
         _ownerThreadId = Environment.CurrentManagedThreadId;
+    }
+
+    internal WorldAttachmentReadBinding(ContentSchemaReference schema, nint sourceByteLength)
+        : this(schema, sourceByteLength, EbinReadLimits.Foundation)
+    {
     }
 
     /// <summary>Gets the exact AttachmentState schema tuple.</summary>
@@ -44,6 +56,8 @@ public sealed class WorldAttachmentReadBinding<TAuthor>
     public nint SourceByteLength => _sourceByteLength;
 
     internal Exception? Failure => _failure;
+
+    internal EbinReadLimits Limits => _limits;
 
     private static string FormatPath(ComponentFieldPath path)
     {

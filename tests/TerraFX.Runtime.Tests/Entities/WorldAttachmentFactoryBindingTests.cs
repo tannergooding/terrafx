@@ -257,11 +257,13 @@ internal sealed class WorldAttachmentFactoryBindingTests
                 capturedWorldScope |= scope == AttachmentScope.World;
                 capturedEntityScope |= scope == AttachmentScope.Entity;
                 Assert.That(enumerator.CurrentSchema, Is.EqualTo(schema));
-                var byteCount = lease.CountAttachmentStateRecord(enumerator.CurrentIndex, CancellationToken.None);
+                var persistenceLimits = WorldPersistenceEbinLimits.Create(world.Options);
+                var byteCount = lease.CountAttachmentStateRecord(enumerator.CurrentIndex, persistenceLimits, CancellationToken.None);
                 Assert.That(byteCount, Is.EqualTo((nint)(sizeof(long) + 1 + 16)));
                 var encoded = new byte[checked((int)byteCount)];
                 var written = lease.WriteAttachmentStateRecord(
                     enumerator.CurrentIndex,
+                    persistenceLimits,
                     encoded,
                     CancellationToken.None);
                 var expected = new byte[sizeof(long) + 1 + 16];

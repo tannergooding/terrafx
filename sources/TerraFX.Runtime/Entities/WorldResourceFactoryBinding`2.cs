@@ -83,6 +83,58 @@ public sealed class WorldResourceFactoryBinding<T, TAuthor>
         return new WorldResourceFactoryBinding<T, TAuthor>(family);
     }
 
+    internal static WorldResourceFactoryBinding<T, TAuthor> CreateRecords<TValidator>(
+        Guid factoryId,
+        int factoryVersion,
+        WorldResourceSchema<T> schema,
+        ComponentStorageDeclaration partitionStorage,
+        WorldResourceFieldBinding<T, TAuthor> values,
+        IWorldResourceDefaultProvider<T> defaults,
+        TValidator validator)
+        where TValidator : struct, IWorldResourcePartitionRecordsValidator<T, TAuthor>
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(factoryId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(factoryVersion);
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(partitionStorage);
+        ArgumentNullException.ThrowIfNull(values);
+        ArgumentNullException.ThrowIfNull(defaults);
+        var field = values.Descriptor;
+
+        if ((schema.Fields.Length != 1)
+            || (partitionStorage.LogicalBytes != Unsafe.SizeOf<T>())
+            || (values.RecordBinding is not { } record)
+            || !ReferenceEquals(record.Storage, partitionStorage)
+            || !ReferenceEquals(field.Schemas, schema.Schemas)
+            || !ReferenceEquals(field.DataSchema, schema.Metadata)
+            || !ReferenceEquals(field.Metadata, schema.Metadata.Fields[0])
+            || (field.Path.Segments.Length != 1)
+            || (field.Path.Segments[0].Kind != ComponentPropertySegmentKind.FieldTag)
+            || (field.Path.Segments[0].Value != field.Metadata.Tag)
+            || (field.Metadata.WireKind != 24) || !field.Metadata.IsRequired
+            || (field.Metadata.MinimumCount == 0)
+            || (field.Metadata.MinimumCount != field.Metadata.MaximumCount)
+            || (field.Metadata.MaximumCount > int.MaxValue))
+        {
+            throw new ArgumentException("A partition-record resource requires its single exact fixed-domain RecordArray binding.", nameof(values));
+        }
+
+        foreach (var leaf in partitionStorage.Leaves)
+        {
+            if (leaf.Kind is ComponentStorageKind.EntityHandle
+                or ComponentStorageKind.OptionalEntityHandle
+                or ComponentStorageKind.TransientNativeValue)
+            {
+                throw new ArgumentException("Resource partitions cannot contain Entity handles or native storage.", nameof(partitionStorage));
+            }
+        }
+
+        var descriptor = new WorldResourceFactoryDescriptor(
+            schema.Schema, factoryId, factoryVersion, partitionStorage, [field]);
+        var family = new ResourceFactoryFamily<T, TAuthor>(descriptor, [values], defaults, validator);
+        return new WorldResourceFactoryBinding<T, TAuthor>(family);
+    }
+
     private static void CollectFixedArrayFields(
         WorldResourceSchema<T> schema,
         DataSchema currentSchema,
