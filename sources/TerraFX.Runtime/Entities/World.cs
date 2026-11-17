@@ -548,10 +548,6 @@ public sealed partial class World : IDisposable
                 ?? hostAdmissionDomain
                 ?? new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
             ownsAdmissionDomain = (options.AdmissionDomain is null) && (hostAdmissionDomain is null);
-            defaultDomainOwner = ownsAdmissionDomain
-                ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
-                : null;
-
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
             var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
             var diagnosticBytes = (sharedDiagnostics is null)
@@ -594,6 +590,10 @@ public sealed partial class World : IDisposable
             {
                 throw new InvalidOperationException("The admission domain cannot reserve the World and its owned diagnostics service.");
             }
+
+            defaultDomainOwner = ownsAdmissionDomain
+                ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
+                : null;
 
             diagnostics = sharedDiagnostics ?? new DiagnosticsService(diagnosticRecordCount);
             var executionSessionId = ExecutionSession.ExecutionSessionId;
