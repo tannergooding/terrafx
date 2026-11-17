@@ -34,6 +34,10 @@ Source paths in this section are beneath `sources\TerraFX.Runtime`.
 
 The active-workspace-to-storage transaction now exists in `WorldAdmissionDomain.TryTransferActiveWorldGuidUseWorkspace`. Do not repeat the workspace proposal's historical assertion that only free-capacity transfer exists. Its presence does not establish receiver survival, complete allocation funding, or final-return safety.
 
+**Source correction (2026-11-17; original input freeze unchanged):** The workspace proposal's section 3 rollback-rejection item is stale. `WorldAdmissionDomain.cs:2278-2329`, `TryReturnWorldGuidUseWorkspace`, has no `reservation.IndependentUseBytes < bytes` rejection; return adds those bytes. The predicate remains in the transfer methods, where subtraction requires it. This specific rollback defect is not an open prerequisite. The domain and regression source hashes match the bytes recorded for this addendum's original frozen set.
+
+`SceneWorkspaceTransferRollbackReturnsPreviouslyTransferredCapacity` exercises P=4096, C=3072 and residual 1280, then verifies restoration. Existing [Debug](..\..\artifacts\tst\Debug\m03b-scene-cleanup-debug-final2-20261118.trx) and [Release](..\..\artifacts\tst\Release\m03b-scene-cleanup-release-final2-20261118.trx) TRX each record that case as `Passed`. These records were inspected, not rerun; they supplement rather than replace the original input freeze and do not close the other ownership gates.
+
 ## Verified cap contract/implementation mismatch
 
 The pending bytes implement **two separately admitted envelopes selected by one option**, not just the whole-preparation cap described by the maintained diff:
