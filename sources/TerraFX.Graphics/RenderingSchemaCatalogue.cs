@@ -9,10 +9,14 @@ namespace TerraFX.Graphics;
 /// <summary>Provides the compiled mesh, material, texture, atlas, and rendering component schemas.</summary>
 public static class RenderingSchemaCatalogue
 {
-    private static readonly ImmutableArray<DataSchema> s_schemas = CreateSchemas();
+    private static readonly ImmutableArray<DataSchema> s_baseSchemas = CreateSchemas();
+    private static readonly ImmutableArray<DataSchema> s_m05Schemas = CreateM05Schemas();
+
+    /// <summary>Gets the immutable M05 rendering schema declarations.</summary>
+    public static ImmutableArray<DataSchema> M05Schemas => s_m05Schemas;
 
     /// <summary>Gets the immutable rendering schema declarations.</summary>
-    public static ImmutableArray<DataSchema> Schemas => s_schemas;
+    public static ImmutableArray<DataSchema> Schemas => s_baseSchemas;
 
     private static ContentFieldDescriptor CreateField(
         uint tag,
@@ -41,14 +45,75 @@ public static class RenderingSchemaCatalogue
             authoringFlags,
             defaultValue);
 
+    private static ImmutableArray<DataSchema> CreateM05Schemas()
+    {
+        var mesh = s_baseSchemas.Single(static schema => schema.IdentityAssignment.Name == "native/mesh");
+        var material = s_baseSchemas.Single(static schema => schema.IdentityAssignment.Name == "native/material");
+        var renderMesh = s_baseSchemas.Single(static schema => schema.IdentityAssignment.Name == "render/mesh");
+        var renderSprite = s_baseSchemas.Single(static schema => schema.IdentityAssignment.Name == "render/sprite");
+        var assetReference = ToReference("native/asset-reference");
+        var particleColorKey = ToReference("native/particle-color-key");
+        var particleSizeKey = ToReference("native/particle-size-key");
+        var allBits = Literal(4, [255, 255, 255, 255, 255, 255, 255, 255]);
+        var prefabEditable = ContentAuthoring.PrefabEditable;
+
+        return [
+            CreateSchema("native/cosmetic-particle-emitter", ContentSchemaRole.NativeAsset, [
+                CreateField(1, 1, defaultValue: Literal(1, [0])),
+                CreateField(2, 3, defaultValue: Literal(3, [0, 0, 0, 0])),
+                CreateField(3, 8, unit: ContentUnit.TimeSpanTicks),
+                CreateField(4, 15),
+                CreateField(5, 15),
+                CreateField(6, 24, minimumCount: 2, maximumCount: 16, nestedSchemas: [particleColorKey]),
+                CreateField(7, 24, minimumCount: 2, maximumCount: 16, nestedSchemas: [particleSizeKey]),
+                CreateField(8, 22, reference: ContentReferenceKind.Asset, nestedSchemas: [assetReference]),
+                CreateField(9, 11),
+                CreateField(10, 22, isRequired: false, reference: ContentReferenceKind.Asset, nestedSchemas: [assetReference]),
+                CreateField(11, 4),
+                CreateField(12, 4),
+                CreateField(13, 7, defaultValue: Literal(7, [0, 0, 0, 0])),
+                CreateField(14, 7, defaultValue: Literal(7, [0, 0, 0, 0])),
+                CreateField(15, 4, defaultValue: allBits),
+            ]),
+            CreateSchema("native/material", ContentSchemaRole.NativeAsset, [
+                .. material.Fields,
+                CreateField(14, 10, defaultValue: Literal(10, [0, 0, 0, 63])),
+            ], major: 2),
+            CreateSchema("native/mesh", ContentSchemaRole.NativeAsset, [
+                .. mesh.Fields,
+                CreateField(8, 24, minimumCount: 0, maximumCount: 7, nestedSchemas: [ToReference("native/mesh-lod-level")]),
+                CreateField(9, 23, minimumCount: 0, maximumCount: 7, elementKind: 10),
+            ], major: 2),
+            CreateSchema("native/mesh-lod-level", ContentSchemaRole.Auxiliary, [
+                CreateField(1, 22, nestedSchemas: [ToReference("native/mesh-indices16"), ToReference("native/mesh-indices32")]),
+                CreateField(2, 24, minimumCount: 1, maximumCount: 65_536, nestedSchemas: [ToReference("native/mesh-group")]),
+            ]),
+            CreateSchema("native/particle-color-key", ContentSchemaRole.Auxiliary, [
+                CreateField(1, 10),
+                CreateField(2, 16, unit: ContentUnit.LinearColor),
+            ]),
+            CreateSchema("native/particle-size-key", ContentSchemaRole.Auxiliary, [
+                CreateField(1, 10),
+                CreateField(2, 14, unit: ContentUnit.EngineDistance),
+            ]),
+            CreateSchema("render/mesh", ContentSchemaRole.Component, [.. renderMesh.Fields], ContentSchemaStorage.Persistent, major: 2),
+            CreateSchema("render/particle-emitter", ContentSchemaRole.Component, [
+                CreateField(1, 22, reference: ContentReferenceKind.Asset, authoringFlags: prefabEditable, nestedSchemas: [assetReference]),
+                CreateField(2, 9, authoringFlags: prefabEditable, defaultValue: Literal(9, [1])),
+            ], ContentSchemaStorage.Persistent),
+            CreateSchema("render/sprite", ContentSchemaRole.Component, [.. renderSprite.Fields], ContentSchemaStorage.Persistent, major: 2),
+        ];
+    }
+
     private static DataSchema CreateSchema(
         string name,
         ContentSchemaRole role,
         ImmutableArray<ContentFieldDescriptor> fields,
-        ContentSchemaStorage storage = ContentSchemaStorage.NotComponent)
+        ContentSchemaStorage storage = ContentSchemaStorage.NotComponent,
+        int major = 1)
     {
         var assignment = new ContentSchemaIdentityAssignment(name);
-        var schema = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);
+        var schema = new ContentSchemaReference(assignment.SchemaId, major, 0, ContentSchemaScope.Content);
 
         return new DataSchema(
             schema,

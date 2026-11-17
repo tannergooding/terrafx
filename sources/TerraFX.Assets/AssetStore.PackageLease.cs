@@ -46,9 +46,26 @@ public sealed partial class AssetStore
         return await LoadAssetAsync(assetId, backing, entry, codec, decodedBytes, cancellationToken).ConfigureAwait(false);
     }
 
-    internal async Task<bool> MatchesAssetReferenceAsync(
+    internal Task<bool> MatchesAssetReferenceAsync(
         AssetPackageBacking backing,
         AssetReference reference,
+        CancellationToken cancellationToken)
+        => InspectAssetReferenceAsync(backing, reference, requiredMinor: null, cancellationToken);
+
+    internal Task<bool> MatchesAssetReferenceAsync(
+        AssetPackageBacking backing,
+        AssetReference reference,
+        int requiredMinor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(requiredMinor);
+        return InspectAssetReferenceAsync(backing, reference, requiredMinor, cancellationToken);
+    }
+
+    private async Task<bool> InspectAssetReferenceAsync(
+        AssetPackageBacking backing,
+        AssetReference reference,
+        int? requiredMinor,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(backing);
@@ -91,6 +108,7 @@ public sealed partial class AssetStore
 
             return (actualSchema.SchemaId == reference.SchemaId)
                 && (actualSchema.Major == reference.SchemaMajor)
+                && (!requiredMinor.HasValue || (actualSchema.Minor == requiredMinor.Value))
                 && backing.Registration.TryGetCodec(actualSchema, out _);
         }
         finally

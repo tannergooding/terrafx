@@ -46,6 +46,67 @@ internal sealed class RenderingSchemaCatalogueTests
     }
 
     [Test]
+    public void M05RenderingSchemasContainTheExactVersionedRows()
+    {
+        var schemas = RenderingSchemaCatalogue.M05Schemas;
+        var expectedRows = new[] {
+            ("native/cosmetic-particle-emitter", 1, ContentSchemaRole.NativeAsset, ContentSchemaStorage.NotComponent),
+            ("native/material", 2, ContentSchemaRole.NativeAsset, ContentSchemaStorage.NotComponent),
+            ("native/mesh", 2, ContentSchemaRole.NativeAsset, ContentSchemaStorage.NotComponent),
+            ("native/mesh-lod-level", 1, ContentSchemaRole.Auxiliary, ContentSchemaStorage.NotComponent),
+            ("native/particle-color-key", 1, ContentSchemaRole.Auxiliary, ContentSchemaStorage.NotComponent),
+            ("native/particle-size-key", 1, ContentSchemaRole.Auxiliary, ContentSchemaStorage.NotComponent),
+            ("render/mesh", 2, ContentSchemaRole.Component, ContentSchemaStorage.Persistent),
+            ("render/particle-emitter", 1, ContentSchemaRole.Component, ContentSchemaStorage.Persistent),
+            ("render/sprite", 2, ContentSchemaRole.Component, ContentSchemaStorage.Persistent),
+        };
+        var actualRows = schemas.Select(static schema => (
+            schema.IdentityAssignment.Name,
+            schema.Schema.Major,
+            schema.Role,
+            schema.Storage));
+
+        Assert.That(actualRows, Is.EquivalentTo(expectedRows));
+        Assert.That(schemas.All(static schema =>
+            schema.Owner == ContentSchemaOwner.Rendering
+            && schema.Schema.Minor == 0
+            && schema.Schema.Scope == ContentSchemaScope.Content
+            && schema.TransientRestore == ContentTransientRestore.NotApplicable), Is.True);
+
+        var mesh = schemas.Single(static schema => schema.IdentityAssignment.Name == "native/mesh");
+        Assert.That(mesh.Fields, Has.Length.EqualTo(9));
+        Assert.That(mesh.Fields[7].WireKind, Is.EqualTo(24));
+        Assert.That(mesh.Fields[7].MinimumCount, Is.Zero);
+        Assert.That(mesh.Fields[7].MaximumCount, Is.EqualTo(7));
+        Assert.That(mesh.Fields[8].WireKind, Is.EqualTo(23));
+        Assert.That(mesh.Fields[8].ElementKind, Is.EqualTo(10));
+
+        var material = schemas.Single(static schema => schema.IdentityAssignment.Name == "native/material");
+        Assert.That(material.Fields, Has.Length.EqualTo(14));
+        Assert.That(material.Fields[13].WireKind, Is.EqualTo(10));
+
+        var particle = schemas.Single(static schema => schema.IdentityAssignment.Name == "native/cosmetic-particle-emitter");
+        Assert.That(particle.Fields, Has.Length.EqualTo(15));
+        Assert.That(particle.Fields[2].Unit, Is.EqualTo(ContentUnit.TimeSpanTicks));
+        Assert.That(particle.Fields[5].MinimumCount, Is.EqualTo(2));
+        Assert.That(particle.Fields[5].MaximumCount, Is.EqualTo(16));
+        Assert.That(particle.Fields[9].IsRequired, Is.False);
+        Assert.That(particle.Fields[14].DefaultValue?.LiteralPayload, Is.EqualTo(new byte[] {
+            255, 255, 255, 255, 255, 255, 255, 255,
+        }));
+
+        var meshComponent = schemas.Single(static schema => schema.IdentityAssignment.Name == "render/mesh");
+        Assert.That(meshComponent.Schema.Major, Is.EqualTo(2));
+        Assert.That(meshComponent.Role, Is.EqualTo(ContentSchemaRole.Component));
+        Assert.That(meshComponent.Fields, Has.Length.EqualTo(3));
+
+        var spriteComponent = schemas.Single(static schema => schema.IdentityAssignment.Name == "render/sprite");
+        Assert.That(spriteComponent.Schema.Major, Is.EqualTo(2));
+        Assert.That(spriteComponent.Role, Is.EqualTo(ContentSchemaRole.Component));
+        Assert.That(spriteComponent.Fields, Has.Length.EqualTo(10));
+    }
+
+    [Test]
     public void NativeRenderingSchemasMatchTheCompiledWireShapes()
     {
         var schemas = RenderingSchemaCatalogue.Schemas;

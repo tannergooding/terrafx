@@ -11,7 +11,7 @@ using TerraFX.Numerics;
 
 namespace TerraFX.Rendering;
 
-internal sealed class RenderMaterialAssetCodec : IContextualBinarySchemaCodec<RenderMaterialAsset>
+internal sealed partial class RenderMaterialAssetCodec : IContextualBinarySchemaCodec<RenderMaterialAsset>
 {
     private const ulong AlphaMaskCapability = 0x004;
     private const ulong NormalMapCapability = 0x040;
@@ -152,6 +152,27 @@ internal sealed class RenderMaterialAssetCodec : IContextualBinarySchemaCodec<Re
             throw new InvalidDataException("A Material record must contain exactly thirteen fields.");
         }
 
+        var data = ReadMaterialData(record);
+        return new RenderMaterialAsset(
+            data.ProfileId,
+            data.IsSprite,
+            data.ShaderId,
+            data.PassId,
+            data.LayoutId,
+            data.Parameters,
+            data.AlphaMode,
+            data.AlphaCutoff,
+            data.DoubleSided,
+            data.DepthTest,
+            data.DepthWrite,
+            data.CullMode,
+            data.OutputAlpha,
+            data.RequiredCapabilities,
+            [.. record.EncodedBytes]);
+    }
+
+    private static RenderMaterialAssetData ReadMaterialData(EbinRecordReadView record)
+    {
         var profileId = ReadGuid(record, tag: 1);
         var isSprite = profileId == s_spriteProfileId;
 
@@ -234,7 +255,7 @@ internal sealed class RenderMaterialAssetCodec : IContextualBinarySchemaCodec<Re
             throw new InvalidDataException("The Material RequiredCapabilities value is not the exact derived profile capability mask.");
         }
 
-        return new RenderMaterialAsset(
+        return new RenderMaterialAssetData(
             profileId,
             isSprite,
             shaderId,
@@ -248,8 +269,7 @@ internal sealed class RenderMaterialAssetCodec : IContextualBinarySchemaCodec<Re
             depthWrite,
             cullMode,
             outputAlpha,
-            requiredCapabilities,
-            [.. record.EncodedBytes]);
+            requiredCapabilities);
     }
 
     private static RenderMaterialAsset.TextureBinding? ReadOptionalTextureBinding(

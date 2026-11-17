@@ -32,6 +32,14 @@ internal static class RenderMaterialTextureLoader
         return await CreateOwnedAsync(retainedMaterialLease, cancellationToken).ConfigureAwait(false);
     }
 
+    internal static void ValidateSlot(
+        RenderMaterialAsset.TextureBinding binding,
+        RenderTextureAsset texture,
+        RenderTextureSemantic expectedSemantic,
+        RenderTextureColorSpace? expectedColorSpace,
+        RenderTextureAlphaMode expectedAlphaMode)
+        => ValidateTexture(binding, texture, expectedSemantic, expectedColorSpace, expectedAlphaMode);
+
     private static async Task<RenderMaterialTextureSet> CreateOwnedAsync(
         AssetLease<RenderMaterialAsset> materialLease,
         CancellationToken cancellationToken)

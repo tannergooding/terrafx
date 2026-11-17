@@ -12,7 +12,7 @@ using BigInteger = System.Numerics.BigInteger;
 
 namespace TerraFX.Rendering;
 
-internal sealed class RenderMeshAssetCodec : IContextualBinarySchemaCodec<RenderMeshAsset>
+internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCodec<RenderMeshAsset>
 {
     private const int FixedArrayHeaderBytes = 32;
     private const float UnitVectorTolerance = 2.0e-6f;
@@ -225,15 +225,16 @@ internal sealed class RenderMeshAssetCodec : IContextualBinarySchemaCodec<Render
     private static ImmutableArray<RenderMeshGroup> ReadGroups(
         EbinRecordReadView record,
         ulong maximumIndexCount,
-        int materialSlotCount)
+        int materialSlotCount,
+        uint tag = 4)
     {
-        var groupArray = GetRequiredRecordArray(record, tag: 4, minimumCount: 1, maximumCount: 65_536);
+        var groupArray = GetRequiredRecordArray(record, tag, minimumCount: 1, maximumCount: 65_536);
         var groups = ImmutableArray.CreateBuilder<RenderMeshGroup>(checked((int)groupArray.Count));
         var expectedFirstIndex = 0UL;
 
         for (var index = 0; index < checked((int)groupArray.Count); index++)
         {
-            var groupRecord = record.GetRecordArrayElement(4, index);
+            var groupRecord = record.GetRecordArrayElement(tag, index);
             ValidateHeader(groupRecord, s_meshGroupSchemaId, [3]);
             var firstIndex = ReadUInt32(groupRecord, tag: 1);
             var indexCount = ReadUInt32(groupRecord, tag: 2);
@@ -280,10 +281,10 @@ internal sealed class RenderMeshAssetCodec : IContextualBinarySchemaCodec<Render
         return new Guid(field.Payload, bigEndian: true);
     }
 
-    private static (RenderMeshIndexFormat Format, ImmutableArray<uint> Indices) ReadIndices(EbinRecordReadView record)
+    private static (RenderMeshIndexFormat Format, ImmutableArray<uint> Indices) ReadIndices(EbinRecordReadView record, uint tag = 3)
     {
-        _ = GetRequiredField(record, tag: 3, kind: 22);
-        var indicesRecord = record.GetRecord(3);
+        _ = GetRequiredField(record, tag, kind: 22);
+        var indicesRecord = record.GetRecord(tag);
         var header = indicesRecord.Header;
 
         if ((header.Major != 1) || (header.Minor != 0))

@@ -100,8 +100,23 @@ public sealed class AssetPackageLease : IDisposable
         return state.Store.LoadFromPackageAsync<T>(assetId, backing, cancellationToken);
     }
 
-    internal async Task<bool> MatchesAssetReferenceAsync(
+    internal Task<bool> MatchesAssetReferenceAsync(
         AssetReference reference,
+        CancellationToken cancellationToken)
+        => MatchesAssetReferenceCoreAsync(reference, requiredMinor: null, cancellationToken);
+
+    internal Task<bool> MatchesAssetReferenceAsync(
+        AssetReference reference,
+        int requiredMinor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(requiredMinor);
+        return MatchesAssetReferenceCoreAsync(reference, requiredMinor, cancellationToken);
+    }
+
+    private async Task<bool> MatchesAssetReferenceCoreAsync(
+        AssetReference reference,
+        int? requiredMinor,
         CancellationToken cancellationToken)
     {
         if (!reference.AssetId.IsValid)
@@ -120,7 +135,9 @@ public sealed class AssetPackageLease : IDisposable
 
         try
         {
-            return await state.Store.MatchesAssetReferenceAsync(backing, reference, cancellationToken).ConfigureAwait(false);
+            return requiredMinor is int minor
+                ? await state.Store.MatchesAssetReferenceAsync(backing, reference, minor, cancellationToken).ConfigureAwait(false)
+                : await state.Store.MatchesAssetReferenceAsync(backing, reference, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
