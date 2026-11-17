@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
 namespace TerraFX.Graphics;
@@ -11,6 +12,7 @@ internal sealed class GraphicsGraphSubmission
 {
     internal const int MaximumNativeColorAttachmentCount = 8;
 
+    private readonly int[] _bufferImportIndex;
     private int _recordingOwnershipState;
 
     internal GraphicsGraphSubmission(
@@ -28,7 +30,8 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<GraphResourceAccess> accesses,
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
-        ImmutableArray<RecordedPassCommandList> recordedPassCommandLists)
+        ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
+        long maximumBufferImportIndexBytes = long.MaxValue)
     {
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
         ArgumentNullException.ThrowIfNull(outputColorTarget);
@@ -91,6 +94,16 @@ internal sealed class GraphicsGraphSubmission
             throw new ArgumentException("The graph output texture must be the first texture import and contain the selected presentation source.");
         }
 
+        foreach (var pass in passes)
+        {
+            if (pass.DiagnosticRecipe is not null)
+            {
+                maximumBufferImportIndexBytes = Math.Min(maximumBufferImportIndexBytes, 32L * 1024 * 1024);
+                break;
+            }
+        }
+
+        ValidateBufferImportIndexAllowance(bufferImports.Length, maximumBufferImportIndexBytes);
         DeviceEpoch = deviceEpoch;
         OutputColorTarget = outputColorTarget;
         SurfaceTarget = surfaceTarget;
@@ -104,6 +117,7 @@ internal sealed class GraphicsGraphSubmission
         TextureAliasingBarriers = [.. textureAliasingBarriers];
         Accesses = [.. accesses];
         BufferImports = [.. bufferImports];
+        _bufferImportIndex = CreateBufferImportIndex(BufferImports);
         TextureImports = [.. textureImports];
         RecordedPassCommandLists = [.. recordedPassCommandLists];
     }
@@ -111,6 +125,11 @@ internal sealed class GraphicsGraphSubmission
     internal ImmutableArray<GraphResourceAccess> Accesses { get; }
 
     internal ImmutableArray<GraphResourceAliasingBarrier> AliasingBarriers { get; }
+
+    internal long BufferImportIndexBackingByteCharge
+        => CalculateBufferImportIndexBackingByteCharge(_bufferImportIndex.LongLength);
+
+    internal int BufferImportIndexStorageCapacity => _bufferImportIndex.Length;
 
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
 
@@ -156,6 +175,12 @@ internal sealed class GraphicsGraphSubmission
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
 
+    internal static long CalculateBufferImportIndexBackingByteCharge(long capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(int)) + 15) & ~15L));
+    }
+
     internal static IGraphicsBackendPipeline GetPipeline(RecordedGraphicsCommand command)
     {
         var pipeline = command.PipelineOwner
@@ -187,6 +212,98 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return colorIndex == formats.Length;
+    }
+
+    private static int CompareBufferImportIndices(
+        ImmutableArray<GraphBufferImportRecord> imports,
+        int left,
+        int right)
+    {
+        var leftImport = imports[left];
+        var rightImport = imports[right];
+
+        // Preparation must not move malformed-entry failure ahead of the
+        // original ordered validation loop.
+        if (leftImport is null)
+        {
+            return (rightImport is null) ? left.CompareTo(right) : -1;
+        }
+
+        if (rightImport is null)
+        {
+            return 1;
+        }
+
+        var comparison = leftImport.Version.ResourceId.CompareTo(rightImport.Version.ResourceId);
+        return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int[] CreateBufferImportIndex(ImmutableArray<GraphBufferImportRecord> imports)
+    {
+        if (imports.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[imports.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftBufferImportIndex(imports, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftBufferImportIndex(imports, indices, 0, end);
+        }
+
+        return indices;
+    }
+
+    private static void SiftBufferImportIndex(
+        ImmutableArray<GraphBufferImportRecord> imports,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (CompareBufferImportIndices(imports, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (CompareBufferImportIndices(imports, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
+        }
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA2201:Do not raise reserved exception types",
+        Justification = "An index backing exceeding its component allowance is refused before allocation.")]
+    private static void ValidateBufferImportIndexAllowance(int capacity, long maximumBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumBytes);
+
+        if (CalculateBufferImportIndexBackingByteCharge(capacity) > maximumBytes)
+        {
+            throw new OutOfMemoryException("The graph buffer-import index backing exceeds its CPU component allowance.");
+        }
     }
 
     internal void DisposeRecordedPassCommandLists()
@@ -364,6 +481,22 @@ internal sealed class GraphicsGraphSubmission
         PresentationSequence = presentationSequence;
     }
 
+    internal bool TryGetIndexedBufferImport(
+        ulong resourceId,
+        [NotNullWhen(true)] out GraphBufferImportRecord? import)
+    {
+        var index = FindFirstBufferImportIndex(resourceId);
+
+        if (index < 0)
+        {
+            import = null;
+            return false;
+        }
+
+        import = BufferImports[index];
+        return true;
+    }
+
     internal void ValidateNativeRasterSubmission()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
@@ -412,7 +545,6 @@ internal sealed class GraphicsGraphSubmission
         var copyDestinationBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var copySourceTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var copyDestinationTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-        var bufferImportsByResourceId = new Dictionary<ulong, GraphBufferImportRecord>(BufferImports.Length);
         var textureImportsByResourceId = new Dictionary<ulong, GraphTextureImportRecord>(TextureImports.Length);
         var orderedPassIndices = new Dictionary<RenderPassId, int>(OrderedPasses.Length);
 
@@ -421,9 +553,11 @@ internal sealed class GraphicsGraphSubmission
             orderedPassIndices.Add(OrderedPasses[index], index);
         }
 
-        foreach (var import in BufferImports)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
-            if (!bufferImportsByResourceId.TryAdd(import.Version.ResourceId, import))
+            var import = BufferImports[importIndex];
+
+            if (FindFirstBufferImportIndex(import.Version.ResourceId) < importIndex)
             {
                 throw new NotSupportedException("Native graph submission requires one import per graph buffer resource.");
             }
@@ -565,8 +699,8 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var aliasingBarrier in AliasingBarriers)
         {
-            if (!bufferImportsByResourceId.TryGetValue(aliasingBarrier.BeforeResourceId, out var beforeImport)
-                || !bufferImportsByResourceId.TryGetValue(aliasingBarrier.AfterResourceId, out var afterImport)
+            if (!TryGetIndexedBufferImport(aliasingBarrier.BeforeResourceId, out var beforeImport)
+                || !TryGetIndexedBufferImport(aliasingBarrier.AfterResourceId, out var afterImport)
                 || !beforeImport.IsTransient
                 || !afterImport.IsTransient
                 || !orderedPassIndices.TryGetValue(aliasingBarrier.PassId, out var aliasPassIndex)
@@ -2589,6 +2723,36 @@ internal sealed class GraphicsGraphSubmission
         {
             throw new NotSupportedException("Native graph submission requires a graph-output color attachment.");
         }
+    }
+
+    private int FindFirstBufferImportIndex(ulong resourceId)
+    {
+        var first = 0;
+        var last = _bufferImportIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var import = BufferImports[_bufferImportIndex[middle]];
+
+            if ((import is null) || (import.Version.ResourceId < resourceId))
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first == _bufferImportIndex.Length)
+        {
+            return -1;
+        }
+
+        var index = _bufferImportIndex[first];
+        var candidate = BufferImports[index];
+        return (candidate is not null) && (candidate.Version.ResourceId == resourceId) ? index : -1;
     }
 
     private GraphBufferImportRecord GetBufferImport(ulong resourceId)

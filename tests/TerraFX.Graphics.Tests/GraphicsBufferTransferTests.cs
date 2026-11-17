@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,6 +25,36 @@ internal sealed class GraphicsBufferTransferTests
             GpuMemoryKind.DeviceLocal,
             structuredStride: null,
             debugName: "Buffer transfer test");
+
+    private static GraphicsGraphSubmission CreateBufferImportIndexSubmission(
+        GraphicsDevice device,
+        GpuTexture target,
+        ImmutableArray<GraphBufferImportRecord> imports,
+        long maximumIndexBytes)
+    {
+        var version = new GraphTextureVersion(
+            device.DeviceEpoch, 1, 0, target.Description, new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+        return new GraphicsGraphSubmission(
+            device.DeviceEpoch,
+            target,
+            surfaceTarget: null,
+            version,
+            surfaceEpoch: 0,
+            swapchainEpoch: 0,
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            imports,
+            [new GraphTextureImportRecord(
+                target,
+                version,
+                new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle))],
+            [],
+            maximumBufferImportIndexBytes: maximumIndexBytes);
+    }
 
     private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true, bool includeUploadHeap = false)
     {
@@ -831,6 +862,226 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public void GraphBufferImportIndexChargeRejectsInvalidOrOverflowingCapacity()
+    {
+        Assert.That(GraphicsGraphSubmission.CalculateBufferImportIndexBackingByteCharge(0), Is.Zero);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculateBufferImportIndexBackingByteCharge(-1));
+        _ = Assert.Throws<OverflowException>(
+            () => GraphicsGraphSubmission.CalculateBufferImportIndexBackingByteCharge(long.MaxValue));
+    }
+
+    [TestCase(0)]
+    [TestCase(1)]
+    [TestCase(2)]
+    [TestCase(3)]
+    [TestCase(4)]
+    [TestCase(5)]
+    [TestCase(6)]
+    [TestCase(7)]
+    public async Task GraphBufferImportIndexLookupUsesExactOwnedCapacity(int scenario)
+    {
+        ulong[] identities = scenario switch {
+            0 => [],
+            1 => [17],
+            2 => [9, 1, 7, 3],
+            3 => [ulong.MaxValue, 2, 1UL << 63, 7],
+            4 => [2, 3, 4, 5, 6, 7],
+            5 => [7, 6, 5, 4, 3, 2],
+            6 => [42, 7, 42, 3],
+            _ => [9, 17, 1, 13, 5, 16, 2, 12, 4, 14, 6, 11, 3, 15, 7, 10, 8],
+        };
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        var buffers = new List<GpuBuffer>();
+
+        try
+        {
+            var imports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(identities.Length);
+
+            foreach (var identity in identities)
+            {
+                var buffer = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+                buffers.Add(buffer);
+                var version = new GraphBufferVersion(
+                    device.DeviceEpoch, identity, 0, buffer.Description, new GraphBufferRange(0, buffer.ByteLength));
+                imports.Add(new GraphBufferImportRecord(
+                    buffer,
+                    version,
+                    new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle)));
+            }
+
+            var frozenImports = imports.MoveToImmutable();
+            var expectedCharge = identities.Length == 0 ? 0 : 64 + (((identities.Length * sizeof(int)) + 15) & ~15);
+            var submission = CreateBufferImportIndexSubmission(device, target, frozenImports, expectedCharge);
+            Assert.That(submission.BufferImportIndexStorageCapacity, Is.EqualTo(identities.Length));
+            Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(expectedCharge));
+            var expectedIndices = new int[identities.Length];
+
+            for (var index = 0; index < identities.Length; index++)
+            {
+                expectedIndices[index] = index;
+
+                for (var earlier = 0; earlier < index; earlier++)
+                {
+                    if (identities[earlier] == identities[index])
+                    {
+                        expectedIndices[index] = earlier;
+                        break;
+                    }
+                }
+
+                Assert.That(submission.TryGetIndexedBufferImport(identities[index], out var observed), Is.True);
+                Assert.That(observed, Is.SameAs(frozenImports[expectedIndices[index]]));
+            }
+
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var matches = true;
+
+            for (var index = 0; index < identities.Length; index++)
+            {
+                matches &= submission.TryGetIndexedBufferImport(identities[index], out var observed)
+                    && ReferenceEquals(observed, frozenImports[expectedIndices[index]]);
+            }
+
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.That(matches, Is.True);
+            Assert.That(allocated, Is.Zero);
+            Assert.That(submission.TryGetIndexedBufferImport(0, out _), Is.False);
+            Assert.That(submission.TryGetIndexedBufferImport(100, out _), Is.False);
+
+            if (identities.Length != 0)
+            {
+                _ = Assert.Throws<OutOfMemoryException>(
+                    () => CreateBufferImportIndexSubmission(device, target, frozenImports, expectedCharge - 1));
+            }
+        }
+        finally
+        {
+            foreach (var buffer in buffers)
+            {
+                buffer.Dispose();
+            }
+
+            target.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task GraphBufferImportIndexPreservesDuplicateAndUsageValidationOrder(bool unsupportedFirst)
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        using var unsupported = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        using var supported = await device.CreateBufferAsync(
+            new BufferDescription(64, BufferUsage.Storage, GpuMemoryKind.DeviceLocal, 16, "indexed-storage")).ConfigureAwait(false);
+
+        try
+        {
+            var options = new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle);
+            var unsupportedImport = new GraphBufferImportRecord(
+                unsupported,
+                new GraphBufferVersion(device.DeviceEpoch, 31, 0, unsupported.Description, new GraphBufferRange(0, unsupported.ByteLength)),
+                options);
+            var supportedImport = new GraphBufferImportRecord(
+                supported,
+                new GraphBufferVersion(device.DeviceEpoch, 31, 0, supported.Description, new GraphBufferRange(0, supported.ByteLength)),
+                options);
+            var submission = CreateBufferImportIndexSubmission(
+                device, target, unsupportedFirst ? [unsupportedImport, supportedImport] : [supportedImport, unsupportedImport], 80);
+            var field = typeof(GraphicsGraphSubmission).GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The private index backing was not found.");
+            var backing = field.GetValue(submission);
+            var expectedMessage = unsupportedFirst
+                ? "Native graph submission requires each imported buffer to have a supported declared usage."
+                : "Native graph submission requires one import per graph buffer resource.";
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var exception = Assert.Throws<NotSupportedException>(submission.ValidateNativeRasterSubmission);
+                Assert.That(exception?.Message, Is.EqualTo(expectedMessage));
+                Assert.That(field.GetValue(submission), Is.SameAs(backing));
+                Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(80));
+            }
+        }
+        finally
+        {
+            unsupported.Dispose();
+            supported.Dispose();
+            target.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphBufferImportIndexPreservesMalformedEntryFailureOrder()
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        using var buffer = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+
+        try
+        {
+            var imports = new GraphBufferImportRecord[2];
+            imports[0] = new GraphBufferImportRecord(
+                buffer,
+                new GraphBufferVersion(device.DeviceEpoch, 7, 0, buffer.Description, new GraphBufferRange(0, buffer.ByteLength)),
+                new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle));
+            var submission = CreateBufferImportIndexSubmission(
+                device, target, ImmutableCollectionsMarshal.AsImmutableArray(imports), 80);
+            var exception = Assert.Throws<NotSupportedException>(submission.ValidateNativeRasterSubmission);
+            Assert.That(exception?.Message, Is.EqualTo("Native graph submission requires each imported buffer to have a supported declared usage."));
+        }
+        finally
+        {
+            buffer.Dispose();
+            target.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task GraphBufferImportIndexRemainsOwnedAcrossRecordingRelease(bool quarantine)
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        using var buffer = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+
+        try
+        {
+            var import = new GraphBufferImportRecord(
+                buffer,
+                new GraphBufferVersion(device.DeviceEpoch, 7, 0, buffer.Description, new GraphBufferRange(0, buffer.ByteLength)),
+                new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle));
+            var submission = CreateBufferImportIndexSubmission(device, target, [import], 80);
+            var field = typeof(GraphicsGraphSubmission).GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The private index backing was not found.");
+            var backing = field.GetValue(submission);
+
+            if (quarantine)
+            {
+                submission.RetainRecordingForUncertainSubmission();
+            }
+
+            submission.DisposeRecordedPassCommandLists();
+            Assert.That(field.GetValue(submission), Is.SameAs(backing));
+            Assert.That(submission.BufferImportIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TryGetIndexedBufferImport(7, out var observed), Is.True);
+            Assert.That(observed, Is.SameAs(import));
+        }
+        finally
+        {
+            buffer.Dispose();
+            target.Dispose();
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
 
