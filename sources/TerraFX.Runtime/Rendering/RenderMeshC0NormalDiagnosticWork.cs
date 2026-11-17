@@ -12,6 +12,9 @@ namespace TerraFX.Rendering;
 
 internal readonly struct RenderMeshC0NormalDiagnosticWork
 {
+    // Warm .NET 11 RC3 x64 allocation probes, rechecked in Debug and Release.
+    private const long BindingSetWarmConstructionTrafficBytes = 440;
+    private const long BufferBindingWarmAllocationBytes = 56;
     private const long MaximumCpuBytes = 32 * 1024 * 1024;
 
     private RenderMeshC0NormalDiagnosticWork(
@@ -54,6 +57,33 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
 
     internal Guid WorldGuid { get; }
 
+    internal static long CalculateKnownBindingPlanConstructionBytes(int drawCount, int meshAssetCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(drawCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(meshAssetCount);
+
+        if (drawCount == 0)
+        {
+            return 0;
+        }
+
+        if (!GraphicsRecordingUseAdmission.IsSupportedProfile)
+        {
+            GraphicsRecordingUseAdmission.ThrowUnavailable();
+        }
+
+        var maximumGeometryCount = Math.Min(drawCount, meshAssetCount);
+        var bindingObjectCount = checked((long)drawCount + maximumGeometryCount + 2);
+        var bindingSetAndInputArrayBytes = checked(BindingSetWarmConstructionTrafficBytes + ArrayCharge(4, IntPtr.Size));
+        var bindingObjectBytes = checked(bindingObjectCount * BufferBindingWarmAllocationBytes);
+        var backingArrayBytes = checked(
+            ArrayCharge(meshAssetCount, IntPtr.Size)
+            + ArrayCharge(drawCount, IntPtr.Size)
+            + ArrayCharge(maximumGeometryCount, IntPtr.Size));
+
+        return checked(((long)drawCount * bindingSetAndInputArrayBytes) + bindingObjectBytes + backingArrayBytes);
+    }
+
     [SuppressMessage(
         "Usage",
         "CA2201:Do not raise reserved exception types",
@@ -82,6 +112,7 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
         {
             // M is at least one, so this bounds the command count before geometry identities are indexed.
             var maximumCommandCount = checked((6L * drawCount) - 3);
+            var bindingPlanConstructionBytes = CalculateKnownBindingPlanConstructionBytes(drawCount, meshAssetCount);
             return checked(
                 ArrayCharge(drawCount, Unsafe.SizeOf<RenderMeshC0NormalDiagnosticDraw>())
                 + ArrayCharge(maximumIndexCount, sizeof(int))
@@ -91,7 +122,8 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
                 + CommandRecorderRecordingCapacity.CalculateKnownBackingArrayBytes(maximumCommandCount, drawCount)
                 + GraphicsRecordingUseAdmission.CalculateByteAllowance(drawCount)
                 + GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge
-                + pendingGraphSubmissionBackingByteCharge);
+                + pendingGraphSubmissionBackingByteCharge
+                + bindingPlanConstructionBytes);
         }
         catch (OverflowException exception)
         {
@@ -229,7 +261,7 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
             || (resultByteLength > int.MaxValue)
             || (knownMinimumCpuBytes > MaximumCpuBytes))
         {
-            throw new OutOfMemoryException("The skinned-normal diagnostic minimum preparation and worst-case recording arrays exceed its fixed CPU allowance.");
+            throw new OutOfMemoryException("The skinned-normal diagnostic managed-byte requirement exceeds its fixed CPU allowance or a backing's representable length.");
         }
 
         var draws = new RenderMeshC0NormalDiagnosticDraw[drawCount];

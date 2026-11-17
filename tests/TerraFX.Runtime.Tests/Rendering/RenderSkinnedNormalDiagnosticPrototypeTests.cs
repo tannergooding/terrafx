@@ -135,6 +135,7 @@ internal sealed class RenderSkinnedNormalDiagnosticPrototypeTests
     [Test]
     public void MeasuresDiagnosticBindingPlanAllocation()
     {
+        Assert.That(GraphicsRecordingUseAdmission.IsSupportedProfile, Is.True);
         _ = MeasurePassConstruction(drawCount: 2, meshBufferCount: 1);
         var vertexBuffer = CreateBuffer(1001, 96, 96);
         var paletteBuffer = CreateBuffer(1002, 112, 112);
@@ -172,8 +173,20 @@ internal sealed class RenderSkinnedNormalDiagnosticPrototypeTests
         TestContext.WriteLine($"BindingSet + copied arrays allocation: {MeasureBindingSetAllocation(inputBindings)} bytes");
         TestContext.WriteLine($"Four-element BufferBinding[] allocation: {MeasureFourBindingArrayAllocation()} bytes");
         TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
-        TestContext.WriteLine($"D=2,M=1: {MeasurePassConstruction(drawCount: 2, meshBufferCount: 1)} bytes");
-        TestContext.WriteLine($"D=1000,M=1: {MeasurePassConstruction(drawCount: 1000, meshBufferCount: 1)} bytes");
-        TestContext.WriteLine($"D=1000,M=1000: {MeasurePassConstruction(drawCount: 1000, meshBufferCount: 1000)} bytes");
+
+        var smallPassBytes = MeasurePassConstruction(drawCount: 2, meshBufferCount: 1);
+        var smallPassCharge = RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(2, 1);
+        Assert.That(smallPassCharge, Is.GreaterThanOrEqualTo(smallPassBytes));
+        TestContext.WriteLine($"D=2,M=1: {smallPassBytes} bytes (charge {smallPassCharge})");
+
+        var repeatedGeometryPassBytes = MeasurePassConstruction(drawCount: 1000, meshBufferCount: 1);
+        var repeatedGeometryPassCharge = RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(1000, 1);
+        Assert.That(repeatedGeometryPassCharge, Is.GreaterThanOrEqualTo(repeatedGeometryPassBytes));
+        TestContext.WriteLine($"D=1000,M=1: {repeatedGeometryPassBytes} bytes (charge {repeatedGeometryPassCharge})");
+
+        var distinctGeometryPassBytes = MeasurePassConstruction(drawCount: 1000, meshBufferCount: 1000);
+        var distinctGeometryPassCharge = RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(1000, 1000);
+        Assert.That(distinctGeometryPassCharge, Is.GreaterThanOrEqualTo(distinctGeometryPassBytes));
+        TestContext.WriteLine($"D=1000,M=1000: {distinctGeometryPassBytes} bytes (charge {distinctGeometryPassCharge})");
     }
 }

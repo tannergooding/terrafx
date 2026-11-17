@@ -122,7 +122,10 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             + 80
             + 192
             + Charge(256, IntPtr.Size)
-            + Charge(4, IntPtr.Size));
+            + Charge(4, IntPtr.Size)
+            + RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(
+                drawCount: 1,
+                meshAssetCount: 1));
 
         Assert.That(
             RenderMeshC0NormalDiagnosticWork.CalculateKnownMinimumCpuBytesForWorstCaseGeometry(
