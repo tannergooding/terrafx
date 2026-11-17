@@ -872,6 +872,58 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            var retainedPlanRecording = StartPlanRecordingWithWeakOwner(target, targetExtent);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.That(retainedPlanRecording.Plan.TryGetTarget(out _), Is.False);
+            GC.KeepAlive(retainedPlanRecording.Task);
+
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+            static (Task<ImmutableArray<RecordedPassCommandList>> Task, WeakReference<RenderGraphPlan> Plan)
+                StartPlanRecordingWithWeakOwner(GpuTexture selectedTarget, PixelSize extent)
+            {
+                var graph = new RenderGraph(new RenderGraphOptions(
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    0,
+                    RenderFrameDimension.TwoDimensional,
+                    SpatialProfileId.Default,
+                    1,
+                    [Guid.NewGuid()],
+                    extent,
+                    selectedTarget));
+                var output = graph.OffscreenColorTargetVersion;
+                var pass = graph.AddRasterPass(
+                    new RenderPassDescription("async-return-plan-retention", 0, [], hasExternalSideEffects: false),
+                    RecordPlanPass);
+                var final = graph.WriteColorAttachment(
+                    pass,
+                    output,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    Vector4.Zero);
+                graph.SetPresentationSource(final);
+                var compileResponse = graph.Compile();
+                var plan = compileResponse.Plan
+                    ?? throw new InvalidOperationException("The graph plan retention probe did not compile.");
+                var weakPlan = new WeakReference<RenderGraphPlan>(plan);
+                var task = plan.RecordPassCallbacksAsync(builtInResources: null);
+                var commandLists = task.GetAwaiter().GetResult();
+
+                foreach (var commandList in commandLists)
+                {
+                    commandList.Dispose();
+                }
+
+                return (task, weakPlan);
+
+                static void RecordPlanPass(scoped ref CommandRecorder recorder)
+                {
+                }
+            }
+
             var uninitializedGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),
                 Guid.NewGuid(),
