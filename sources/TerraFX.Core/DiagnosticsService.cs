@@ -140,6 +140,9 @@ public sealed class DiagnosticsService
         && (!query.MinimumTick.HasValue
             || (diagnostic.Tick.HasValue && (diagnostic.Tick.Value >= query.MinimumTick.Value)));
 
+    private static long SaturatingAdd(long value, long increment)
+        => (increment > (long.MaxValue - value)) ? long.MaxValue : value + increment;
+
     private static long SaturatingIncrement(long value) => (value == long.MaxValue) ? value : value + 1;
 
     private static Diagnostic UpdateOccurrenceCount(Diagnostic source, long occurrenceCount)
@@ -327,10 +330,22 @@ public sealed class DiagnosticsService
 
             if (_count == _maximumRecords)
             {
+                var evictedEntry = records[_head];
+                var evictedRecord = evictedEntry.Record
+                    ?? throw new InvalidOperationException("The occupied diagnostic ring slot has no record.");
+                var droppedOccurrences = (evictedRecord.Severity == DiagnosticSeverity.Warning)
+                    ? evictedEntry.OccurrenceCount
+                    : 1;
+
+                if (droppedOccurrences <= 0)
+                {
+                    throw new InvalidOperationException("An evicted warning has no retained occurrence count.");
+                }
+
                 records[_head] = default;
                 _head = (_head + 1) % _maximumRecords;
                 _count--;
-                _droppedCount = SaturatingIncrement(_droppedCount);
+                _droppedCount = SaturatingAdd(_droppedCount, droppedOccurrences);
             }
 
             var insertIndex = GetRingIndex(_count);

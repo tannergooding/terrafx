@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Reflection;
 using NUnit.Framework;
 
 namespace TerraFX.Core.Tests;
@@ -121,6 +122,48 @@ internal sealed class DiagnosticsServiceTests
         Assert.That(DiagnosticClockDomain.TimestampFrequency, Is.EqualTo(10_000_000));
         Assert.That(first, Is.GreaterThanOrEqualTo(0));
         Assert.That(second, Is.GreaterThanOrEqualTo(first));
+    }
+
+    [Test]
+    public void EvictingCoalescedWarningCountsEveryRepresentedOccurrence()
+    {
+        var service = new DiagnosticsService(2);
+        var sessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        const uint worldOwnerId = 17;
+
+        service.Write(CreateDiagnostic("warning-a", DiagnosticSeverity.Warning, 1), sessionId, worldOwnerId);
+        service.Write(CreateDiagnostic("warning-a", DiagnosticSeverity.Warning, 2), sessionId, worldOwnerId);
+        service.Write(CreateDiagnostic("warning-b", DiagnosticSeverity.Warning, 3), sessionId, worldOwnerId);
+        service.Write(CreateDiagnostic("warning-c", DiagnosticSeverity.Warning, 4), sessionId, worldOwnerId);
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(2, DiagnosticSeverity.Trace, null, null));
+        Assert.That(snapshot.Records, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Records[0].Code, Is.EqualTo("warning-b"));
+        Assert.That(snapshot.Records[1].Code, Is.EqualTo("warning-c"));
+        Assert.That(snapshot.DroppedCount, Is.EqualTo(2));
+        Assert.That(snapshot.CoalescedCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void EvictingCoalescedWarningSaturatesDroppedCount()
+    {
+        var service = new DiagnosticsService(2);
+        var droppedCountField = typeof(DiagnosticsService).GetField(
+            "_droppedCount",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The diagnostic drop counter field was not found.");
+        droppedCountField.SetValue(service, long.MaxValue - 1);
+        var sessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        const uint worldOwnerId = 17;
+
+        service.Write(CreateDiagnostic("warning-a", DiagnosticSeverity.Warning, 1), sessionId, worldOwnerId);
+        service.Write(CreateDiagnostic("warning-a", DiagnosticSeverity.Warning, 2), sessionId, worldOwnerId);
+        service.Write(CreateDiagnostic("warning-b", DiagnosticSeverity.Warning, 3), sessionId, worldOwnerId);
+        service.Write(CreateDiagnostic("warning-c", DiagnosticSeverity.Warning, 4), sessionId, worldOwnerId);
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(2, DiagnosticSeverity.Trace, null, null));
+        Assert.That(snapshot.DroppedCount, Is.EqualTo(long.MaxValue));
+        Assert.That(snapshot.CoalescedCount, Is.EqualTo(1));
     }
 
     [Test]
