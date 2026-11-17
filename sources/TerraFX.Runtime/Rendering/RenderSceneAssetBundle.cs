@@ -708,18 +708,19 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             }
             finally
             {
-                try
+                foreach (var meshEntry in _meshEntries)
                 {
-                    foreach (var meshEntry in _meshEntries)
-                    {
-                        meshEntry.Dispose();
-                    }
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
+                    meshEntry.Dispose();
                 }
             }
+        }
+
+        var storageReservation = Volatile.Read(ref _storageReservation);
+        storageReservation?.Dispose();
+
+        if (storageReservation is not null)
+        {
+            _ = Interlocked.CompareExchange(ref _storageReservation, null, storageReservation);
         }
     }
 

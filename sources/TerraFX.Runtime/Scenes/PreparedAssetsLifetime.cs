@@ -35,11 +35,21 @@ internal sealed class PreparedAssetsLifetime : IDisposable
             if (_referenceCount == 0)
             {
                 value = _value;
-                _value = null;
             }
         }
 
         value?.Dispose();
+
+        if (value is not null)
+        {
+            lock (_gate)
+            {
+                if (_ownerReleased && (_referenceCount == 0) && ReferenceEquals(_value, value))
+                {
+                    _value = null;
+                }
+            }
+        }
     }
 
     internal Lease Acquire()
@@ -92,15 +102,30 @@ internal sealed class PreparedAssetsLifetime : IDisposable
             if (_referenceCount == 0)
             {
                 value = _value;
-                _value = null;
             }
         }
 
         value?.Dispose();
+
+        if (value is not null)
+        {
+            lock (_gate)
+            {
+                if (_ownerReleased && (_referenceCount == 0) && ReferenceEquals(_value, value))
+                {
+                    _value = null;
+                }
+            }
+        }
     }
 
     internal sealed class Lease : IDisposable
     {
+        private const int LeaseStateActive = 0;
+        private const int LeaseStateDisposed = 2;
+        private const int LeaseStateDisposing = 1;
+
+        private int _disposeState;
         private PreparedAssetsLifetime? _lifetime;
 
         internal Lease(PreparedAssetsLifetime lifetime)
@@ -114,12 +139,26 @@ internal sealed class PreparedAssetsLifetime : IDisposable
             get
             {
                 var lifetime = Volatile.Read(ref _lifetime);
-                ObjectDisposedException.ThrowIf(lifetime is null, this);
+                ObjectDisposedException.ThrowIf(
+                    (lifetime is null) || (Volatile.Read(ref _disposeState) != LeaseStateActive),
+                    this);
                 return lifetime.GetValue();
             }
         }
 
         public void Dispose()
-            => Interlocked.Exchange(ref _lifetime, null)?.ReleaseLease();
+        {
+            var lifetime = Volatile.Read(ref _lifetime);
+
+            if ((lifetime is null)
+                || (Interlocked.CompareExchange(ref _disposeState, LeaseStateDisposing, LeaseStateActive) != LeaseStateActive))
+            {
+                return;
+            }
+
+            lifetime.ReleaseLease();
+            _ = Interlocked.CompareExchange(ref _lifetime, null, lifetime);
+            Volatile.Write(ref _disposeState, LeaseStateDisposed);
+        }
     }
 }
