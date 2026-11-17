@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 
 namespace TerraFX.Core.Tests;
@@ -164,6 +166,78 @@ internal sealed class DiagnosticsServiceTests
         var snapshot = service.GetSnapshot(new DiagnosticQuery(2, DiagnosticSeverity.Trace, null, null));
         Assert.That(snapshot.DroppedCount, Is.EqualTo(long.MaxValue));
         Assert.That(snapshot.CoalescedCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void MeasuresBoundedWarningRecordAllocationTraffic()
+    {
+        var service = new DiagnosticsService(4);
+        var sessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        const uint worldOwnerId = 17;
+        service.Write(CreateDiagnostic("warm-warning", DiagnosticSeverity.Warning, 0), sessionId, worldOwnerId);
+
+        var snapshotId = new Guid("10112233-4455-4677-8899-aabbccddeeff");
+        var drawId = new Guid("20112233-4455-4677-8899-aabbccddeeff");
+        const long submissionSequence = long.MaxValue;
+        const long completedFence = long.MaxValue;
+        const int testedVertexCount = 262144;
+        const int degenerateVertexCount = 262144;
+        var producerAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+        var snapshotIdText = snapshotId.ToString("N");
+        var drawIdText = drawId.ToString("N");
+        var submissionSequenceText = submissionSequence.ToString(CultureInfo.InvariantCulture);
+        var completedFenceText = completedFence.ToString(CultureInfo.InvariantCulture);
+        var testedVertexCountText = testedVertexCount.ToString(CultureInfo.InvariantCulture);
+        var degenerateVertexCountText = degenerateVertexCount.ToString(CultureInfo.InvariantCulture);
+        var commandIdentity = string.Concat(
+            "submission/",
+            submissionSequenceText,
+            "/snapshot/",
+            snapshotIdText,
+            "/draw/",
+            drawIdText);
+        ImmutableArray<DiagnosticContextEntry> context = [
+            new DiagnosticContextEntry("SnapshotId", snapshotIdText),
+            new DiagnosticContextEntry("DrawId", drawIdText),
+            new DiagnosticContextEntry("SubmissionSequence", submissionSequenceText),
+            new DiagnosticContextEntry("CompletedFence", completedFenceText),
+            new DiagnosticContextEntry("TestedVertexCount", testedVertexCountText),
+            new DiagnosticContextEntry("DegenerateVertexCount", degenerateVertexCountText),
+        ];
+        var diagnostic = new Diagnostic(
+            "DegenerateSkinnedNormal",
+            DiagnosticSeverity.Warning,
+            monotonicTimestamp: 1,
+            hostId: 1,
+            worldGuid: new Guid("30112233-4455-4677-8899-aabbccddeeff"),
+            deviceId: 2,
+            surfaceId: null,
+            deviceEpoch: 1,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: 0,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: commandIdentity,
+            operation: "Renderer.SubmitAsync",
+            nativeResult: null,
+            message: "Skinned mesh vertices required the dominant-bone normal fallback.",
+            context: context);
+        var producerAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - producerAllocationStart;
+
+        var serviceAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+        service.Write(diagnostic, sessionId, worldOwnerId);
+        var serviceAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - serviceAllocationStart;
+        GC.KeepAlive(diagnostic);
+        service.Close();
+
+        Assert.That(commandIdentity, Has.Length.EqualTo(110));
+        Assert.That(context, Has.Length.EqualTo(6));
+        TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
+        TestContext.WriteLine($"Producer formatting and Diagnostic construction: {producerAllocatedBytes} bytes");
+        TestContext.WriteLine($"DiagnosticsService warning admission: {serviceAllocatedBytes} bytes");
+        TestContext.WriteLine($"Total measured allocation traffic: {checked(producerAllocatedBytes + serviceAllocatedBytes)} bytes");
     }
 
     [Test]
