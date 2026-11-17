@@ -277,8 +277,21 @@ internal sealed partial class EngineHostOptionsTests
     }
 
     [Test]
-    public Task D3D12GraphSubmissionRetainsTargetUntilFenceCompletion()
-        => RunOffscreenGraphAsync(
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public void D3D12GraphSubmissionRetainsTargetUntilFenceCompletion()
+    {
+        Task<RenderSubmissionReceipt>? returnedTask = null;
+        WeakReference<RenderSnapshot>? snapshotReference = null;
+        WeakReference<RenderGraphPlan>? planReference = null;
+
+        void ObserveReturnedTask(Task<RenderSubmissionReceipt> task, RenderSnapshot snapshot, RenderGraphPlan plan)
+        {
+            returnedTask = task;
+            snapshotReference = new WeakReference<RenderSnapshot>(snapshot);
+            planReference = new WeakReference<RenderGraphPlan>(plan);
+        }
+
+        var helperTask = RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
             useUniformBuffer: false,
             useSampledTexture: false,
@@ -290,7 +303,37 @@ internal sealed partial class EngineHostOptionsTests
             useTransientBufferAliasing: false,
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: true,
-            graphicsFrameSlotCount: 2);
+            graphicsFrameSlotCount: 2,
+            observeReturnedTask: ObserveReturnedTask);
+        helperTask.GetAwaiter().GetResult();
+        helperTask = Task.CompletedTask;
+        GC.KeepAlive(helperTask);
+
+        var completedTask = returnedTask;
+        ArgumentNullException.ThrowIfNull(completedTask);
+        var retainedSnapshot = snapshotReference
+            ?? throw new InvalidOperationException("The graph task-retention probe captured no snapshot.");
+        var retainedPlan = planReference
+            ?? throw new InvalidOperationException("The graph task-retention probe captured no plan.");
+        Assert.That(completedTask.Status, Is.EqualTo(TaskStatus.RanToCompletion));
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var snapshotRetainedWhileTaskHeld = retainedSnapshot.TryGetTarget(out _);
+        var planRetainedWhileTaskHeld = retainedPlan.TryGetTarget(out _);
+        TestContext.WriteLine(
+            $"CallerTaskRetainsSnapshot={snapshotRetainedWhileTaskHeld}; CallerTaskRetainsPlan={planRetainedWhileTaskHeld}");
+        Assert.That(snapshotRetainedWhileTaskHeld, Is.False);
+        Assert.That(planRetainedWhileTaskHeld, Is.False);
+        GC.KeepAlive(completedTask);
+        returnedTask = null;
+        completedTask = null;
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Assert.That(retainedSnapshot.TryGetTarget(out _), Is.False);
+        Assert.That(retainedPlan.TryGetTarget(out _), Is.False);
+    }
 
     [Test]
     public Task D3D12GraphSubmissionRetainsTransientAliasGroupsPerSlot()
@@ -1576,7 +1619,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useSixteenSampledImages = false,
         bool useManyBufferCopyDestinations = false,
         bool useRenderAreaClear = false,
-        bool useAttachmentScopedRenderArea = false)
+        bool useAttachmentScopedRenderArea = false,
+        Action<Task<RenderSubmissionReceipt>, RenderSnapshot, RenderGraphPlan>? observeReturnedTask = null)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -5290,6 +5334,7 @@ internal sealed partial class EngineHostOptionsTests
                 _ = Interlocked.Exchange(ref holdFenceWaitCount, 2);
                 _ = Interlocked.Exchange(ref holdCompletedGraphFenceValue, 1);
                 var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
+                observeReturnedTask?.Invoke(submissionTask, renderSnapshot, plan);
                 var secondSubmissionTask = renderer.SubmitAsync(
                     renderSnapshot,
                     delayedTransientTexturePlan ?? plan);
