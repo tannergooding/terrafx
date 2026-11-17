@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using TerraFX.Entities;
 
@@ -12,14 +13,14 @@ internal sealed class WorldAdmissionDomainTests
     [Test]
     public void DomainGrowthRequiresTheCompleteOldAndNewPeak()
     {
-        using var exactDomain = new WorldAdmissionDomain(8192);
+        using var exactDomain = new WorldAdmissionDomain(8304);
         Assert.That(exactDomain.TryReserveWorld(2096, out var exactReservation), Is.True);
         using var exactWorld = exactReservation!;
         exactDomain.Dispose();
         exactWorld.Dispose();
         Assert.That(exactDomain.Retirement.IsCompleted, Is.True);
 
-        using var overBudgetDomain = new WorldAdmissionDomain(8192);
+        using var overBudgetDomain = new WorldAdmissionDomain(8304);
         var overBudgetSucceeded = overBudgetDomain.TryReserveWorld(2097, out var overBudgetReservation);
         Assert.That(overBudgetSucceeded, Is.False);
         Assert.That(overBudgetReservation, Is.Null);
@@ -379,6 +380,34 @@ internal sealed class WorldAdmissionDomainTests
         Assert.That(domain.Retirement.IsCompleted, Is.True);
     }
 
+    [TestCase(8_175, true)]
+    [TestCase(8_176, false)]
+    public void InterestArrayGrowthChargesFullOldAndNewPeak(long residentBytes, bool admitsGrowth)
+    {
+        var domain = new WorldAdmissionDomain(16_384);
+        WorldDomainReservation? residentReservation = null;
+        WorldDomainReservation? growthReservation = null;
+
+        try
+        {
+            Assert.That(domain.TryReserveWorld(residentBytes, maximumAdditionalBytes: 0, out residentReservation), Is.True);
+            Assert.That(residentReservation, Is.Not.Null);
+            var admitted = domain.TryReserveWorld(1, maximumAdditionalBytes: 0, out growthReservation);
+
+            Assert.That(admitted, Is.EqualTo(admitsGrowth));
+            Assert.That(growthReservation is not null, Is.EqualTo(admitsGrowth));
+            domain.Dispose();
+        }
+        finally
+        {
+            growthReservation?.Dispose();
+            residentReservation?.Dispose();
+            domain.Dispose();
+        }
+
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
     [Test]
     public void LoadOperationCreditBundleReservesAndRetainsAllRoles()
     {
@@ -450,6 +479,40 @@ internal sealed class WorldAdmissionDomainTests
         playbackSourceCredit.Dispose();
 
         Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void MeasuresWorldDomainReservationConstruction()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+
+        for (var index = 0; index < 8; index++)
+        {
+            if (!domain.TryReserveWorld(4096, 4096, out var warmReservation) || warmReservation is null)
+            {
+                throw new InvalidOperationException("A warm World reservation was unexpectedly refused.");
+            }
+
+            using var retainedWarmReservation = warmReservation;
+        }
+
+        var allocationDeltas = new long[8];
+
+        for (var index = 0; index < allocationDeltas.Length; index++)
+        {
+            var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+            if (!domain.TryReserveWorld(4096, 4096, out var measuredReservation) || measuredReservation is null)
+            {
+                throw new InvalidOperationException("A measured World reservation was unexpectedly refused.");
+            }
+
+            using var retainedMeasuredReservation = measuredReservation;
+            allocationDeltas[index] = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        }
+
+        TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
+        TestContext.WriteLine($"Warmed TryReserveWorld allocation deltas: {string.Join(", ", allocationDeltas)} bytes");
     }
 
     [Test]
