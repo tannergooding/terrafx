@@ -17,14 +17,14 @@ public sealed partial class AssetStore : IAsyncDisposable
     private readonly Lock _gate = new();
     private long _activeDecodeBytes;
     private AssetPackageBacking? _currentBacking;
-    private Exception? _disposeFailure;
+    private readonly TaskCompletionSource _disposeCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _disposeState;
-    private readonly object _disposeWaitGate = new();
     private bool _disposed;
     private long _liveAssetBytes;
     private int _liveAssetLeases;
     private AssetPackageBacking? _pendingReleaseBacking;
     private Exception? _pendingReleaseFailure;
+    private TaskCompletionSource? _replacementCompletion;
     private int _replacementInProgress;
 
     private AssetStore(AssetPackageBacking backing)
@@ -91,97 +91,98 @@ public sealed partial class AssetStore : IAsyncDisposable
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
-        Justification = "The terminal package-release failure is retained and rethrown after the independent current backing release is attempted.")]
-    public ValueTask DisposeAsync()
+        Justification = "The terminal package-release failure is retained for every concurrent and later disposal caller.")]
+    public async ValueTask DisposeAsync()
     {
         AssetPackageBacking? backing;
-
-        lock (_disposeWaitGate)
-        {
-            while (_disposeState is 1)
-            {
-                _ = Monitor.Wait(_disposeWaitGate);
-            }
-
-            if (_disposeState is 2)
-            {
-                return ValueTask.CompletedTask;
-            }
-
-            if (_disposeState is 3)
-            {
-                RethrowDisposeFailure();
-            }
-
-            _disposeState = 1;
-
-            lock (_gate)
-            {
-                _disposed = true;
-            }
-        }
-
-        WaitForReplacementRelease();
-
         AssetPackageBacking? pendingBacking;
         Exception? firstFailure;
+        Task replacementTask;
+        bool ownsDisposal;
 
         lock (_gate)
         {
-            backing = _currentBacking;
-            pendingBacking = _pendingReleaseBacking;
-            firstFailure = _pendingReleaseFailure;
+            ownsDisposal = _disposeState is 0;
 
-            if ((pendingBacking is not null) && (firstFailure is null))
+            if (ownsDisposal)
             {
-                firstFailure = new InvalidOperationException("A package backing remained pending without a release failure.");
-            }
-        }
-
-        var currentBackingReleased = false;
-
-        try
-        {
-            backing?.ReleaseOwner();
-            currentBackingReleased = true;
-        }
-        catch (Exception failure)
-        {
-            firstFailure ??= failure;
-        }
-
-        if (currentBackingReleased)
-        {
-            lock (_gate)
-            {
-                if (ReferenceEquals(_currentBacking, backing))
-                {
-                    _currentBacking = null;
-                }
-            }
-        }
-
-        lock (_disposeWaitGate)
-        {
-            if (firstFailure is null)
-            {
-                _disposeState = 2;
+                _disposeState = 1;
+                _disposed = true;
+                replacementTask = _replacementCompletion?.Task ?? Task.CompletedTask;
             }
             else
             {
-                _disposeFailure = firstFailure;
+                replacementTask = Task.CompletedTask;
+            }
+        }
+
+        if (!ownsDisposal)
+        {
+            await _disposeCompletion.Task.ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            await replacementTask.ConfigureAwait(false);
+
+            lock (_gate)
+            {
+                backing = _currentBacking;
+                pendingBacking = _pendingReleaseBacking;
+                firstFailure = _pendingReleaseFailure;
+
+                if ((pendingBacking is not null) && (firstFailure is null))
+                {
+                    firstFailure = new InvalidOperationException("A package backing remained pending without a release failure.");
+                }
+            }
+
+            var currentBackingReleased = false;
+
+            try
+            {
+                backing?.ReleaseOwner();
+                currentBackingReleased = true;
+            }
+            catch (Exception failure)
+            {
+                firstFailure ??= failure;
+            }
+
+            if (currentBackingReleased)
+            {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_currentBacking, backing))
+                    {
+                        _currentBacking = null;
+                    }
+                }
+            }
+
+            if (firstFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(firstFailure).Throw();
+            }
+
+            lock (_gate)
+            {
+                _disposeState = 2;
+            }
+
+            _ = _disposeCompletion.TrySetResult();
+        }
+        catch (Exception failure)
+        {
+            lock (_gate)
+            {
                 _disposeState = 3;
             }
 
-            Monitor.PulseAll(_disposeWaitGate);
+            _ = _disposeCompletion.TrySetException(failure);
+            throw;
         }
-
-        if (firstFailure is not null)
-        {
-            ExceptionDispatchInfo.Capture(firstFailure).Throw();
-        }
-
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>Loads one typed asset from the currently selected content set.</summary>
@@ -228,6 +229,10 @@ public sealed partial class AssetStore : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        TaskCompletionSource replacementCompletion;
+
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -237,6 +242,8 @@ public sealed partial class AssetStore : IAsyncDisposable
                 throw new InvalidOperationException("The store has no available package-replacement owner.");
             }
 
+            replacementCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _replacementCompletion = replacementCompletion;
             _replacementInProgress = 1;
         }
 
@@ -307,12 +314,14 @@ public sealed partial class AssetStore : IAsyncDisposable
             lock (_gate)
             {
                 Volatile.Write(ref _replacementInProgress, 0);
+
+                if (ReferenceEquals(_replacementCompletion, replacementCompletion))
+                {
+                    _replacementCompletion = null;
+                }
             }
 
-            lock (_disposeWaitGate)
-            {
-                Monitor.PulseAll(_disposeWaitGate);
-            }
+            _ = replacementCompletion.TrySetResult();
         }
     }
 
@@ -456,13 +465,6 @@ public sealed partial class AssetStore : IAsyncDisposable
         }
     }
 
-    private void RethrowDisposeFailure()
-    {
-        var failure = _disposeFailure
-            ?? throw new InvalidOperationException("The asset store has no recorded disposal failure.");
-        ExceptionDispatchInfo.Capture(failure).Throw();
-    }
-
     private async Task ValidateAssetReferencesAsync(
         AssetPackageBacking backing,
         ImmutableArray<AssetReference> assetReferences,
@@ -524,17 +526,6 @@ public sealed partial class AssetStore : IAsyncDisposable
             finally
             {
                 ReleaseDecodeBudget(targetDecodedBytes);
-            }
-        }
-    }
-
-    private void WaitForReplacementRelease()
-    {
-        lock (_disposeWaitGate)
-        {
-            while (Volatile.Read(ref _replacementInProgress) != 0)
-            {
-                _ = Monitor.Wait(_disposeWaitGate);
             }
         }
     }

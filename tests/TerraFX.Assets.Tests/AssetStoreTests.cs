@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -997,6 +998,47 @@ internal sealed class AssetStoreTests
             await store.DisposeAsync().ConfigureAwait(false);
             File.Delete(firstPath);
             File.Delete(secondPath);
+        }
+    }
+
+    [Test]
+    public async Task ReplacePackageValidationPrecedesBusyReplacementAdmission()
+    {
+        var registration = CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 15)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration),
+            CancellationToken.None).ConfigureAwait(false);
+        var replacementStateField = typeof(AssetStore).GetField(
+            "_replacementInProgress",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The AssetStore replacement-admission state was not found.");
+
+        try
+        {
+            replacementStateField.SetValue(store, 1);
+            using var cancellation = new CancellationTokenSource();
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await store.ReplacePackageAsync(
+                    CreateOptions(path, package, registration),
+                    cancellation.Token).ConfigureAwait(false));
+            _ = Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await store.ReplacePackageAsync(
+                    CreateOptions(path, package, registration, maximumLiveAssetLeases: -1),
+                    CancellationToken.None).ConfigureAwait(false));
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await store.ReplacePackageAsync(
+                    CreateOptions(path, package, registration),
+                    CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            replacementStateField.SetValue(store, 0);
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
         }
     }
 
