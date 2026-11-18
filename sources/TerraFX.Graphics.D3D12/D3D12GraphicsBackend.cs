@@ -1938,7 +1938,7 @@ public static unsafe class D3D12GraphicsBackend
                 };
                 var heapId = typeof(ID3D12DescriptorHeap).GUID;
                 ID3D12DescriptorHeap* renderTargetHeap = null;
-                var renderTargetViews = new Dictionary<ulong, D3D12_CPU_DESCRIPTOR_HANDLE>(renderTargetResourceCount);
+                var renderTargetViews = new D3D12_CPU_DESCRIPTOR_HANDLE[renderTargetResourceCount];
                 var graphSubmissionAccepted = false;
                 var graphFrameSlotIndex = -1;
 
@@ -1972,7 +1972,7 @@ public static unsafe class D3D12GraphicsBackend
                             colorTexture.GetResource(),
                             &renderTargetViewDescription,
                             renderTargetView);
-                        renderTargetViews.Add(resourceId, renderTargetView);
+                        renderTargetViews[index] = renderTargetView;
                         renderTargetView.ptr = checked(
                             renderTargetView.ptr + checked((nuint)renderTargetViewIncrementSize));
                     }
@@ -2194,7 +2194,8 @@ public static unsafe class D3D12GraphicsBackend
                             {
                                 if (attachment.LoadAction == AttachmentLoadAction.Clear)
                                 {
-                                    var attachmentRenderTargetView = renderTargetViews[attachment.Version.ResourceId];
+                                    var attachmentRenderTargetView =
+                                        renderTargetViews[submission.GetColorAttachmentResourceIndex(attachment.Version.ResourceId)];
                                     clearColor[0] = attachment.ClearColor.X;
                                     clearColor[1] = attachment.ClearColor.Y;
                                     clearColor[2] = attachment.ClearColor.Z;
@@ -2442,7 +2443,8 @@ public static unsafe class D3D12GraphicsBackend
                             {
                                 if (!attachment.IsDepth)
                                 {
-                                    renderTargetHandles[renderTargetCount++] = renderTargetViews[attachment.Version.ResourceId];
+                                    renderTargetHandles[renderTargetCount++] =
+                                        renderTargetViews[submission.GetColorAttachmentResourceIndex(attachment.Version.ResourceId)];
                                 }
                             }
 

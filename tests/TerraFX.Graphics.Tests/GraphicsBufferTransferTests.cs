@@ -1746,8 +1746,8 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationIndexBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(1), Is.EqualTo(80));
-            Assert.That(GraphicsGraphSubmission.CalculateColorAttachmentResourceIndexBackingByteCharge(3), Is.EqualTo(112));
-            Assert.That(expectedCharge, Is.EqualTo(592));
+            Assert.That(GraphicsGraphSubmission.CalculateColorAttachmentResourceIndexBackingByteCharge(3), Is.EqualTo(192));
+            Assert.That(expectedCharge, Is.EqualTo(672));
             _ = Assert.Throws<ArgumentOutOfRangeException>(
                 () => GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(-1));
             _ = Assert.Throws<OverflowException>(
@@ -1782,10 +1782,13 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(submission.PassValidationIndexStorageCapacity, Is.EqualTo(1));
             Assert.That(submission.PassValidationIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.ColorAttachmentResourceIndexStorageCapacity, Is.EqualTo(3));
-            Assert.That(submission.ColorAttachmentResourceIndexBackingByteCharge, Is.EqualTo(112));
+            Assert.That(submission.ColorAttachmentResourceOrderStorageCapacity, Is.EqualTo(3));
+            Assert.That(submission.ColorAttachmentResourceIndexBackingByteCharge, Is.EqualTo(192));
             Assert.That(submission.ColorAttachmentResourceCount, Is.EqualTo(2));
             Assert.That(submission.GetColorAttachmentResourceId(0), Is.EqualTo(otherColorVersion.ResourceId));
             Assert.That(submission.GetColorAttachmentResourceId(1), Is.EqualTo(targetVersion.ResourceId));
+            Assert.That(submission.GetColorAttachmentResourceIndex(otherColorVersion.ResourceId), Is.Zero);
+            Assert.That(submission.GetColorAttachmentResourceIndex(targetVersion.ResourceId), Is.EqualTo(1));
         }
         finally
         {

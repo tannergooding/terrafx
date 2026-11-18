@@ -52,6 +52,7 @@ internal sealed class GraphicsGraphSubmission
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
     private readonly ColorAttachmentResourceIndexEntry[] _colorAttachmentResourceIndex;
+    private readonly int[] _colorAttachmentResourceOrder;
     private readonly int[] _orderedPassIndex;
     private readonly int[] _passValidationIndex;
     private int _recordingOwnershipState;
@@ -186,7 +187,7 @@ internal sealed class GraphicsGraphSubmission
         Accesses = [.. accesses];
         _accessPairIndex = CreateAccessPairIndex(Accesses);
         Passes = [.. passes];
-        (_colorAttachmentResourceIndex, ColorAttachmentResourceCount) =
+        (_colorAttachmentResourceIndex, _colorAttachmentResourceOrder, ColorAttachmentResourceCount) =
             CreateColorAttachmentResourceIndex(Passes, colorAttachmentIndexCapacity);
         _passValidationIndex = CreatePassValidationIndex(Passes);
         BufferImports = [.. bufferImports];
@@ -224,6 +225,8 @@ internal sealed class GraphicsGraphSubmission
         => CalculateColorAttachmentResourceIndexBackingByteCharge(_colorAttachmentResourceIndex.LongLength);
 
     internal int ColorAttachmentResourceIndexStorageCapacity => _colorAttachmentResourceIndex.Length;
+
+    internal int ColorAttachmentResourceOrderStorageCapacity => _colorAttachmentResourceOrder.Length;
 
     internal uint DeviceEpoch { get; }
 
@@ -318,9 +321,11 @@ internal sealed class GraphicsGraphSubmission
     internal static long CalculateColorAttachmentResourceIndexBackingByteCharge(long capacity)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
-        return (capacity == 0)
-            ? 0
-            : checked(64 + ((checked(capacity * Unsafe.SizeOf<ColorAttachmentResourceIndexEntry>()) + 15) & ~15L));
+        return checked(
+            (capacity == 0
+                ? 0
+                : 64 + ((checked(capacity * Unsafe.SizeOf<ColorAttachmentResourceIndexEntry>()) + 15) & ~15L))
+            + CalculateIndexBackingByteCharge(capacity));
     }
 
     internal static long CalculateImportIndexBackingByteCharge(
@@ -655,16 +660,20 @@ internal sealed class GraphicsGraphSubmission
         return indices;
     }
 
-    private static (ColorAttachmentResourceIndexEntry[] Entries, int UniqueCount) CreateColorAttachmentResourceIndex(
+    private static (
+        ColorAttachmentResourceIndexEntry[] Entries,
+        int[] Order,
+        int UniqueCount) CreateColorAttachmentResourceIndex(
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
         int capacity)
     {
         if (capacity == 0)
         {
-            return ([], 0);
+            return ([], [], 0);
         }
 
         var entries = new ColorAttachmentResourceIndexEntry[capacity];
+        var order = new int[capacity];
         var resourceCount = 0;
 
         foreach (var pass in passes)
@@ -691,7 +700,20 @@ internal sealed class GraphicsGraphSubmission
         }
 
         SortColorAttachmentResourceIndex(entries, uniqueCount, byResourceId: false);
-        return (entries, uniqueCount);
+
+        for (var index = 0; index < uniqueCount; index++)
+        {
+            entries[index] = entries[index] with { FirstOccurrenceIndex = index };
+        }
+
+        SortColorAttachmentResourceIndex(entries, uniqueCount, byResourceId: true);
+
+        for (var index = 0; index < uniqueCount; index++)
+        {
+            order[entries[index].FirstOccurrenceIndex] = index;
+        }
+
+        return (entries, order, uniqueCount);
     }
 
     private static int[] CreateOrderedPassIndex(ImmutableArray<RenderPassId> passes)
@@ -1346,7 +1368,36 @@ internal sealed class GraphicsGraphSubmission
             ?? throw new InvalidOperationException("The imported buffer lost its backend resource.");
     }
 
-    internal ulong GetColorAttachmentResourceId(int index) => _colorAttachmentResourceIndex[index].ResourceId;
+    internal ulong GetColorAttachmentResourceId(int index)
+        => _colorAttachmentResourceIndex[_colorAttachmentResourceOrder[index]].ResourceId;
+
+    internal int GetColorAttachmentResourceIndex(ulong resourceId)
+    {
+        var first = 0;
+        var last = ColorAttachmentResourceCount;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+
+            if (_colorAttachmentResourceIndex[middle].ResourceId < resourceId)
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if ((first < ColorAttachmentResourceCount)
+            && (_colorAttachmentResourceIndex[first].ResourceId == resourceId))
+        {
+            return _colorAttachmentResourceIndex[first].FirstOccurrenceIndex;
+        }
+
+        throw new KeyNotFoundException("The graph color attachment is not in the color resource index.");
+    }
 
     internal IGraphicsBackendTexture GetTexture(ulong resourceId)
     {

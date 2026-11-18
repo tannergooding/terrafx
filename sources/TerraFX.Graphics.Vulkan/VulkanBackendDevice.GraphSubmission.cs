@@ -661,7 +661,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             ?? throw new InvalidOperationException("Vulkan graph command frame slots are exhausted before graphics admission.");
         var colorAttachmentResourceCount = submission.ColorAttachmentResourceCount;
 
-        var graphColorImageViews = new Dictionary<ulong, VkImageView>(colorAttachmentResourceCount);
+        var graphColorImageViews = new VkImageView[colorAttachmentResourceCount];
         var graphImageViews = new List<VkImageView>(colorAttachmentResourceCount);
         var acquiredImageIndex = 0u;
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
@@ -745,7 +745,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
                     ?? throw new InvalidOperationException("A graph color attachment is not a Vulkan texture.");
                 var imageView = CreateGraphColorImageView(_device, texture);
-                graphColorImageViews.Add(resourceId, imageView);
+                graphColorImageViews[index] = imageView;
                 graphImageViews.Add(imageView);
             }
 
@@ -1307,7 +1307,8 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                         var renderingAttachment = default(VkRenderingAttachmentInfo);
                         renderingAttachment.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                        renderingAttachment.imageView = graphColorImageViews[attachment.Version.ResourceId];
+                        renderingAttachment.imageView =
+                            graphColorImageViews[submission.GetColorAttachmentResourceIndex(attachment.Version.ResourceId)];
                         renderingAttachment.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                         renderingAttachment.loadOp = GetGraphAttachmentLoadOp(attachment.LoadAction);
                         renderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
