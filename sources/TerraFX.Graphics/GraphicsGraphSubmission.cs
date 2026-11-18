@@ -13,9 +13,13 @@ internal sealed class GraphicsGraphSubmission
     internal const int MaximumNativeColorAttachmentCount = 8;
 
     private const byte BufferCopyDestinationPassFlag = 1 << 0;
+    private const byte BufferCopyDestinationResourceFlag = 1 << 0;
     private const byte BufferCopySourcePassFlag = 1 << 1;
+    private const byte BufferCopySourceResourceFlag = 1 << 1;
     private const byte TextureCopyDestinationPassFlag = 1 << 2;
+    private const byte TextureCopyDestinationResourceFlag = 1 << 2;
     private const byte TextureCopySourcePassFlag = 1 << 3;
+    private const byte TextureCopySourceResourceFlag = 1 << 3;
 
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
@@ -119,6 +123,8 @@ internal sealed class GraphicsGraphSubmission
             orderedPasses.Length,
             aliasingBarriers.Length,
             textureAliasingBarriers.Length,
+            bufferImports.Length,
+            textureImports.Length,
             passes.Length,
             maximumPreflightWorkspaceBytes);
         DeviceEpoch = deviceEpoch;
@@ -278,6 +284,8 @@ internal sealed class GraphicsGraphSubmission
         long orderedPassCapacity,
         long bufferAliasingCapacity,
         long textureAliasingCapacity,
+        long bufferResourceUsageCapacity,
+        long textureResourceUsageCapacity,
         long passValidationCapacity)
         => checked(
             CalculatePreflightIndexBackingByteCharge(
@@ -286,8 +294,13 @@ internal sealed class GraphicsGraphSubmission
                 orderedPassCapacity,
                 bufferAliasingCapacity,
                 textureAliasingCapacity)
+            + CalculateResourceUsageFlagsBackingByteCharge(bufferResourceUsageCapacity)
+            + CalculateResourceUsageFlagsBackingByteCharge(textureResourceUsageCapacity)
             + CalculatePassValidationIndexBackingByteCharge(passValidationCapacity)
             + CalculatePassValidationFlagsBackingByteCharge(passValidationCapacity));
+
+    internal static long CalculateResourceUsageFlagsBackingByteCharge(long capacity)
+        => CalculatePassValidationFlagsBackingByteCharge(capacity);
 
     internal static long CalculateTextureAliasingAfterIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
@@ -326,6 +339,15 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return colorIndex == formats.Length;
+    }
+
+    private static void AddResourceUsageFlag(byte[] flags, int importIndex, byte flag, ref int usedCount)
+    {
+        if ((flags[importIndex] & flag) == 0)
+        {
+            flags[importIndex] |= flag;
+            usedCount++;
+        }
     }
 
     private static long CalculateIndexBackingByteCharge(long capacity)
@@ -832,6 +854,8 @@ internal sealed class GraphicsGraphSubmission
         int orderedPassCapacity,
         int bufferAliasingCapacity,
         int textureAliasingCapacity,
+        int bufferResourceUsageCapacity,
+        int textureResourceUsageCapacity,
         int passValidationCapacity,
         long maximumBytes)
     {
@@ -843,6 +867,8 @@ internal sealed class GraphicsGraphSubmission
                 orderedPassCapacity,
                 bufferAliasingCapacity,
                 textureAliasingCapacity,
+                bufferResourceUsageCapacity,
+                textureResourceUsageCapacity,
                 passValidationCapacity) > maximumBytes)
         {
             throw new OutOfMemoryException("The graph preflight workspace exceeds its CPU component allowance.");
@@ -1077,6 +1103,8 @@ internal sealed class GraphicsGraphSubmission
     internal void ValidateNativeRasterSubmission()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
+        var bufferResourceUsageFlags = new byte[BufferImports.Length];
+        var textureResourceUsageFlags = new byte[TextureImports.Length];
         var passValidationFlags = new byte[Passes.Length];
 
         if ((TextureImports.Length < 1)
@@ -1721,8 +1749,8 @@ internal sealed class GraphicsGraphSubmission
         var hasStorageImagePipeline = false;
         var hasStorageImageBinding = false;
         var hasStorageImageAccess = false;
-        var copySourceResourcesUsed = new HashSet<ulong>();
-        var copyDestinationResourcesUsed = new HashSet<ulong>();
+        var copySourceResourcesUsedCount = 0;
+        var copyDestinationResourcesUsedCount = 0;
         var vertexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var vertexBufferResourcesUsed = new HashSet<ulong>();
         var indexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
@@ -1739,8 +1767,8 @@ internal sealed class GraphicsGraphSubmission
         var storageTextureResourcesUsed = new HashSet<ulong>();
         var colorAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var depthAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var copySourceTextureResourcesUsed = new HashSet<ulong>();
-        var copyDestinationTextureResourcesUsed = new HashSet<ulong>();
+        var copySourceTextureResourcesUsedCount = 0;
+        var copyDestinationTextureResourcesUsedCount = 0;
 
         foreach (var pass in Passes)
         {
@@ -2840,7 +2868,11 @@ internal sealed class GraphicsGraphSubmission
                     throw new InvalidOperationException("The imported copy-source buffer is declared by a pass without a matching copy command.");
                 }
 
-                _ = copySourceResourcesUsed.Add(access.ResourceId);
+                RecordBufferResourceUsage(
+                    bufferResourceUsageFlags,
+                    access.ResourceId,
+                    BufferCopySourceResourceFlag,
+                    ref copySourceResourcesUsedCount);
                 continue;
             }
 
@@ -2859,7 +2891,11 @@ internal sealed class GraphicsGraphSubmission
                     throw new InvalidOperationException("The imported copy-destination buffer is declared by a pass without a matching copy command.");
                 }
 
-                _ = copyDestinationResourcesUsed.Add(access.ResourceId);
+                RecordBufferResourceUsage(
+                    bufferResourceUsageFlags,
+                    access.ResourceId,
+                    BufferCopyDestinationResourceFlag,
+                    ref copyDestinationResourcesUsedCount);
                 continue;
             }
 
@@ -2978,7 +3014,11 @@ internal sealed class GraphicsGraphSubmission
                     throw new InvalidOperationException("The imported copy-source texture is declared by a pass without a matching copy command.");
                 }
 
-                _ = copySourceTextureResourcesUsed.Add(access.ResourceId);
+                RecordTextureResourceUsage(
+                    textureResourceUsageFlags,
+                    access.ResourceId,
+                    TextureCopySourceResourceFlag,
+                    ref copySourceTextureResourcesUsedCount);
                 continue;
             }
 
@@ -2997,7 +3037,11 @@ internal sealed class GraphicsGraphSubmission
                     throw new InvalidOperationException("The imported copy-destination texture is declared by a pass without a matching copy command.");
                 }
 
-                _ = copyDestinationTextureResourcesUsed.Add(access.ResourceId);
+                RecordTextureResourceUsage(
+                    textureResourceUsageFlags,
+                    access.ResourceId,
+                    TextureCopyDestinationResourceFlag,
+                    ref copyDestinationTextureResourcesUsedCount);
                 continue;
             }
 
@@ -3297,23 +3341,23 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported index buffer must be bound and used by an indexed draw.");
         }
 
-        if (copySourceResourcesUsed.Count != copySourceBufferImports.Count)
+        if (copySourceResourcesUsedCount != copySourceBufferImports.Count)
         {
             throw new NotSupportedException("Every imported copy-source buffer must be read by a graph copy command.");
         }
 
-        if (copyDestinationResourcesUsed.Count != copyDestinationBufferImports.Count)
+        if (copyDestinationResourcesUsedCount != copyDestinationBufferImports.Count)
         {
             throw new NotSupportedException("Every imported copy-destination buffer must be written by a graph copy command.");
         }
 
-        if (copySourceTextureResourcesUsed.Count != copySourceTextureImports.Count)
+        if (copySourceTextureResourcesUsedCount != copySourceTextureImports.Count)
         {
             throw new NotSupportedException(
-                $"Every imported copy-source texture must be read by a graph copy command ({copySourceTextureResourcesUsed.Count} of {copySourceTextureImports.Count} were used).");
+                $"Every imported copy-source texture must be read by a graph copy command ({copySourceTextureResourcesUsedCount} of {copySourceTextureImports.Count} were used).");
         }
 
-        if (copyDestinationTextureResourcesUsed.Count != copyDestinationTextureImports.Count)
+        if (copyDestinationTextureResourcesUsedCount != copyDestinationTextureImports.Count)
         {
             throw new NotSupportedException("Every imported copy-destination texture must be written by a graph copy command.");
         }
@@ -3480,7 +3524,7 @@ internal sealed class GraphicsGraphSubmission
         return (TextureAliasingBarriers[index].AfterResourceId == resourceId) ? index : -1;
     }
 
-    private int FindFirstTransientTextureImportIndex(ulong resourceId)
+    private int FindFirstTextureImportIndex(ulong resourceId)
     {
         var first = 0;
         var last = _textureImportIndex.Length;
@@ -3508,10 +3552,15 @@ internal sealed class GraphicsGraphSubmission
         var index = _textureImportIndex[first];
         var candidate = TextureImports[index];
         return (candidate is not null)
-            && candidate.IsTransient
             && (candidate.Version.ResourceId == resourceId)
                 ? index
                 : -1;
+    }
+
+    private int FindFirstTransientTextureImportIndex(ulong resourceId)
+    {
+        var index = FindFirstTextureImportIndex(resourceId);
+        return (index >= 0) && TextureImports[index].IsTransient ? index : -1;
     }
 
     private GraphBufferImportRecord GetBufferImport(ulong resourceId)
@@ -3543,5 +3592,37 @@ internal sealed class GraphicsGraphSubmission
         }
 
         throw new NotSupportedException("Native graph submission does not yet materialize transient textures.");
+    }
+
+    private void RecordBufferResourceUsage(
+        byte[] resourceUsageFlags,
+        ulong resourceId,
+        byte flag,
+        ref int usedCount)
+    {
+        var importIndex = FindFirstBufferImportIndex(resourceId);
+
+        if (importIndex < 0)
+        {
+            throw new InvalidOperationException("The graph buffer usage index lost a declared import.");
+        }
+
+        AddResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
+    }
+
+    private void RecordTextureResourceUsage(
+        byte[] resourceUsageFlags,
+        ulong resourceId,
+        byte flag,
+        ref int usedCount)
+    {
+        var importIndex = FindFirstTextureImportIndex(resourceId);
+
+        if (importIndex < 0)
+        {
+            throw new InvalidOperationException("The graph texture usage index lost a declared import.");
+        }
+
+        AddResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
     }
 }
