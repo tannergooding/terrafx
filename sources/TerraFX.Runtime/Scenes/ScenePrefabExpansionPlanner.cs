@@ -790,16 +790,19 @@ internal static class ScenePrefabExpansionPlanner
                 }
             }
 
-            var reservation = _storageReservation;
+            if (firstFailure is null)
+            {
+                var reservation = _storageReservation;
 
-            try
-            {
-                reservation?.Dispose();
-                _storageReservation = null;
-            }
-            catch (Exception failure)
-            {
-                firstFailure ??= failure;
+                try
+                {
+                    reservation?.Dispose();
+                    _storageReservation = null;
+                }
+                catch (Exception failure)
+                {
+                    firstFailure = failure;
+                }
             }
 
             if (firstFailure is not null)
