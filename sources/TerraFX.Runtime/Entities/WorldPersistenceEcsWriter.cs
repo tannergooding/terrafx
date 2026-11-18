@@ -620,7 +620,7 @@ internal static class WorldPersistenceEcsWriter
         {
             cancellationToken.ThrowIfCancellationRequested();
             var payloadStatus = GetPayloadRecordBytes(
-                lease.CountAttachmentStateRecord(rows.CurrentIndex, cancellationToken),
+                lease.CountAttachmentStateRecord(rows.CurrentIndex, limits, cancellationToken),
                 "attachment-state-record-size",
                 limits,
                 out var payloadRecordBytes,
@@ -993,7 +993,7 @@ internal static class WorldPersistenceEcsWriter
         {
             cancellationToken.ThrowIfCancellationRequested();
             var payloadStatus = GetPayloadRecordBytes(
-                lease.CountAttachmentStateRecord(rows.CurrentIndex, cancellationToken),
+                lease.CountAttachmentStateRecord(rows.CurrentIndex, limits, cancellationToken),
                 "attachment-state-record-size",
                 limits,
                 out var measuredPayloadRecordBytes,
@@ -1157,6 +1157,7 @@ internal static class WorldPersistenceEcsWriter
     {
         var bytesWritten = lease.WriteAttachmentStateRecord(
             attachmentIndex,
+            limits,
             statePayloadRecordStorage[..payloadRecordBytes],
             cancellationToken);
 

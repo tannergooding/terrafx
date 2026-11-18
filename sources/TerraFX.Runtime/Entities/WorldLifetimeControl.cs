@@ -5,7 +5,7 @@ using System.Threading;
 
 namespace TerraFX.Entities;
 
-internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
+internal sealed partial class WorldLifetimeControl : IWorldGuidRetentionOwner
 {
     private const int StateActive = 3;
     private const int StateFreshPrepared = 0;
@@ -13,6 +13,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
     private const int StateReplacementCandidateOwned = 2;
     private const int StateReplacementCandidatePrepared = 1;
     private const int StateRetired = 5;
+    private const int StateRetirementPending = 7;
     private const int StateRevoked = 4;
 
     private readonly WorldAdmissionDomain _admissionDomain;
@@ -22,6 +23,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
     private bool _hasCommittedHistory;
     private WorldLineageGrant _lineageGrant;
     private readonly WorldGuidRegistry _registry;
+    private readonly WorldGuidRetirementPermit _retirementPermit;
     private int _state;
     private readonly WorldGuidGrant _worldGuidGrant;
 
@@ -64,6 +66,12 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
         _domainReservation = domainReservation;
         _lineageGrant = lineageGrant;
         _state = isReplacementCandidate ? StateReplacementCandidatePrepared : StateFreshPrepared;
+        _retirementPermit = new WorldGuidRetirementPermit(this, registry, worldGuidGrant);
+
+        if (!isReplacementCandidate && !registry.TryBindWorldOwner(worldGuidGrant))
+        {
+            throw new InvalidOperationException("The exact World binding already has an owner or is no longer available.");
+        }
     }
 
     internal WorldDefaultDomainOwner? DefaultDomainOwner => _defaultDomainOwner;
@@ -71,6 +79,10 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
     internal bool HasCommittedHistory => Volatile.Read(ref _hasCommittedHistory);
 
     internal bool IsQuarantined => Volatile.Read(ref _state) == StateQuarantined;
+
+    internal bool IsRetired => Volatile.Read(ref _state) == StateRetired;
+
+    internal bool IsRetirementPending => Volatile.Read(ref _state) == StateRetirementPending;
 
     internal WorldGuidRegistry Registry => _registry;
 
@@ -86,6 +98,9 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
         CloseDefaultDomain();
     }
 
+    internal WorldGuidUse AcquireUse(long workspaceLimit)
+        => AcquireUseCore(workspaceLimit, default);
+
     internal void AdoptReplacementGrant()
     {
         lock (_gate)
@@ -93,6 +108,11 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
             if (_state != StateReplacementCandidatePrepared)
             {
                 throw new InvalidOperationException("The restore candidate cannot adopt this WorldGuid grant.");
+            }
+
+            if (!_registry.TryBindWorldOwner(_worldGuidGrant))
+            {
+                throw new InvalidOperationException("The restore candidate cannot adopt an already owned or stale World binding.");
             }
 
             _state = StateReplacementCandidateOwned;
@@ -132,6 +152,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
                 or StateReplacementCandidatePrepared
                 or StateReplacementCandidateOwned
                 or StateRevoked
+                or StateRetirementPending
                 or StateQuarantined
                 or StateRetired))
             {
@@ -145,6 +166,24 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
         defaultDomainOwner?.Close();
     }
 
+    internal bool CompleteDeferredRetirement()
+    {
+        lock (_gate)
+        {
+            if (_state == StateRetired)
+            {
+                return true;
+            }
+
+            if (_state != StateRetirementPending)
+            {
+                return false;
+            }
+
+            return CompleteDeferredRetirementUnderGate();
+        }
+    }
+
     internal bool CompleteRetirement()
     {
         lock (_gate)
@@ -152,6 +191,14 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
             if (_state == StateRetired)
             {
                 return true;
+            }
+
+            if ((_domainReservation is { } reservation)
+                && _admissionDomain.IsEnrolledWorld(reservation)
+                && (!_admissionDomain.IsWorldRetirementElected(reservation, this)
+                    || !_admissionDomain.TryCompleteWorldLineage(reservation, this, _lineageGrant)))
+            {
+                return false;
             }
 
             if (_state == StateReplacementCandidatePrepared)
@@ -163,16 +210,25 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
                 return true;
             }
 
+            if (_state == StateRetirementPending)
+            {
+                return CompleteDeferredRetirementUnderGate();
+            }
+
             if (_state is not (StateFreshPrepared or StateReplacementCandidateOwned or StateRevoked))
             {
                 return false;
             }
 
-            var permit = new WorldGuidRetirementPermit(this, _registry, _worldGuidGrant);
-
-            if (!_registry.TryRetire(permit))
+            if (!_registry.TryRetire(_retirementPermit, out var deferred))
             {
                 return false;
+            }
+
+            if (deferred)
+            {
+                _state = StateRetirementPending;
+                return true;
             }
 
             _state = StateRetired;
@@ -238,7 +294,10 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
 
     internal bool IsRetirementPermitCurrent(in WorldGuidGrant worldGuidGrant)
         => _worldGuidGrant.Equals(worldGuidGrant)
-            && (Volatile.Read(ref _state) is StateFreshPrepared or StateReplacementCandidateOwned or StateRevoked);
+            && (Volatile.Read(ref _state) is StateFreshPrepared or StateReplacementCandidateOwned or StateRevoked or StateRetirementPending)
+            && ((_domainReservation is not { } reservation)
+                || !_admissionDomain.IsEnrolledWorld(reservation)
+                || _admissionDomain.IsWorldRetirementElected(reservation, this));
 
     internal void PublishFresh()
     {
@@ -266,9 +325,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
                 return false;
             }
 
-            var permit = new WorldGuidRetirementPermit(this, _registry, _worldGuidGrant);
-
-            if (!_registry.TryQuarantine(permit))
+            if (!_registry.TryQuarantine(_retirementPermit))
             {
                 return false;
             }
@@ -311,5 +368,19 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
                 replacement._hasCommittedHistory = true;
             }
         }
+    }
+
+    private bool CompleteDeferredRetirementUnderGate()
+    {
+        if (!_registry.TryRetire(_retirementPermit, out var deferred) || deferred)
+        {
+            return false;
+        }
+
+        _state = StateRetired;
+        _hasCommittedHistory = false;
+        _domainReservation = null;
+        _lineageGrant = default;
+        return true;
     }
 }

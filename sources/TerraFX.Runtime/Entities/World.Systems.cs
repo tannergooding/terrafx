@@ -139,7 +139,7 @@ public sealed partial class World
             {
                 try
                 {
-                    resourceRegistration.ValidateForExecution(partitions);
+                    resourceRegistration.ValidateForExecution(partitions, this, _nextTickIndex);
                 }
                 catch (Exception exception)
                 {

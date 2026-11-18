@@ -9,6 +9,7 @@ internal sealed class WorldDomainReservation : IDisposable
 {
     private long _bytes;
     private WorldAdmissionDomain? _domain;
+    private long _independentUseBytes;
     private long _maximumAdditionalBytes;
 
     internal WorldDomainReservation(
@@ -28,6 +29,8 @@ internal sealed class WorldDomainReservation : IDisposable
 
     internal long Bytes => Interlocked.Read(ref _bytes);
 
+    internal long IndependentUseBytes => Interlocked.Read(ref _independentUseBytes);
+
     internal long InitialBytes { get; }
 
     internal uint InterestGeneration { get; }
@@ -44,6 +47,15 @@ internal sealed class WorldDomainReservation : IDisposable
 
     internal void AddBytes(long bytes)
         => _ = Interlocked.Add(ref _bytes, bytes);
+
+    internal void AddIndependentUseBytes(long bytes)
+        => _ = Interlocked.Add(ref _independentUseBytes, bytes);
+
+    internal void CommitSceneWorkspaceTransfer(long bytes, long independentUseBytes)
+    {
+        _ = Interlocked.Exchange(ref _bytes, bytes);
+        _ = Interlocked.Exchange(ref _independentUseBytes, independentUseBytes);
+    }
 
     internal bool IsOwnedBy(WorldAdmissionDomain domain)
         => ReferenceEquals(Volatile.Read(ref _domain), domain);
@@ -63,16 +75,63 @@ internal sealed class WorldDomainReservation : IDisposable
         domain.ReleaseWorldReservationBytes(this, bytes);
     }
 
+    internal void ReleaseSceneReservation(WorldSceneStorageReservation reservation)
+    {
+        var domain = Volatile.Read(ref _domain);
+        domain?.ReleaseSceneReservation(this, reservation);
+    }
+
     internal void RemoveBytes(long bytes)
         => _ = Interlocked.Add(ref _bytes, -bytes);
 
+    internal void RemoveIndependentUseBytes(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        if (bytes > Interlocked.Read(ref _independentUseBytes))
+        {
+            throw new InvalidOperationException("The released independent-use bytes exceed this World's live operation credits.");
+        }
+
+        _ = Interlocked.Add(ref _independentUseBytes, -bytes);
+    }
+
     internal void SetMaximumAdditionalBytes(long bytes)
         => _ = Interlocked.Exchange(ref _maximumAdditionalBytes, bytes);
+
+    internal void SetSceneReservationOwner(WorldSceneStorageReservation reservation, object owner)
+    {
+        var domain = Volatile.Read(ref _domain)
+            ?? throw new ObjectDisposedException(nameof(WorldDomainReservation));
+        domain.SetSceneReservationOwner(this, reservation, owner);
+    }
+
+    internal bool TryInstallSceneWorkspace(WorldSceneStorageReservation reservation)
+    {
+        var domain = Volatile.Read(ref _domain);
+        return (domain is not null) && domain.TryInstallSceneWorkspace(this, reservation);
+    }
 
     internal bool TryReserveAdditional(long bytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
         var domain = Volatile.Read(ref _domain);
         return (domain is not null) && domain.TryGrowWorldReservation(this, bytes);
+    }
+
+    internal bool TryReserveIndependentUseBytes(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+        var currentAdditionalBytes = Interlocked.Read(ref _bytes) - InitialBytes;
+        var currentIndependentUseBytes = Interlocked.Read(ref _independentUseBytes);
+        var remainingBytes = MaximumAdditionalBytes - currentAdditionalBytes - currentIndependentUseBytes;
+
+        if (bytes > remainingBytes)
+        {
+            return false;
+        }
+
+        _ = Interlocked.Add(ref _independentUseBytes, bytes);
+        return true;
     }
 }

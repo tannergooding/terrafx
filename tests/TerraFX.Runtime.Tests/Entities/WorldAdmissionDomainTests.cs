@@ -565,6 +565,7 @@ internal sealed class WorldAdmissionDomainTests
 
         TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
         TestContext.WriteLine($"Warmed TryReserveWorld allocation deltas: {string.Join(", ", allocationDeltas)} bytes");
+        Assert.That(allocationDeltas, Is.All.EqualTo(64));
     }
 
     [Test]

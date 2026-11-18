@@ -9,10 +9,14 @@ using System.Threading.Tasks;
 namespace TerraFX.Entities;
 
 /// <summary>Bounds the World histories and owned memory admitted by one standalone domain.</summary>
-public sealed class WorldAdmissionDomain : IDisposable
+public sealed partial class WorldAdmissionDomain : IDisposable
 {
     private const int FreshRootLineageKeyCount = 1;
+    private const int InterestGrowthFree = 0;
+    private const int InterestGrowthPending = 1;
+    private const int InterestGrowthRetiring = 2;
     private const int InterestKindHistory = 2;
+    private const int InterestKindUseOperation = 3;
     private const int InterestKindWorld = 1;
     private const int LineageEntryChargeStride = 256;
     private const int MaximumEdges = 1_048_576;
@@ -30,12 +34,17 @@ public sealed class WorldAdmissionDomain : IDisposable
     private const int StateOccupied = 2;
     private const int StateReserved = 1;
     private const int StateRetired = 3;
+    private const int WorldUseRawFree = 0;
+    private const int WorldUseRawPending = 1;
+    private const int WorldUseRawRetired = 2;
 
     private int _activeInterestCount;
     private int _activeOperationCreditCount;
     private int _activeReservationCount;
     private ReentrantGate _gate;
     private ReentrantGate _growthGate;
+    private WorldGuidUseControl? _independentUseHead;
+    private InterestGrowthTicket _interestGrowthTicket;
     private InterestEntry[] _interests;
     private bool _isDisposed;
     private int _lineageEdgeCount;
@@ -48,10 +57,12 @@ public sealed class WorldAdmissionDomain : IDisposable
     private long _pendingGrowthBytes;
     private int _pendingLineageMembershipEdgeCount;
     private int _pendingLineageMembershipKeyCount;
+    private int _prospectiveInterestCount;
     private long _registryCharge;
     private ReservationEntry[] _reservations;
     private readonly TaskCompletionSource _retirement;
     private long _worldBytes;
+    private WorldUseRawTicket _worldUseRawTicket;
 
     /// <summary>Initializes a bounded domain for fresh World histories.</summary>
     /// <param name="maximumBytes">The maximum combined registry and World-owned bytes, in [4096, 8589934592].</param>
@@ -63,13 +74,19 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         _maximumBytes = maximumBytes;
         _retirement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Retirement must not initialize shared empty backing under either gate.
+        _ = Array.Empty<LineageEntry>();
+        _ = Array.Empty<LineageIndexBucket>();
+        _ = Array.Empty<Guid>();
+        _ = Array.Empty<InterestEntry>();
+        _ = Array.Empty<ReservationEntry>();
         var (lineageCapacity, indexCapacity) = GetInitialRegistryCapacities(maximumBytes);
         _lineages = (lineageCapacity == 0) ? [] : new LineageEntry[lineageCapacity];
         _lineageKeys = (lineageCapacity == 0) ? [] : new Guid[checked(lineageCapacity * FreshRootLineageKeyCount)];
         _lineageIndex = (indexCapacity == 0) ? [] : new LineageIndexBucket[indexCapacity];
         _interests = (lineageCapacity == 0) ? [] : new InterestEntry[lineageCapacity];
         _reservations = (lineageCapacity == 0) ? [] : new ReservationEntry[lineageCapacity];
-        _registryCharge = GetRegistryCharge(lineageCapacity, indexCapacity);
+        _registryCharge = GetRegistryCharge(lineageCapacity, indexCapacity, _interests.Length);
     }
 
     /// <summary>Gets the maximum combined registry and World-owned bytes.</summary>
@@ -78,16 +95,17 @@ public sealed class WorldAdmissionDomain : IDisposable
     /// <summary>Gets the task that completes after the domain closes and all World interests retire.</summary>
     public Task Retirement => _retirement.Task;
 
-    private static long ArrayCharge(int capacity, int stride)
+    internal static long ArrayCharge(int capacity, int stride)
     {
         var payloadBytes = checked((long)capacity * stride);
         var roundedBytes = checked((payloadBytes + 15L) & ~15L);
         return checked(64L + roundedBytes);
     }
 
-    private static (int RootCapacity, int IndexCapacity) GetExpandedRegistryCapacities(
+    private static (int RootCapacity, int IndexCapacity, int InterestCapacity) GetExpandedRegistryCapacities(
         int currentRootCapacity,
         int currentIndexCapacity,
+        int currentInterestCapacity,
         long maximumBytes,
         long currentRegistryCharge,
         long retainedMembershipBytes,
@@ -103,19 +121,20 @@ public sealed class WorldAdmissionDomain : IDisposable
         for (var rootCapacity = firstCapacity; rootCapacity > currentRootCapacity; rootCapacity--)
         {
             var indexCapacity = GetIndexCapacityForRoots(rootCapacity, currentIndexCapacity);
-            var registryCharge = checked(GetRegistryCharge(rootCapacity, indexCapacity) + retainedMembershipBytes);
-            var newArrayCharge = GetRegistryArrayCharge(rootCapacity, indexCapacity);
+            var interestCapacity = Math.Max(currentInterestCapacity, rootCapacity);
+            var registryCharge = checked(GetRegistryCharge(rootCapacity, indexCapacity, interestCapacity) + retainedMembershipBytes);
+            var newArrayCharge = GetRegistryArrayCharge(rootCapacity, indexCapacity, interestCapacity);
             var peakRegistryCharge = checked(currentRegistryCharge + pendingGrowthBytes + newArrayCharge);
 
             if ((registryCharge <= registryBudget)
                 && (peakRegistryCharge <= registryBudget)
                 && (checked(peakRegistryCharge + worldBytes + additionalWorldBytes) <= maximumBytes))
             {
-                return (rootCapacity, indexCapacity);
+                return (rootCapacity, indexCapacity, interestCapacity);
             }
         }
 
-        return (0, 0);
+        return (0, 0, 0);
     }
 
     private static int GetIndexCapacityForRoots(int rootCapacity, int currentIndexCapacity)
@@ -141,13 +160,13 @@ public sealed class WorldAdmissionDomain : IDisposable
             return (0, 0);
         }
 
-        var initialCharge = GetRegistryCharge(1, MinimumLineageIndexCapacity);
+        var initialCharge = GetRegistryCharge(1, MinimumLineageIndexCapacity, 1);
         return (initialCharge <= registryBudget && initialCharge + minimumWorldBytes <= maximumBytes)
             ? (1, MinimumLineageIndexCapacity)
             : (0, 0);
     }
 
-    private static long GetRegistryArrayCharge(int rootCapacity, int indexCapacity)
+    private static long GetRegistryArrayCharge(int rootCapacity, int indexCapacity, int interestCapacity)
     {
         var charge = 0L;
 
@@ -155,9 +174,13 @@ public sealed class WorldAdmissionDomain : IDisposable
         {
             charge = checked(charge
                 + ArrayCharge(rootCapacity, LineageEntryChargeStride)
-                + ArrayCharge(rootCapacity, Unsafe.SizeOf<InterestEntry>())
+                + ArrayCharge(interestCapacity, Unsafe.SizeOf<InterestEntry>())
                 + ArrayCharge(rootCapacity, Unsafe.SizeOf<ReservationEntry>())
                 + ArrayCharge(checked(rootCapacity * FreshRootLineageKeyCount), Unsafe.SizeOf<Guid>()));
+        }
+        else if (interestCapacity > 0)
+        {
+            charge = checked(charge + ArrayCharge(interestCapacity, Unsafe.SizeOf<InterestEntry>()));
         }
 
         if (indexCapacity > 0)
@@ -168,8 +191,8 @@ public sealed class WorldAdmissionDomain : IDisposable
         return charge;
     }
 
-    private static long GetRegistryCharge(int rootCapacity, int indexCapacity)
-        => checked(RegistrarControlBytes + GetRegistryArrayCharge(rootCapacity, indexCapacity));
+    private static long GetRegistryCharge(int rootCapacity, int indexCapacity, int interestCapacity)
+        => checked(RegistrarControlBytes + GetRegistryArrayCharge(rootCapacity, indexCapacity, interestCapacity));
 
     private static bool IsMatchingReservation(in ReservationEntry reservation, in WorldLineageGrant grant)
         => (reservation.Generation == grant.Generation)
@@ -208,6 +231,17 @@ public sealed class WorldAdmissionDomain : IDisposable
         interest.Kind = 0;
         interest.LineageRootIndex = -1;
         interest.LineageRootGeneration = 0;
+        interest.UseControl = null;
+        interest.Reservation = null;
+        interest.SceneConstructionBytes = 0;
+        interest.SceneStorageBytes = 0;
+        interest.PendingSceneConstructionBytes = 0;
+        interest.WorldCloseProgress = 0;
+        interest.SceneConstructorCount = 0;
+        interest.WorldReturnPartCount = 0;
+        interest.WorldLifetime = null;
+        interest.SceneStorageHead = null;
+        interest.WorldCloseCarrier = null;
 
         if (interest.Generation == uint.MaxValue)
         {
@@ -224,8 +258,7 @@ public sealed class WorldAdmissionDomain : IDisposable
     {
         var completeRetirement = false;
 
-        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
-
+        using (ReentrantGate.EnterScope(ref _growthGate))
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (!_isDisposed)
@@ -242,7 +275,46 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         if (completeRetirement)
         {
-            _ = _retirement.TrySetResult();
+            PublishRetirement();
+        }
+    }
+
+    internal bool LinkWorldGuidUseRaw(uint ticketGeneration, WorldGuidUseControl control)
+        => LinkWorldGuidUseRaw(ticketGeneration, control, default);
+
+    internal bool LinkWorldGuidUseRaw(uint ticketGeneration, WorldGuidUseControl control, in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        journal.ValidateControl(control);
+        journal.ValidateRaw(this, ticketGeneration);
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            ref var ticket = ref _worldUseRawTicket;
+
+            if (_isDisposed
+                || (ticket.State != WorldUseRawPending)
+                || (ticket.Generation != ticketGeneration)
+                || !ReferenceEquals(ticket.Lifetime, control.Lifetime)
+                || !ReferenceEquals(control.Domain, this)
+                || !ReferenceEquals(ticket.Reservation, control.DomainReservation)
+                || (ticket.Bytes != control.Anchor.OperationBytes)
+                || (ticket.WorkspaceLimit != control.Anchor.WorkspaceLimit))
+            {
+                return false;
+            }
+
+            ticket.Control = control;
+            control.SetNext(_independentUseHead);
+            _independentUseHead = control;
+            journal.RecordRawLinked();
+            ticket.State = (ticket.Generation == uint.MaxValue) ? WorldUseRawRetired : WorldUseRawFree;
+            ticket.Bytes = 0;
+            ticket.ProspectiveInterests = 0;
+            ticket.Lifetime = null;
+            ticket.Control = null;
+            ticket.Reservation = null;
+            ticket.WorkspaceLimit = 0;
+            return true;
         }
     }
 
@@ -258,8 +330,7 @@ public sealed class WorldAdmissionDomain : IDisposable
     {
         var completeRetirement = false;
 
-        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
-
+        using (ReentrantGate.EnterScope(ref _growthGate))
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (((uint)interestIndex >= (uint)_interests.Length)
@@ -327,7 +398,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         if (completeRetirement)
         {
-            _ = _retirement.TrySetResult();
+            PublishRetirement();
         }
     }
 
@@ -337,8 +408,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         var completeRetirement = false;
 
-        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
-
+        using (ReentrantGate.EnterScope(ref _growthGate))
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if ((_activeOperationCreditCount <= 0) || (_worldBytes < bytes))
@@ -358,7 +428,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         if (completeRetirement)
         {
-            _ = _retirement.TrySetResult();
+            PublishRetirement();
         }
     }
 
@@ -369,8 +439,7 @@ public sealed class WorldAdmissionDomain : IDisposable
     {
         var completeRetirement = false;
 
-        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
-
+        using (ReentrantGate.EnterScope(ref _growthGate))
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if ((reservation is not null) && !reservation.IsOwnedBy(this))
@@ -404,11 +473,16 @@ public sealed class WorldAdmissionDomain : IDisposable
                 throw new InvalidOperationException("The World admission-domain interest does not match its issued generation.");
             }
 
+            if (interest.WorldLifetime is not null)
+            {
+                throw new InvalidOperationException("An enrolled World reservation ends only through its original lifetime's final return.");
+            }
+
+            reservation?.MarkReleased(this);
             _worldBytes = checked(_worldBytes - bytes);
             _activeInterestCount--;
             ReleaseInterestEntry(ref interest);
 
-            reservation?.MarkReleased(this);
             completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
 
             if (completeRetirement)
@@ -419,7 +493,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         if (completeRetirement)
         {
-            _ = _retirement.TrySetResult();
+            PublishRetirement();
         }
     }
 
@@ -438,8 +512,14 @@ public sealed class WorldAdmissionDomain : IDisposable
             ref var interest = ref _interests[interestIndex];
             var reservedBytes = reservation.Bytes;
 
+            if ((interest.WorldLifetime is not null) && (interest.WorldCloseProgress != 0))
+            {
+                return;
+            }
+
             if ((interest.Bytes != reservedBytes)
                 || (bytes >= reservedBytes)
+                || (bytes > reservedBytes - interest.SceneStorageBytes - interest.SceneConstructionBytes)
                 || (_worldBytes < bytes))
             {
                 throw new InvalidOperationException("The released World-domain bytes do not match the live interest.");
@@ -448,6 +528,132 @@ public sealed class WorldAdmissionDomain : IDisposable
             interest.Bytes = checked(interest.Bytes - bytes);
             _worldBytes = checked(_worldBytes - bytes);
             reservation.RemoveBytes(bytes);
+        }
+    }
+
+    internal bool RollbackUnissuedWorldGuidUse(WorldGuidUseControl control)
+        => RollbackUnissuedWorldGuidUse(control, default);
+
+    internal bool RollbackUnissuedWorldGuidUse(WorldGuidUseControl control, in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        journal.ValidateControl(control);
+        var anchor = control.Anchor;
+
+        if ((anchor.HistoryInterestIndex >= 0) || (anchor.OperationInterestIndex >= 0))
+        {
+            return TryReleaseIndependentUse(control, journal);
+        }
+
+        var completeRetirement = false;
+        var hasWorldReturnPart = false;
+        var returnIndex = -1;
+        uint returnGeneration = 0;
+        var parent = control.DomainReservation;
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (!ReferenceEquals(control.Domain, this)
+                || !IsWorldGuidUseControlLinked(control)
+                || (anchor.OperationBytes < WorldGuidUseControl.ControlByteCharge)
+                || (_prospectiveInterestCount < 2)
+                || (_activeOperationCreditCount <= 0)
+                || (_worldBytes < anchor.OperationBytes))
+            {
+                return false;
+            }
+
+            hasWorldReturnPart = BeginUseReturnPart(parent, out returnIndex, out returnGeneration);
+            _prospectiveInterestCount -= 2;
+            _activeOperationCreditCount--;
+            UnlinkIndependentUseControl(control);
+            control.CompleteDomainRelease();
+            journal.RecordDomainReleased();
+            parent.RemoveIndependentUseBytes(anchor.OperationBytes);
+            _worldBytes = checked(_worldBytes - anchor.OperationBytes);
+            completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
+
+            if (completeRetirement)
+            {
+                ReleaseRegistry();
+            }
+        }
+
+        if (completeRetirement)
+        {
+            PublishRetirement();
+        }
+
+        if (hasWorldReturnPart)
+        {
+            EndWorldReturnPart(returnIndex, returnGeneration);
+        }
+
+        return true;
+    }
+
+    internal void RollbackWorldGuidUseRaw(uint ticketGeneration)
+        => RollbackWorldGuidUseRaw(ticketGeneration, default);
+
+    internal void RollbackWorldGuidUseRaw(uint ticketGeneration, in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        journal.ValidateRaw(this, ticketGeneration);
+        var completeRetirement = false;
+        var hasWorldReturnPart = false;
+        var returnIndex = -1;
+        uint returnGeneration = 0;
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            ref var ticket = ref _worldUseRawTicket;
+
+            if ((ticket.State != WorldUseRawPending) || (ticket.Generation != ticketGeneration))
+            {
+                throw new InvalidOperationException("The WorldGuid use raw ticket is not active.");
+            }
+
+            if ((_activeOperationCreditCount <= 0)
+                || (_worldBytes < ticket.Bytes)
+                || (ticket.ProspectiveInterests != 2)
+                || (_prospectiveInterestCount < 2)
+                || (ticket.Reservation is null))
+            {
+                throw new InvalidOperationException("The WorldGuid use raw-ticket accounting is inconsistent.");
+            }
+
+            var parent = ticket.Reservation;
+            var bytes = ticket.Bytes;
+            hasWorldReturnPart = BeginUseReturnPart(parent, out returnIndex, out returnGeneration);
+            _activeOperationCreditCount--;
+            _prospectiveInterestCount -= 2;
+            journal.RecordRawRolledBack();
+            ticket.Bytes = 0;
+            ticket.ProspectiveInterests = 0;
+            ticket.Lifetime = null;
+            ticket.Control = null;
+            ticket.Reservation = null;
+            ticket.WorkspaceLimit = 0;
+            ticket.State = (ticket.Generation == uint.MaxValue) ? WorldUseRawRetired : WorldUseRawFree;
+            parent.RemoveIndependentUseBytes(bytes);
+            _worldBytes = checked(_worldBytes - bytes);
+            completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
+
+            if (completeRetirement)
+            {
+                ReleaseRegistry();
+            }
+        }
+
+        if (completeRetirement)
+        {
+            PublishRetirement();
+        }
+
+        if (hasWorldReturnPart)
+        {
+            EndWorldReturnPart(returnIndex, returnGeneration);
         }
     }
 
@@ -636,7 +842,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed || !IsActiveWorldReservation(reservation))
+            if (_isDisposed || !IsOpenWorldReservation(reservation))
             {
                 return false;
             }
@@ -645,8 +851,9 @@ public sealed class WorldAdmissionDomain : IDisposable
             ref var interest = ref _interests[interestIndex];
 
             var additionalBytes = interest.Bytes - reservation.InitialBytes;
+            var independentUseBytes = reservation.IndependentUseBytes;
 
-            if (bytes > reservation.MaximumAdditionalBytes - additionalBytes)
+            if (bytes > reservation.MaximumAdditionalBytes - additionalBytes - independentUseBytes)
             {
                 return false;
             }
@@ -664,6 +871,156 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
+    internal bool TryIssueWorldGuidUseInterests(
+        WorldGuidUseControl control,
+        in WorldLineageGrant grant,
+        WorldDomainReservation reservation,
+        out WorldAdmissionRefusal refusal)
+        => TryIssueWorldGuidUseInterests(control, grant, reservation, out refusal, default);
+
+    internal bool TryIssueWorldGuidUseInterests(
+        WorldGuidUseControl control,
+        in WorldLineageGrant grant,
+        WorldDomainReservation reservation,
+        out WorldAdmissionRefusal refusal,
+        in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentNullException.ThrowIfNull(reservation);
+        journal.ValidateControl(control);
+
+        if (!grant.IsOwnedBy(this)
+            || !reservation.IsOwnedBy(this)
+            || !ReferenceEquals(grant.Reservation, reservation)
+            || !ReferenceEquals(control.DomainReservation, reservation)
+            || !ReferenceEquals(control.Domain, this))
+        {
+            refusal = WorldAdmissionRefusal.LineageHistoryNotRetained;
+            return false;
+        }
+
+        if (!EnsureInterestCapacity(requiredFreeCount: 2, additionalWorldBytes: 0))
+        {
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                refusal = _isDisposed
+                    ? WorldAdmissionRefusal.DomainClosed
+                    : WorldAdmissionRefusal.LineageCapacity;
+            }
+
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed
+                || !IsActiveWorldReservation(reservation)
+                || ((uint)grant.Index >= (uint)_lineages.Length)
+                || (_activeInterestCount > (MaximumInterests - 2))
+                || (_prospectiveInterestCount < 2)
+                || !IsWorldGuidUseControlLinked(control))
+            {
+                refusal = _isDisposed
+                    ? WorldAdmissionRefusal.DomainClosed
+                    : WorldAdmissionRefusal.LineageCapacity;
+                return false;
+            }
+
+            ref var root = ref _lineages[grant.Index];
+            var rootKeyOffset = grant.Index * FreshRootLineageKeyCount;
+
+            if ((root.Generation != grant.Generation)
+                || (root.State != StateCommitted)
+                || root.OwnerRetired
+                || (root.WorldGuid != grant.WorldGuid)
+                || (root.IdentityBranchId != grant.IdentityBranchId)
+                || (root.IssuanceNamespace != grant.IssuanceNamespace)
+                || (_lineageKeys[rootKeyOffset] != grant.LineageId))
+            {
+                refusal = WorldAdmissionRefusal.LineageHistoryNotRetained;
+                return false;
+            }
+
+            var operationIndex = -1;
+            var historyIndex = -1;
+
+            for (var index = 0; index < _interests.Length; index++)
+            {
+                if (_interests[index].State != StateFree)
+                {
+                    continue;
+                }
+
+                if (operationIndex < 0)
+                {
+                    operationIndex = index;
+                }
+                else
+                {
+                    historyIndex = index;
+                    break;
+                }
+            }
+
+            if ((operationIndex < 0) || (historyIndex < 0))
+            {
+                refusal = WorldAdmissionRefusal.LineageCapacity;
+                return false;
+            }
+
+            ref var operationInterest = ref _interests[operationIndex];
+            ref var historyInterest = ref _interests[historyIndex];
+            var operationGeneration = (operationInterest.Generation == 0) ? 1U : operationInterest.Generation;
+            var historyGeneration = (historyInterest.Generation == 0) ? 1U : historyInterest.Generation;
+            var operationBytes = control.Anchor.OperationBytes;
+
+            if ((operationBytes < WorldGuidUseControl.ControlByteCharge)
+                || (operationInterest.State != StateFree)
+                || (historyInterest.State != StateFree))
+            {
+                refusal = WorldAdmissionRefusal.LineageCapacity;
+                return false;
+            }
+
+            operationInterest.Generation = operationGeneration;
+            operationInterest.State = StateOccupied;
+            operationInterest.Bytes = operationBytes;
+            operationInterest.Kind = InterestKindUseOperation;
+            operationInterest.LineageRootIndex = grant.Index;
+            operationInterest.LineageRootGeneration = grant.Generation;
+            operationInterest.UseControl = control;
+            operationInterest.Reservation = reservation;
+            historyInterest.Generation = historyGeneration;
+            historyInterest.State = StateOccupied;
+            historyInterest.Bytes = 0;
+            historyInterest.Kind = InterestKindHistory;
+            historyInterest.LineageRootIndex = grant.Index;
+            historyInterest.LineageRootGeneration = grant.Generation;
+            historyInterest.UseControl = control;
+            journal.RecordDomainIssued(
+                grant.Index,
+                grant.Generation,
+                historyIndex,
+                historyGeneration,
+                operationIndex,
+                operationGeneration);
+            root.HistoryInterestCount = checked(root.HistoryInterestCount + 1);
+            _activeInterestCount = checked(_activeInterestCount + 2);
+            _prospectiveInterestCount -= 2;
+            control.IssueDomainInterests(
+                grant.Index,
+                grant.Generation,
+                historyIndex,
+                historyGeneration,
+                operationIndex,
+                operationGeneration,
+                operationBytes);
+            refusal = WorldAdmissionRefusal.None;
+            return true;
+        }
+    }
+
     internal bool TryReleaseFreshLineage(in WorldLineageGrant grant)
     {
         if (!grant.IsOwnedBy(this))
@@ -675,7 +1032,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if ((uint)grant.Index >= (uint)_lineages.Length)
+            if (!MayReleaseWorldLineage(grant) || ((uint)grant.Index >= (uint)_lineages.Length))
             {
                 return false;
             }
@@ -738,6 +1095,169 @@ public sealed class WorldAdmissionDomain : IDisposable
                 ReleaseRetainedLineageMembershipCharge(membershipBytes);
             }
 
+            return true;
+        }
+    }
+
+    internal bool TryReleaseIndependentUse(WorldGuidUseControl control)
+        => TryReleaseIndependentUse(control, default);
+
+    internal bool TryReleaseIndependentUse(WorldGuidUseControl control, in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        journal.ValidateControl(control);
+        var anchor = control.Anchor;
+        var completeRetirement = false;
+        var parent = control.DomainReservation;
+        var hasWorldReturnPart = false;
+        var returnIndex = -1;
+        uint returnGeneration = 0;
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (!ReferenceEquals(control.Domain, this)
+                || ((uint)anchor.HistoryRootIndex >= (uint)_lineages.Length)
+                || ((uint)anchor.HistoryInterestIndex >= (uint)_interests.Length)
+                || ((uint)anchor.OperationInterestIndex >= (uint)_interests.Length)
+                || (anchor.HistoryRootGeneration == 0)
+                || (anchor.HistoryInterestGeneration == 0)
+                || (anchor.OperationInterestGeneration == 0)
+                || (anchor.OperationBytes < WorldGuidUseControl.ControlByteCharge))
+            {
+                return false;
+            }
+
+            ref var root = ref _lineages[anchor.HistoryRootIndex];
+            ref var historyInterest = ref _interests[anchor.HistoryInterestIndex];
+            ref var operationInterest = ref _interests[anchor.OperationInterestIndex];
+
+            if ((root.Generation != anchor.HistoryRootGeneration)
+                || (root.State != StateCommitted)
+                || (root.WorldGuid != control.Grant.WorldGuid)
+                || (root.HistoryInterestCount <= 0)
+                || (historyInterest.Generation != anchor.HistoryInterestGeneration)
+                || (historyInterest.State != StateOccupied)
+                || (historyInterest.Kind != InterestKindHistory)
+                || (historyInterest.Bytes != 0)
+                || (historyInterest.LineageRootIndex != anchor.HistoryRootIndex)
+                || (historyInterest.LineageRootGeneration != anchor.HistoryRootGeneration)
+                || !ReferenceEquals(historyInterest.UseControl, control)
+                || (operationInterest.Generation != anchor.OperationInterestGeneration)
+                || (operationInterest.State != StateOccupied)
+                || (operationInterest.Kind != InterestKindUseOperation)
+                || (operationInterest.Bytes != anchor.OperationBytes)
+                || (operationInterest.LineageRootIndex != anchor.HistoryRootIndex)
+                || (operationInterest.LineageRootGeneration != anchor.HistoryRootGeneration)
+                || !ReferenceEquals(operationInterest.Reservation, control.DomainReservation)
+                || !ReferenceEquals(operationInterest.UseControl, control)
+                || (_activeInterestCount < 2)
+                || (_activeOperationCreditCount <= 0)
+                || (parent.IndependentUseBytes < anchor.OperationBytes)
+                || (_worldBytes < anchor.OperationBytes))
+            {
+                return false;
+            }
+
+            hasWorldReturnPart = BeginUseReturnPart(parent, out returnIndex, out returnGeneration);
+            root.HistoryInterestCount--;
+            _activeInterestCount -= 2;
+            _activeOperationCreditCount--;
+            ReleaseInterestEntry(ref historyInterest);
+            ReleaseInterestEntry(ref operationInterest);
+            UnlinkIndependentUseControl(control);
+            journal.RecordDomainReleased();
+
+            if (root.OwnerRetired && (root.HistoryInterestCount == 0))
+            {
+                var lineageId = _lineageKeys[anchor.HistoryRootIndex * FreshRootLineageKeyCount];
+
+                if (root.MembershipKeys is { } membershipKeys)
+                {
+                    foreach (var membershipKey in membershipKeys)
+                    {
+                        RemoveLineageIndexEntry(membershipKey);
+                    }
+                }
+                else
+                {
+                    RemoveLineageIndexEntry(lineageId);
+                }
+
+                var membershipBytes = root.MembershipBytes;
+                ClearLineageRoot(ref root, anchor.HistoryRootIndex * FreshRootLineageKeyCount);
+
+                if (membershipBytes > 0)
+                {
+                    ReleaseRetainedLineageMembershipCharge(membershipBytes);
+                }
+            }
+
+            control.CompleteDomainRelease();
+            parent.RemoveIndependentUseBytes(anchor.OperationBytes);
+            _worldBytes = checked(_worldBytes - anchor.OperationBytes);
+            completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
+
+            if (completeRetirement)
+            {
+                ReleaseRegistry();
+            }
+        }
+
+        if (completeRetirement)
+        {
+            PublishRetirement();
+        }
+
+        if (hasWorldReturnPart)
+        {
+            EndWorldReturnPart(returnIndex, returnGeneration);
+        }
+
+        return true;
+    }
+
+    internal bool TryReleaseWorldGuidUseWorkspace(
+        WorldGuidUseControl control,
+        long bytes,
+        WorldSceneStorageReservation? receiver = null)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            var anchor = control.Anchor;
+
+            if (!ReferenceEquals(control.Domain, this)
+                || ((uint)anchor.OperationInterestIndex >= (uint)_interests.Length)
+                || (anchor.OperationInterestGeneration == 0)
+                || !control.CanReleaseWorkspace)
+            {
+                return false;
+            }
+
+            ref var operationInterest = ref _interests[anchor.OperationInterestIndex];
+
+            if ((operationInterest.Generation != anchor.OperationInterestGeneration)
+                || (operationInterest.State != StateOccupied)
+                || (operationInterest.Kind != InterestKindUseOperation)
+                || (operationInterest.Bytes != anchor.OperationBytes)
+                || !ReferenceEquals(operationInterest.Reservation, control.DomainReservation)
+                || !ReferenceEquals(operationInterest.UseControl, control)
+                || (bytes > anchor.ActiveWorkspaceBytes)
+                || ((receiver is not null)
+                    && (!ReferenceEquals(receiver.Parent, control.DomainReservation)
+                        || !ReferenceEquals(receiver.WorkspaceUseControl, control)
+                        || (receiver.Bytes != bytes)
+                        || !(receiver.IsConstructing || receiver.IsReturningWorkspace))))
+            {
+                return false;
+            }
+
+            receiver?.MarkReleased();
+            control.ApplyWorkspaceRelease(bytes);
             return true;
         }
     }
@@ -1418,8 +1938,6 @@ public sealed class WorldAdmissionDomain : IDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
         ArgumentOutOfRangeException.ThrowIfNegative(maximumAdditionalBytes);
 
-        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
-
         if (!EnsureInterestCapacity(bytes))
         {
             reservation = null;
@@ -1429,6 +1947,7 @@ public sealed class WorldAdmissionDomain : IDisposable
         var interestIndex = -1;
         uint interestGeneration = 0;
 
+        using (ReentrantGate.EnterScope(ref _growthGate))
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed
@@ -1495,6 +2014,113 @@ public sealed class WorldAdmissionDomain : IDisposable
 
     internal bool TryReserveWorld(long bytes, out WorldDomainReservation? reservation)
         => TryReserveWorld(bytes, _maximumBytes, out reservation);
+
+    internal bool TryReserveWorldGuidUseRaw(
+        WorldLifetimeControl lifetime,
+        WorldDomainReservation reservation,
+        long workspaceLimit,
+        out uint ticketGeneration,
+        out long admittedWorkspaceLimit)
+        => TryReserveWorldGuidUseRaw(lifetime, reservation, workspaceLimit, out ticketGeneration, out admittedWorkspaceLimit, default);
+
+    internal bool TryReserveWorldGuidUseRaw(
+        WorldLifetimeControl lifetime,
+        WorldDomainReservation reservation,
+        long workspaceLimit,
+        out uint ticketGeneration,
+        out long admittedWorkspaceLimit,
+        in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(lifetime);
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(workspaceLimit);
+        journal.ValidateBinding(lifetime, this, reservation, lifetime.WorldGuidGrant);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            ref var ticket = ref _worldUseRawTicket;
+            var reservationAdditionalBytes = reservation.Bytes - reservation.InitialBytes;
+            var worldRemainingBytes = reservation.MaximumAdditionalBytes
+                - reservationAdditionalBytes
+                - reservation.IndependentUseBytes;
+            var domainAvailableBytes = _maximumBytes - _registryCharge - _pendingGrowthBytes - _worldBytes;
+            var operationBytes = checked(WorldGuidUseControl.ControlByteCharge + workspaceLimit);
+
+            if (_isDisposed
+                || !IsOpenWorldReservation(reservation)
+                || (ticket.State != WorldUseRawFree)
+                || (_activeOperationCreditCount >= MaximumReservations)
+                || (_activeInterestCount > (MaximumInterests - 2))
+                || (_prospectiveInterestCount > (MaximumInterests - _activeInterestCount - 2))
+                || (worldRemainingBytes < operationBytes)
+                || (domainAvailableBytes < operationBytes)
+                || (ticket.Generation == uint.MaxValue))
+            {
+                ticketGeneration = 0;
+                admittedWorkspaceLimit = 0;
+                return false;
+            }
+
+            if (!reservation.TryReserveIndependentUseBytes(operationBytes))
+            {
+                ticketGeneration = 0;
+                admittedWorkspaceLimit = 0;
+                return false;
+            }
+
+            admittedWorkspaceLimit = workspaceLimit;
+            ticket.Generation = (ticket.Generation == 0) ? 1U : checked(ticket.Generation + 1U);
+            ticket.State = WorldUseRawPending;
+            ticket.Bytes = operationBytes;
+            ticket.ProspectiveInterests = 2;
+            ticket.Lifetime = lifetime;
+            ticket.Control = null;
+            ticket.Reservation = reservation;
+            ticket.WorkspaceLimit = workspaceLimit;
+            journal.RecordRawReserved(ticket.Generation);
+            _prospectiveInterestCount = checked(_prospectiveInterestCount + 2);
+            _activeOperationCreditCount = checked(_activeOperationCreditCount + 1);
+            _worldBytes = checked(_worldBytes + operationBytes);
+            ticketGeneration = ticket.Generation;
+            return true;
+        }
+    }
+
+    internal bool TryReserveWorldGuidUseWorkspace(WorldGuidUseControl control, long bytes)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            var anchor = control.Anchor;
+
+            if (!ReferenceEquals(control.Domain, this)
+                || ((uint)anchor.OperationInterestIndex >= (uint)_interests.Length)
+                || (anchor.OperationInterestGeneration == 0)
+                || !control.CanReserveWorkspace)
+            {
+                return false;
+            }
+
+            ref var operationInterest = ref _interests[anchor.OperationInterestIndex];
+
+            if ((operationInterest.Generation != anchor.OperationInterestGeneration)
+                || (operationInterest.State != StateOccupied)
+                || (operationInterest.Kind != InterestKindUseOperation)
+                || (operationInterest.Bytes != anchor.OperationBytes)
+                || !ReferenceEquals(operationInterest.Reservation, control.DomainReservation)
+                || !ReferenceEquals(operationInterest.UseControl, control)
+                || (bytes > anchor.WorkspaceLimit))
+            {
+                return false;
+            }
+
+            control.ApplyWorkspaceReservation(bytes);
+            return true;
+        }
+    }
 
     internal bool TryRetainHistoryForWorld(
         in WorldLineageGrant grant,
@@ -1718,6 +2344,63 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
+    internal bool TryReturnWorldGuidUseWorkspace(
+        WorldGuidUseControl control,
+        WorldDomainReservation reservation,
+        long bytes)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            var anchor = control.Anchor;
+
+            if (!ReferenceEquals(control.Domain, this)
+                || !ReferenceEquals(control.DomainReservation, reservation)
+                || !reservation.IsOwnedBy(this)
+                || !IsActiveWorldReservation(reservation)
+                || ((uint)anchor.OperationInterestIndex >= (uint)_interests.Length)
+                || (anchor.OperationInterestGeneration == 0))
+            {
+                return false;
+            }
+
+            ref var operationInterest = ref _interests[anchor.OperationInterestIndex];
+            ref var worldInterest = ref _interests[reservation.InterestIndex];
+
+            if ((operationInterest.Generation != anchor.OperationInterestGeneration)
+                || (operationInterest.State != StateOccupied)
+                || (operationInterest.Kind != InterestKindUseOperation)
+                || (operationInterest.Bytes != anchor.OperationBytes)
+                || !ReferenceEquals(operationInterest.Reservation, reservation)
+                || !ReferenceEquals(operationInterest.UseControl, control)
+                || (worldInterest.Generation != reservation.InterestGeneration)
+                || (worldInterest.State != StateOccupied)
+                || (worldInterest.Kind != InterestKindWorld))
+            {
+                return false;
+            }
+
+            if ((bytes > worldInterest.SceneConstructionBytes)
+                || (bytes > anchor.UninstalledWorldWorkspaceBytes)
+                || (anchor.OperationBytes > (WorldGuidUseControl.ControlByteCharge + anchor.InitialWorkspaceBytes - bytes)))
+            {
+                return false;
+            }
+
+            worldInterest.Bytes = checked(worldInterest.Bytes - bytes);
+            worldInterest.SceneConstructionBytes -= bytes;
+            operationInterest.Bytes = checked(operationInterest.Bytes + bytes);
+            reservation.RemoveBytes(bytes);
+            reservation.AddIndependentUseBytes(bytes);
+            control.ApplyWorkspaceReturn(bytes);
+            return true;
+        }
+    }
+
     internal bool TryRollbackFreshLineage(in WorldLineageGrant grant)
     {
         if (!grant.IsOwnedBy(this))
@@ -1729,7 +2412,7 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if ((uint)grant.Index >= (uint)_lineages.Length)
+            if (!MayReleaseWorldLineage(grant) || ((uint)grant.Index >= (uint)_lineages.Length))
             {
                 return false;
             }
@@ -1836,6 +2519,118 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
+    internal bool TryTransferActiveWorldGuidUseWorkspace(
+        WorldGuidUseControl control,
+        WorldDomainReservation reservation,
+        long bytes)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            var anchor = control.Anchor;
+
+            if (!ReferenceEquals(control.Domain, this)
+                || !ReferenceEquals(control.DomainReservation, reservation)
+                || !reservation.IsOwnedBy(this)
+                || !IsOpenWorldReservation(reservation)
+                || ((uint)anchor.OperationInterestIndex >= (uint)_interests.Length)
+                || (anchor.OperationInterestGeneration == 0)
+                || !control.IsActive
+                || (bytes > anchor.ActiveWorkspaceBytes)
+                || (reservation.IndependentUseBytes < bytes))
+            {
+                return false;
+            }
+
+            ref var operationInterest = ref _interests[anchor.OperationInterestIndex];
+            ref var worldInterest = ref _interests[reservation.InterestIndex];
+
+            if ((operationInterest.Generation != anchor.OperationInterestGeneration)
+                || (operationInterest.State != StateOccupied)
+                || (operationInterest.Kind != InterestKindUseOperation)
+                || (operationInterest.Bytes != anchor.OperationBytes)
+                || !ReferenceEquals(operationInterest.Reservation, reservation)
+                || !ReferenceEquals(operationInterest.UseControl, control)
+                || (worldInterest.Generation != reservation.InterestGeneration)
+                || (worldInterest.State != StateOccupied)
+                || (worldInterest.Kind != InterestKindWorld)
+                || (bytes > (operationInterest.Bytes - WorldGuidUseControl.ControlByteCharge)))
+            {
+                return false;
+            }
+
+            worldInterest.Bytes = checked(worldInterest.Bytes + bytes);
+            worldInterest.SceneConstructionBytes = checked(worldInterest.SceneConstructionBytes + bytes);
+            operationInterest.Bytes = checked(operationInterest.Bytes - bytes);
+            reservation.RemoveIndependentUseBytes(bytes);
+            reservation.AddBytes(bytes);
+            control.ApplyActiveWorkspaceTransfer(bytes);
+            return true;
+        }
+    }
+
+    internal bool TryTransferWorldGuidUseWorkspace(
+        WorldGuidUseControl control,
+        WorldDomainReservation reservation,
+        long bytes)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            var anchor = control.Anchor;
+
+            if (!ReferenceEquals(control.Domain, this)
+                || !ReferenceEquals(control.DomainReservation, reservation)
+                || !reservation.IsOwnedBy(this)
+                || !IsOpenWorldReservation(reservation)
+                || ((uint)anchor.OperationInterestIndex >= (uint)_interests.Length)
+                || (anchor.OperationInterestGeneration == 0)
+                || (bytes > anchor.WorkspaceLimit)
+                || (reservation.IndependentUseBytes < bytes))
+            {
+                return false;
+            }
+
+            ref var operationInterest = ref _interests[anchor.OperationInterestIndex];
+            ref var worldInterest = ref _interests[reservation.InterestIndex];
+
+            if ((operationInterest.Generation != anchor.OperationInterestGeneration)
+                || (operationInterest.State != StateOccupied)
+                || (operationInterest.Kind != InterestKindUseOperation)
+                || (operationInterest.Bytes != anchor.OperationBytes)
+                || !ReferenceEquals(operationInterest.Reservation, reservation)
+                || !ReferenceEquals(operationInterest.UseControl, control)
+                || (worldInterest.Generation != reservation.InterestGeneration)
+                || (worldInterest.State != StateOccupied)
+                || (worldInterest.Kind != InterestKindWorld))
+            {
+                return false;
+            }
+
+            if (bytes > (operationInterest.Bytes - WorldGuidUseControl.ControlByteCharge))
+            {
+                return false;
+            }
+
+            var updatedWorldBytes = checked(worldInterest.Bytes + bytes);
+            worldInterest.Bytes = updatedWorldBytes;
+            worldInterest.SceneConstructionBytes = checked(worldInterest.SceneConstructionBytes + bytes);
+            operationInterest.Bytes = checked(operationInterest.Bytes - bytes);
+            reservation.RemoveIndependentUseBytes(bytes);
+            reservation.AddBytes(bytes);
+            control.ApplyWorkspaceTransfer(bytes);
+            return true;
+        }
+    }
+
     private void ClearLineageRoot(ref LineageEntry entry, int keyOffset)
     {
         _pendingLineageMembershipEdgeCount = checked(_pendingLineageMembershipEdgeCount - entry.PendingMembershipEdgeCount);
@@ -1851,6 +2646,8 @@ public sealed class WorldAdmissionDomain : IDisposable
         entry.PendingMembershipKeyCount = 0;
         entry.HistoryInterestCount = 0;
         entry.OwnerRetired = false;
+        entry.WorldInterestIndexPlusOne = 0;
+        entry.WorldInterestGeneration = 0;
         entry.State = (entry.Generation == uint.MaxValue) ? StateRetired : StateFree;
 
         if (entry.State == StateFree)
@@ -1859,8 +2656,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
-    private bool EnsureInterestCapacity(long additionalWorldBytes)
+    private bool EnsureInterestCapacity(int requiredFreeCount, long additionalWorldBytes)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(requiredFreeCount);
+        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed)
@@ -1868,17 +2667,27 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
+            var freeCount = 0;
+
             for (var index = 0; index < _interests.Length; index++)
             {
                 if (_interests[index].State == StateFree)
                 {
-                    return true;
+                    freeCount++;
+
+                    if (freeCount >= requiredFreeCount)
+                    {
+                        return true;
+                    }
                 }
             }
         }
 
-        return GrowRegistryForOneRoot(additionalWorldBytes);
+        return GrowInterestArray(requiredFreeCount, additionalWorldBytes);
     }
+
+    private bool EnsureInterestCapacity(long additionalWorldBytes)
+        => EnsureInterestCapacity(requiredFreeCount: 1, additionalWorldBytes);
 
     private bool EnsureLineageCapacity()
     {
@@ -1945,7 +2754,9 @@ public sealed class WorldAdmissionDomain : IDisposable
 
             newArrayCharge = ArrayCharge(newCapacity, Unsafe.SizeOf<LineageIndexBucket>());
             var registryBudget = Math.Min(MaximumRegistryBytes, _maximumBytes);
-            var newRegistryCharge = checked(GetRegistryCharge(_lineages.Length, newCapacity) + _lineageMembershipBytes);
+            var newRegistryCharge = checked(
+                GetRegistryCharge(_lineages.Length, newCapacity, _interests.Length)
+                + _lineageMembershipBytes);
             var peakRegistryCharge = checked(_registryCharge + _pendingGrowthBytes + newArrayCharge);
 
             if ((newRegistryCharge > registryBudget)
@@ -1967,7 +2778,9 @@ public sealed class WorldAdmissionDomain : IDisposable
             using (ReentrantGate.EnterScope(ref _gate))
             {
                 _lineageIndex = newIndex;
-                _registryCharge = checked(GetRegistryCharge(_lineages.Length, newCapacity) + _lineageMembershipBytes);
+                _registryCharge = checked(
+                    GetRegistryCharge(_lineages.Length, newCapacity, _interests.Length)
+                    + _lineageMembershipBytes);
                 _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
             }
         }
@@ -2015,6 +2828,151 @@ public sealed class WorldAdmissionDomain : IDisposable
         return -1;
     }
 
+    private bool GrowInterestArray(int requiredFreeCount, long additionalWorldBytes)
+    {
+        InterestEntry[] oldInterests;
+        var oldArrayCharge = 0L;
+        var newArrayCharge = 0L;
+        var newRegistryCharge = 0L;
+        int newCapacity;
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed)
+            {
+                return false;
+            }
+
+            var freeCount = 0;
+
+            for (var index = 0; index < _interests.Length; index++)
+            {
+                if (_interests[index].State == StateFree)
+                {
+                    freeCount++;
+                }
+            }
+
+            if (freeCount >= requiredFreeCount)
+            {
+                return true;
+            }
+
+            var currentCapacity = _interests.Length;
+            var minimumCapacity = checked(_activeInterestCount + _prospectiveInterestCount + requiredFreeCount);
+
+            if ((currentCapacity >= MaximumInterests) || (minimumCapacity > MaximumInterests))
+            {
+                return false;
+            }
+
+            newCapacity = Math.Min(
+                MaximumInterests,
+                Math.Max(minimumCapacity, Math.Max(16, checked(currentCapacity * 2))));
+            oldArrayCharge = (currentCapacity == 0)
+                ? 0
+                : ArrayCharge(currentCapacity, Unsafe.SizeOf<InterestEntry>());
+            newArrayCharge = ArrayCharge(newCapacity, Unsafe.SizeOf<InterestEntry>());
+            newRegistryCharge = newArrayCharge - oldArrayCharge;
+            var registryBudget = Math.Min(MaximumRegistryBytes, _maximumBytes);
+            var peakRegistryCharge = checked(_registryCharge + _pendingGrowthBytes + newArrayCharge);
+            var expandedRegistryCharge = checked(_registryCharge + newRegistryCharge + _lineageMembershipBytes);
+
+            if ((expandedRegistryCharge > registryBudget)
+                || (peakRegistryCharge > registryBudget)
+                || (checked(peakRegistryCharge + _worldBytes + additionalWorldBytes) > _maximumBytes))
+            {
+                return false;
+            }
+
+            ref var ticket = ref _interestGrowthTicket;
+
+            if ((ticket.State != InterestGrowthFree) || (ticket.Generation == uint.MaxValue))
+            {
+                return false;
+            }
+
+            ticket.Generation = (ticket.Generation == 0) ? 1U : checked(ticket.Generation + 1U);
+            ticket.State = InterestGrowthPending;
+            ticket.OldCapacity = currentCapacity;
+            ticket.NewCapacity = newCapacity;
+            ticket.ChargedBytes = newArrayCharge;
+            _pendingGrowthBytes = checked(_pendingGrowthBytes + newArrayCharge);
+            oldInterests = _interests;
+        }
+
+        InterestEntry[] newInterests;
+
+        try
+        {
+            newInterests = new InterestEntry[newCapacity];
+        }
+        catch
+        {
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                ref var ticket = ref _interestGrowthTicket;
+                ticket.State = (ticket.Generation == uint.MaxValue) ? InterestGrowthRetiring : InterestGrowthFree;
+                ticket.OldCapacity = 0;
+                ticket.NewCapacity = 0;
+                ticket.ChargedBytes = 0;
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
+            }
+
+            throw;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            ref var ticket = ref _interestGrowthTicket;
+
+            if (_isDisposed
+                || !ReferenceEquals(_interests, oldInterests)
+                || (ticket.State != InterestGrowthPending)
+                || (ticket.OldCapacity != oldInterests.Length)
+                || (ticket.NewCapacity != newCapacity)
+                || (ticket.ChargedBytes != newArrayCharge))
+            {
+                ticket.State = (ticket.Generation == uint.MaxValue) ? InterestGrowthRetiring : InterestGrowthFree;
+                ticket.OldCapacity = 0;
+                ticket.NewCapacity = 0;
+                ticket.ChargedBytes = 0;
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
+                return false;
+            }
+
+            Array.Copy(oldInterests, newInterests, oldInterests.Length);
+            _interests = newInterests;
+            _registryCharge = checked(_registryCharge + newRegistryCharge);
+            _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge + oldArrayCharge);
+            ticket.RetiredArray = oldInterests;
+            ticket.State = InterestGrowthRetiring;
+            ticket.OldCapacity = oldInterests.Length;
+            ticket.ChargedBytes = oldArrayCharge;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            ref var ticket = ref _interestGrowthTicket;
+
+            if ((ticket.State != InterestGrowthRetiring)
+                || (ticket.ChargedBytes != oldArrayCharge))
+            {
+                throw new InvalidOperationException("The interest-array retirement ticket changed before backing release.");
+            }
+
+            ticket.RetiredArray = null;
+            ticket.State = (ticket.Generation == uint.MaxValue) ? InterestGrowthRetiring : InterestGrowthFree;
+            ticket.OldCapacity = 0;
+            ticket.NewCapacity = 0;
+            ticket.ChargedBytes = 0;
+            oldInterests = [];
+            _pendingGrowthBytes = checked(_pendingGrowthBytes - oldArrayCharge);
+        }
+
+        return true;
+    }
+
     private bool GrowRegistryForOneRoot(long additionalWorldBytes)
     {
         LineageEntry[] oldLineages;
@@ -2024,6 +2982,9 @@ public sealed class WorldAdmissionDomain : IDisposable
         ReservationEntry[] oldReservations;
         int newRootCapacity;
         int newIndexCapacity;
+        int newInterestCapacity;
+        var oldArrayCharge = 0L;
+        var newArrayCharge = 0L;
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
@@ -2032,9 +2993,10 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
-            (newRootCapacity, newIndexCapacity) = GetExpandedRegistryCapacities(
+            (newRootCapacity, newIndexCapacity, newInterestCapacity) = GetExpandedRegistryCapacities(
                 _lineages.Length,
                 _lineageIndex.Length,
+                _interests.Length,
                 _maximumBytes,
                 _registryCharge,
                 _lineageMembershipBytes,
@@ -2047,7 +3009,9 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
-            _pendingGrowthBytes = GetRegistryArrayCharge(newRootCapacity, newIndexCapacity);
+            oldArrayCharge = GetRegistryArrayCharge(_lineages.Length, _lineageIndex.Length, _interests.Length);
+            newArrayCharge = GetRegistryArrayCharge(newRootCapacity, newIndexCapacity, newInterestCapacity);
+            _pendingGrowthBytes = checked(_pendingGrowthBytes + newArrayCharge);
             oldLineages = _lineages;
             oldLineageIndex = _lineageIndex;
             oldLineageKeys = _lineageKeys;
@@ -2060,33 +3024,51 @@ public sealed class WorldAdmissionDomain : IDisposable
             var newLineages = new LineageEntry[newRootCapacity];
             var newLineageIndex = new LineageIndexBucket[newIndexCapacity];
             var newLineageKeys = new Guid[checked(newRootCapacity * FreshRootLineageKeyCount)];
-            var newInterests = new InterestEntry[newRootCapacity];
+            var newInterests = new InterestEntry[newInterestCapacity];
             var newReservations = new ReservationEntry[newRootCapacity];
-            Array.Copy(oldLineages, newLineages, oldLineages.Length);
-            Array.Copy(oldLineageKeys, newLineageKeys, oldLineageKeys.Length);
-            Array.Copy(oldInterests, newInterests, oldInterests.Length);
-            Array.Copy(oldReservations, newReservations, oldReservations.Length);
-            RehashLineageIndex(oldLineageIndex, newLineageIndex);
 
             using (ReentrantGate.EnterScope(ref _gate))
             {
+                if (_isDisposed
+                    || !ReferenceEquals(_lineages, oldLineages)
+                    || !ReferenceEquals(_lineageIndex, oldLineageIndex)
+                    || !ReferenceEquals(_lineageKeys, oldLineageKeys)
+                    || !ReferenceEquals(_interests, oldInterests)
+                    || !ReferenceEquals(_reservations, oldReservations))
+                {
+                    _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
+                    return false;
+                }
+
+                Array.Copy(oldLineages, newLineages, oldLineages.Length);
+                Array.Copy(oldLineageKeys, newLineageKeys, oldLineageKeys.Length);
+                Array.Copy(oldInterests, newInterests, oldInterests.Length);
+                Array.Copy(oldReservations, newReservations, oldReservations.Length);
+                RehashLineageIndex(oldLineageIndex, newLineageIndex);
                 _lineages = newLineages;
                 _lineageIndex = newLineageIndex;
                 _lineageKeys = newLineageKeys;
                 _interests = newInterests;
                 _reservations = newReservations;
-                _registryCharge = checked(GetRegistryCharge(newRootCapacity, newIndexCapacity) + _lineageMembershipBytes);
-                _pendingGrowthBytes = 0;
+                _registryCharge = checked(
+                    GetRegistryCharge(newRootCapacity, newIndexCapacity, newInterestCapacity)
+                    + _lineageMembershipBytes);
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge + oldArrayCharge);
             }
         }
         catch
         {
             using (ReentrantGate.EnterScope(ref _gate))
             {
-                _pendingGrowthBytes = 0;
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
             }
 
             throw;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            _pendingGrowthBytes = checked(_pendingGrowthBytes - oldArrayCharge);
         }
 
         return true;
@@ -2105,7 +3087,27 @@ public sealed class WorldAdmissionDomain : IDisposable
         return (interest.Generation == reservation.InterestGeneration)
             && (interest.State == StateOccupied)
             && (interest.Kind == InterestKindWorld)
+            && ReferenceEquals(interest.Reservation, reservation)
             && (interest.Bytes > 0);
+    }
+
+    private bool IsWorldGuidUseControlLinked(WorldGuidUseControl control)
+    {
+        for (var current = _independentUseHead; current is not null; current = current.Next)
+        {
+            if (ReferenceEquals(current, control))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void PublishRetirement()
+    {
+        _ = _retirement.TrySetResult();
+        _ = Interlocked.Exchange(ref _registryCharge, 0);
     }
 
     private void ReleaseLineageMembershipCharge(long bytes)
@@ -2141,7 +3143,7 @@ public sealed class WorldAdmissionDomain : IDisposable
         _pendingLineageMembershipEdgeCount = 0;
         _pendingLineageMembershipKeyCount = 0;
         _pendingGrowthBytes = 0;
-        _registryCharge = 0;
+        _registryCharge = RegistrarControlBytes;
     }
 
     private void ReleaseReservation(int index)
@@ -2445,6 +3447,37 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
+    private void UnlinkIndependentUseControl(WorldGuidUseControl control)
+    {
+        WorldGuidUseControl? previous = null;
+        var current = _independentUseHead;
+
+        while (current is not null)
+        {
+            var next = current.Next;
+
+            if (ReferenceEquals(current, control))
+            {
+                if (previous is null)
+                {
+                    _independentUseHead = next;
+                }
+                else
+                {
+                    previous.SetNext(next);
+                }
+
+                control.SetNext(null);
+                return;
+            }
+
+            previous = current;
+            current = next;
+        }
+
+        throw new InvalidOperationException("The independent use is not linked to its owning domain.");
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 128)]
     private struct InterestEntry
     {
@@ -2459,6 +3492,48 @@ public sealed class WorldAdmissionDomain : IDisposable
         internal int LineageRootIndex;
 
         internal uint LineageRootGeneration;
+
+        internal WorldGuidUseControl? UseControl;
+
+        internal WorldDomainReservation? Reservation;
+
+        internal long SceneConstructionBytes;
+
+        internal long SceneStorageBytes;
+
+        internal long PendingSceneConstructionBytes;
+
+        internal long WorldCloseProgress;
+
+        internal int SceneConstructorCount;
+
+        internal int WorldReturnPartCount;
+
+        internal WorldLifetimeControl? WorldLifetime;
+
+        internal WorldSceneStorageReservation? SceneStorageHead;
+
+        internal World? WorldCloseCarrier;
+
+        internal long Reserved0;
+
+        internal long Reserved1;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]
+    private struct InterestGrowthTicket
+    {
+        internal InterestEntry[]? RetiredArray;
+
+        internal uint Generation;
+
+        internal int State;
+
+        internal int OldCapacity;
+
+        internal int NewCapacity;
+
+        internal long ChargedBytes;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 256)]
@@ -2487,6 +3562,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         internal int HistoryInterestCount;
 
         internal bool OwnerRetired;
+
+        internal int WorldInterestIndexPlusOne;
+
+        internal uint WorldInterestGeneration;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]
@@ -2515,5 +3594,29 @@ public sealed class WorldAdmissionDomain : IDisposable
         internal int RootIndex;
 
         internal int State;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 64)]
+    private struct WorldUseRawTicket
+    {
+        internal uint Generation;
+
+        internal int State;
+
+        internal long Bytes;
+
+        internal int ProspectiveInterests;
+
+        internal int Reserved;
+
+        internal WorldLifetimeControl? Lifetime;
+
+        internal WorldGuidUseControl? Control;
+
+        internal long WorkspaceLimit;
+
+        internal WorldDomainReservation? Reservation;
+
+        internal long Padding1;
     }
 }

@@ -406,8 +406,16 @@ public sealed partial class World
         WorldAttachmentReleasePreparation? releasePreparation = null;
         WorldAttachmentQuarantineReservation? quarantineReservation = null;
         StableIdentityLedger.PreparedChange? identityChange = null;
+        WorldAttachmentMembershipSource? membershipSource = null;
         var result = ImmutableArray<CommandReceipt>.Empty;
         ExceptionDispatchInfo? operationFailure = null;
+
+        if (_activeCommandMembershipRoot is not null)
+        {
+            throw new InvalidOperationException("A World command preparation root is already active.");
+        }
+
+        _activeCommandMembershipRoot = staging;
 
         try
         {
@@ -1057,7 +1065,9 @@ public sealed partial class World
                         entityId));
             }
 
-            void ValidateProjectedEntityReferences()
+            void ValidateProjectedEntityReferences(
+                bool validateComponentReferences,
+                WorldAttachmentMembershipSource source)
             {
                 var previousProjectedHandles = _activeCommandProjectedEntityHandles;
                 var previousExcludedHandles = _activeCommandExcludedEntityHandles;
@@ -1066,86 +1076,86 @@ public sealed partial class World
 
                 try
                 {
-                    foreach (var projection in projections)
+                    if (validateComponentReferences)
                     {
-                        if (projection.IsDestroyed)
+                        foreach (var projection in projections)
                         {
-                            continue;
-                        }
-
-                        foreach (var componentType in projection.Components)
-                        {
-                            var registration = FindComponentRegistration(componentType);
-
-                            if (TryGetProjectedValue(projection, componentType, out var initialization)
-                                && (initialization is { } value))
+                            if (projection.IsDestroyed)
                             {
-                                registration.ValidateEntityReferencesInitialization(
-                                    value,
+                                continue;
+                            }
+
+                            foreach (var componentType in projection.Components)
+                            {
+                                var registration = FindComponentRegistration(componentType);
+
+                                if (TryGetProjectedValue(projection, componentType, out var initialization)
+                                    && (initialization is { } value))
+                                {
+                                    registration.ValidateEntityReferencesInitialization(
+                                        value,
+                                        this,
+                                        excludedEntity: null,
+                                        parameterName: null);
+                                    continue;
+                                }
+
+                                var projectionSource = projection.Source
+                                    ?? throw new InvalidOperationException("A projected component has no prepared initialization.");
+                                var componentIndex = projectionSource.GetComponentIndex(componentType);
+
+                                if (componentIndex < 0)
+                                {
+                                    throw new InvalidOperationException("A projected component has no source row or prepared value.");
+                                }
+
+                                projectionSource.Storage.ValidateEntityReferencesColumnRow(
+                                    componentIndex,
+                                    projection.SourceChunkIndex,
+                                    projection.SourceRow,
                                     this,
                                     excludedEntity: null,
                                     parameterName: null);
-                                continue;
                             }
-
-                            var source = projection.Source
-                                ?? throw new InvalidOperationException("A projected component has no prepared initialization.");
-                            var componentIndex = source.GetComponentIndex(componentType);
-
-                            if (componentIndex < 0)
-                            {
-                                throw new InvalidOperationException("A projected component has no source row or prepared value.");
-                            }
-
-                            source.Storage.ValidateEntityReferencesColumnRow(
-                                componentIndex,
-                                projection.SourceChunkIndex,
-                                projection.SourceRow,
-                                this,
-                                excludedEntity: null,
-                                parameterName: null);
                         }
-                    }
 
-                    for (var archetypeIndex = 0; archetypeIndex < _archetypeCount; archetypeIndex++)
-                    {
-                        var archetype = _archetypes[archetypeIndex]
-                            ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
-
-                        for (var chunkIndex = 0; chunkIndex < archetype.Storage.ChunkCount; chunkIndex++)
+                        for (var archetypeIndex = 0; archetypeIndex < _archetypeCount; archetypeIndex++)
                         {
-                            if (!archetype.Storage.TryGetChunkOrdinal(chunkIndex, out _))
-                            {
-                                continue;
-                            }
+                            var archetype = _archetypes[archetypeIndex]
+                                ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
 
-                            var entities = archetype.Storage.GetEntities(chunkIndex);
-
-                            for (var row = 0; row < entities.Length; row++)
+                            for (var chunkIndex = 0; chunkIndex < archetype.Storage.ChunkCount; chunkIndex++)
                             {
-                                if (projectionsByEntity.ContainsKey(entities[row]))
+                                if (!archetype.Storage.TryGetChunkOrdinal(chunkIndex, out _))
                                 {
                                     continue;
                                 }
 
-                                for (var componentIndex = 0; componentIndex < archetype.Components.Length; componentIndex++)
+                                var entities = archetype.Storage.GetEntities(chunkIndex);
+
+                                for (var row = 0; row < entities.Length; row++)
                                 {
-                                    archetype.Storage.ValidateEntityReferencesColumnRow(
-                                        componentIndex,
-                                        chunkIndex,
-                                        row,
-                                        this,
-                                        excludedEntity: null,
-                                        parameterName: null);
+                                    if (projectionsByEntity.ContainsKey(entities[row]))
+                                    {
+                                        continue;
+                                    }
+
+                                    for (var componentIndex = 0; componentIndex < archetype.Components.Length; componentIndex++)
+                                    {
+                                        archetype.Storage.ValidateEntityReferencesColumnRow(
+                                            componentIndex,
+                                            chunkIndex,
+                                            row,
+                                            this,
+                                            excludedEntity: null,
+                                            parameterName: null);
+                                    }
                                 }
                             }
                         }
                     }
 
-                    if (destroyedOwnerIds.Count != 0)
-                    {
-                        ValidateAttachmentEntityReferencesExcludingOwners(destroyedOwnerIds, destroyedEntityHandles);
-                    }
+                    ValidateAttachmentEntityReferencesExcludingOwners(destroyedOwnerIds, destroyedEntityHandles, source);
                 }
                 finally
                 {
@@ -1431,11 +1441,6 @@ public sealed partial class World
                 }
             }
 
-            if (destroyedProjections.Count != 0)
-            {
-                ValidateProjectedEntityReferences();
-            }
-
             var nextMutationRevision = checked(_canonicalMutationRevision + 1);
 
             if ((createdProjections.Count != 0)
@@ -1529,6 +1534,31 @@ public sealed partial class World
                 {
                     throw new InvalidOperationException("The preflighted Entity-slot capacity could not be prepared.");
                 }
+            }
+
+            if ((destroyedProjections.Count != 0) || _attachments.HasTransferredAggregateEntries)
+            {
+                ReservePlanBytes(128);
+                ReservePlanBytes(GetArrayByteReservation(
+                    createdProjections.Count,
+                    Unsafe.SizeOf<Entity>()));
+                var projectedEntities = new Entity[createdProjections.Count];
+
+                for (var index = 0; index < createdProjections.Count; index++)
+                {
+                    projectedEntities[index] = createdProjections[index].Entity;
+                }
+
+                var sceneAssignmentOffset = (sceneInstanceAssignment is null) ? 0 : 1;
+                membershipSource = WorldAttachmentMembershipSource.CreateProjected(
+                    this,
+                    staging,
+                    identityChange,
+                    sceneAssignmentOffset,
+                    projectedEntities,
+                    destroyedOwnerIds);
+                ValidateProjectedEntityReferences(destroyedProjections.Count != 0, membershipSource);
+                membershipSource.ValidateForCommit();
             }
 
             if (destroyedProjections.Count != 0)
@@ -1816,7 +1846,10 @@ public sealed partial class World
 
             var receipts = staging.CreateReceipts(resolvedTokens);
             cancellationToken.ThrowIfCancellationRequested();
+            membershipSource?.ValidateForCommit();
             identityChange?.ValidateForCommit();
+            membershipSource?.Dispose();
+            membershipSource = null;
 
             foreach (var mutation in parentMutations)
             {
@@ -2020,6 +2053,7 @@ public sealed partial class World
                     }
                 }
 
+                membershipSource?.Dispose();
                 identityChange?.Dispose();
 
                 if (reservedBytes == 0)
@@ -2042,6 +2076,7 @@ public sealed partial class World
             finally
             {
                 quarantineReservation?.Release();
+                _activeCommandMembershipRoot = null;
             }
         }
 

@@ -751,6 +751,16 @@ internal sealed class StableIdentityLedger
             ReservedBytes = reservedBytes;
         }
 
+        internal int AssignmentCount
+        {
+            get
+            {
+                var source = _source ?? throw new ObjectDisposedException(nameof(PreparedChange));
+                var candidate = _candidate ?? throw new ObjectDisposedException(nameof(PreparedChange));
+                return candidate.AssignmentCount - source.AssignmentCount;
+            }
+        }
+
         internal long CandidateOwnedByteReservation
             => _candidate?.OwnedByteReservation ?? throw new ObjectDisposedException(nameof(PreparedChange));
 
@@ -778,12 +788,46 @@ internal sealed class StableIdentityLedger
             return new Guid(GetRecord(candidate.LedgerPages, ordinal)[..16], bigEndian: true);
         }
 
+        internal uint GetAssignedLocator(int assignmentIndex)
+        {
+            var ordinal = GetAssignedOrdinal(assignmentIndex);
+            var candidate = _candidate ?? throw new ObjectDisposedException(nameof(PreparedChange));
+            return BinaryPrimitives.ReadUInt32LittleEndian(GetRecord(candidate.LedgerPages, ordinal)[16..]);
+        }
+
         internal uint GetAssignedOrdinal(int assignmentIndex)
         {
             ObjectDisposedException.ThrowIf(_source is null || _candidate is null, this);
             ArgumentOutOfRangeException.ThrowIfNegative(assignmentIndex);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(assignmentIndex, _candidate.AssignmentCount - _source.AssignmentCount);
             return checked((uint)(_source.AssignmentCount + assignmentIndex + 1));
+        }
+
+        internal bool TryGetNewEntityAssignmentIndex(Guid stableEntityId, out int assignmentIndex)
+        {
+            ArgumentOutOfRangeException.ThrowIfEqual(stableEntityId, Guid.Empty);
+            var source = _source ?? throw new ObjectDisposedException(nameof(PreparedChange));
+            var candidate = _candidate ?? throw new ObjectDisposedException(nameof(PreparedChange));
+            Span<byte> idBytes = stackalloc byte[16];
+            _ = stableEntityId.TryWriteBytes(idBytes, bigEndian: true, out _);
+            var ordinal = candidate.Index.Find(idBytes);
+
+            if ((ordinal == 0) || (ordinal <= source.AssignmentCount))
+            {
+                assignmentIndex = -1;
+                return false;
+            }
+
+            var record = GetRecord(candidate.LedgerPages, ordinal);
+
+            if (GetKind(record) != IdentityKind.Entity)
+            {
+                assignmentIndex = -1;
+                return false;
+            }
+
+            assignmentIndex = checked((int)(ordinal - source.AssignmentCount - 1));
+            return true;
         }
 
         internal void ValidateForCommit()
@@ -793,6 +837,17 @@ internal sealed class StableIdentityLedger
             if (!ReferenceEquals(_owner._state, _source))
             {
                 throw new InvalidOperationException("The prepared identity change is stale.");
+            }
+        }
+
+        internal void ValidateOwner(StableIdentityLedger owner)
+        {
+            ArgumentNullException.ThrowIfNull(owner);
+            ObjectDisposedException.ThrowIf(_owner is null, this);
+
+            if (!ReferenceEquals(_owner, owner))
+            {
+                throw new InvalidOperationException("The prepared identity change belongs to another World.");
             }
         }
     }

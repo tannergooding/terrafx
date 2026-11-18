@@ -212,10 +212,14 @@ internal ref struct WorldPersistenceCaptureLease
         _world.CopyPersistenceFreeSlots(this, destination);
     }
 
-    internal readonly nint CountAttachmentStateRecord(int attachmentIndex, CancellationToken cancellationToken)
+    internal readonly nint CountAttachmentStateRecord(
+        int attachmentIndex,
+        EbinReadLimits limits,
+        CancellationToken cancellationToken)
     {
         ValidateCurrent();
-        return _world.CountAttachmentStateRecord(this, attachmentIndex, cancellationToken);
+        ArgumentNullException.ThrowIfNull(limits);
+        return _world.CountAttachmentStateRecord(this, attachmentIndex, limits, cancellationToken);
     }
 
     internal readonly nint CountComponentStateRecord(
@@ -595,11 +599,13 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly nint WriteAttachmentStateRecord(
         int attachmentIndex,
+        EbinReadLimits limits,
         scoped Span<byte> destination,
         CancellationToken cancellationToken)
     {
         ValidateCurrent();
-        return _world.WriteAttachmentStateRecord(this, attachmentIndex, destination, cancellationToken);
+        ArgumentNullException.ThrowIfNull(limits);
+        return _world.WriteAttachmentStateRecord(this, attachmentIndex, limits, destination, cancellationToken);
     }
 
     internal readonly nint WriteComponentStateRecord(

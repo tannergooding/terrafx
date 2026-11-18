@@ -232,29 +232,55 @@ internal sealed class WorldConstructionPlan
         }
 
         _restoreResourcesState = 2;
+        var enrolled = _admissionDomain.IsEnrolledWorld(_domainReservation);
+        var cleanupSucceeded = false;
+        var quarantineReturned = false;
+        var capacityReturned = false;
 
         try
         {
-            if (!_admissionDomain.TryReleaseFreshLineage(_lineageGrant))
+            if (enrolled)
+            {
+                _admissionDomain.BeginWorldClose(_domainReservation);
+
+                if (!_lifetimeControl.BeginRetirement())
+                {
+                    throw new InvalidOperationException("The untransferred World could not revoke its original binding.");
+                }
+            }
+            else if (!_admissionDomain.TryReleaseFreshLineage(_lineageGrant))
             {
                 throw new InvalidOperationException("The untransferred restore lineage reservation could not be released.");
             }
+
+            cleanupSucceeded = true;
         }
         finally
         {
             try
             {
                 _systemQuarantineReservation.Release();
+                quarantineReturned = true;
             }
             finally
             {
                 try
                 {
                     WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(_systemQuarantineReservation);
+                    capacityReturned = true;
                 }
                 finally
                 {
-                    _domainReservation.Dispose();
+                    if (enrolled)
+                    {
+                        _admissionDomain.CompleteWorldClose(
+                            _domainReservation,
+                            cleanupSucceeded && quarantineReturned && capacityReturned);
+                    }
+                    else
+                    {
+                        _domainReservation.Dispose();
+                    }
                 }
             }
         }

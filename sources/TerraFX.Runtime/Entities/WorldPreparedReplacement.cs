@@ -14,7 +14,12 @@ internal sealed class WorldPreparedReplacement
         _control = control;
     }
 
+    internal WorldRestoreSourceControl? PreparedSourceControl => _control.PreparedSourceControl;
+
     internal World TargetWorld => _control.TargetWorld;
+
+    internal void BindPreparedResourceSourceOwner(IWorldRestoreSourceOwner owner)
+        => _control.BindPreparedResourceSourceOwner(owner);
 
     internal void CloseAcquisition()
         => _control.CloseAcquisition();

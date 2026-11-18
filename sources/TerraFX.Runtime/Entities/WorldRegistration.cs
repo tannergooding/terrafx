@@ -8,7 +8,7 @@ using System.Linq;
 namespace TerraFX.Entities;
 
 /// <summary>Contains the immutable component, tag, resource, and optional Scene registrations selected before World construction.</summary>
-public sealed class WorldRegistration
+public sealed partial class WorldRegistration
 {
     private readonly ImmutableArray<IWorldAttachmentRegistration> _attachments;
     private readonly ImmutableArray<IComponentRegistration> _components;

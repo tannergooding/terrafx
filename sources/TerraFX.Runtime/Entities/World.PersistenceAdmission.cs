@@ -915,7 +915,8 @@ public sealed partial class World
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
-            if (bytes > _maximumPersistenceAdmissionBytes - _activePersistenceAdmissionBytes)
+            if ((bytes > _maximumPersistenceAdmissionBytes - _activePersistenceAdmissionBytes)
+                || !_admissionDomain.TryRetainWorldReturnPart(_domainReservation))
             {
                 return false;
             }
@@ -946,6 +947,7 @@ public sealed partial class World
             {
                 domainReservation?.Dispose();
                 ReleasePersistenceAdmissionBytes(bytes);
+                CompleteOperationReturnPart();
             }
         }
     }
@@ -968,20 +970,35 @@ public sealed partial class World
                 || !_isRestoreCandidate
                 || !_isPersistenceCaptureLeaseActive
                 || (bytes > _restoreValidationWorkspaceByteReservation)
-                || (bytes > _maximumPersistenceAdmissionBytes - _activePersistenceAdmissionBytes))
+                || (bytes > _maximumPersistenceAdmissionBytes - _activePersistenceAdmissionBytes)
+                || !_admissionDomain.TryRetainWorldReturnPart(_domainReservation))
             {
                 return false;
             }
 
-            var admittedReservation = new WorldPersistenceAdmissionReservation(
+            _restoreValidationWorkspaceByteReservation -= bytes;
+            _activePersistenceAdmissionBytes = checked(_activePersistenceAdmissionBytes + bytes);
+        }
+
+        var created = false;
+
+        try
+        {
+            reservation = new WorldPersistenceAdmissionReservation(
                 this,
                 _domainReservation,
                 bytes,
                 usesRestoreValidationWorkspace: true);
-            _restoreValidationWorkspaceByteReservation -= bytes;
-            _activePersistenceAdmissionBytes = checked(_activePersistenceAdmissionBytes + bytes);
-            reservation = admittedReservation;
+            created = true;
             return true;
+        }
+        finally
+        {
+            if (!created)
+            {
+                ReleaseRestoreValidationAdmissionBytes(bytes);
+                CompleteOperationReturnPart();
+            }
         }
     }
 

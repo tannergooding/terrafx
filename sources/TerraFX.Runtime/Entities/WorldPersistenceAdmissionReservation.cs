@@ -15,6 +15,7 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
     private readonly WorldDomainReservation _domainReservation;
     private bool _isChargeReleased;
     private bool _isDisposed;
+    private bool _usesPreparedResourceSourceStorage;
     private readonly bool _usesRestoreValidationWorkspace;
     private readonly World _world;
 
@@ -41,16 +42,39 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         _world = world;
     }
 
+    private static void FinishChargeRelease(
+        World world,
+        WorldDomainReservation domainReservation,
+        bool usesRestoreValidationWorkspace)
+    {
+        if (!usesRestoreValidationWorkspace)
+        {
+            domainReservation.Dispose();
+        }
+
+        world.CompleteOperationReturnPart();
+    }
+
     public void Dispose()
     {
+        var world = _world;
+        var domainReservation = _domainReservation;
+        var usesRestoreValidationWorkspace = _usesRestoreValidationWorkspace;
+        var releaseCharge = false;
+
         lock (_disposeGate)
         {
             _isDisposed = true;
 
             if (_activeUseCount == 0)
             {
-                ReleaseCharge();
+                releaseCharge = ReleaseCharge();
             }
+        }
+
+        if (releaseCharge)
+        {
+            FinishChargeRelease(world, domainReservation, usesRestoreValidationWorkspace);
         }
     }
 
@@ -104,8 +128,28 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
     }
 
+    internal void BindPreparedResourceSourceStorage()
+    {
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (_usesRestoreValidationWorkspace || _usesPreparedResourceSourceStorage || (_activeUseCount != 0))
+            {
+                throw new InvalidOperationException("The prepared source storage must bind its original fixed admission before use.");
+            }
+
+            _usesPreparedResourceSourceStorage = true;
+        }
+    }
+
     internal void ReleaseUse(long workspaceBytes)
     {
+        var world = _world;
+        var domainReservation = _domainReservation;
+        var usesRestoreValidationWorkspace = _usesRestoreValidationWorkspace;
+        var releaseCharge = false;
+
         lock (_disposeGate)
         {
             if ((_activeUseCount <= 0)
@@ -120,8 +164,13 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 
             if (_isDisposed && (_activeUseCount == 0))
             {
-                ReleaseCharge();
+                releaseCharge = ReleaseCharge();
             }
+        }
+
+        if (releaseCharge)
+        {
+            FinishChargeRelease(world, domainReservation, usesRestoreValidationWorkspace);
         }
     }
 
@@ -132,6 +181,11 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         lock (_disposeGate)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (_usesPreparedResourceSourceStorage)
+            {
+                throw new InvalidOperationException("Prepared source storage retains its complete fixed peak until actual release.");
+            }
 
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(bytes, _bytes - _activeWorkspaceBytes);
 
@@ -156,6 +210,12 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         lock (_disposeGate)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (_usesPreparedResourceSourceStorage)
+            {
+                throw new InvalidOperationException("Prepared source storage cannot widen its admitted fixed peak.");
+            }
+
             var expandedBytes = checked(_bytes + bytes);
 
             var admitted = _usesRestoreValidationWorkspace
@@ -600,11 +660,11 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             out diagnostic);
     }
 
-    private void ReleaseCharge()
+    private bool ReleaseCharge()
     {
         if (_isChargeReleased)
         {
-            return;
+            return false;
         }
 
         if (_usesRestoreValidationWorkspace)
@@ -613,11 +673,16 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
         else
         {
-            _domainReservation.Dispose();
             _world.ReleasePersistenceAdmissionBytes(_bytes);
+
+            if (_usesPreparedResourceSourceStorage)
+            {
+                _world.ReleasePreparedRestoreSourceBytes(_bytes);
+            }
         }
 
         _isChargeReleased = true;
+        return true;
     }
 
     internal ref struct UseScope

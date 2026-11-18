@@ -345,7 +345,10 @@ internal static class WorldPersistenceEcsReader
                 throw new ArgumentException("A saved attachment schema and scope are not registered in the target World.", parameterName, exception);
             }
 
-            ValidateAttachmentEntityReferences(payload, descriptor, liveIdentities, parameterName);
+            if (!descriptor.IsAggregate)
+            {
+                ValidateAttachmentEntityReferences(payload, descriptor, liveIdentities, parameterName);
+            }
         }
 
         var hasOwner = attachment.TryGetField(2, out var ownerField);

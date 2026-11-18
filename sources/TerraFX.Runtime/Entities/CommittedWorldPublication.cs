@@ -45,9 +45,17 @@ public sealed class CommittedWorldPublication
             ArgumentNullException.ThrowIfNull(receipt);
         }
 
-        foreach (var item in events)
+        for (var index = 0; index < events.Length; index++)
         {
+            var item = events[index];
             ArgumentNullException.ThrowIfNull(item);
+
+            if ((item.WorldOwnerId != worldOwnerId)
+                || (item.CompletedTick != completedTick)
+                || (item.Sequence != index))
+            {
+                throw new ArgumentException("Each committed event must match this World, completed tick, and dense event order.", nameof(events));
+            }
         }
 
         ExecutionSessionId = executionSessionId;

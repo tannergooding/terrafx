@@ -37,6 +37,8 @@ internal sealed class WorldCommandStaging : IDisposable
 
     internal bool IsOwnerControl => _isOwnerControl;
 
+    internal bool IsSealed => _isSealed;
+
     internal long ReservedBytes
     {
         get

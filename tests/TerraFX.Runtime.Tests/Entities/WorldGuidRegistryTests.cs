@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Reflection;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Entities;
@@ -23,6 +24,30 @@ internal sealed class WorldGuidRegistryTests
                 return candidate;
             }
         }
+    }
+
+    [Test]
+    public void BindingPageChargeUsesContractStride()
+    {
+        const long ExpectedPageCharge = 64L + (256L * 128L);
+        var registryType = typeof(WorldGuidRegistry);
+        var category = registryType.GetField(
+            "SlabCategoryBinding",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The binding-page accounting category is missing.");
+        var charge = registryType.GetMethod(
+            "GetSlabCharge",
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(int)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("The slab accounting rule is missing.");
+        var bindingCategory = (int)(category.GetRawConstantValue()
+            ?? throw new InvalidOperationException("The binding-page category has no constant value."));
+        var observedCharge = (long)(charge.Invoke(null, [bindingCategory])
+            ?? throw new InvalidOperationException("The slab accounting rule returned no result."));
+
+        Assert.That(observedCharge, Is.EqualTo(ExpectedPageCharge));
     }
 
     [Test]

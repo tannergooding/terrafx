@@ -34,6 +34,13 @@ internal sealed class WorldGuidRetirementPermit
         _grant = grant;
     }
 
+    internal bool IsConsumedFor(WorldGuidRegistry registry, in WorldGuidGrant grant)
+        => ReferenceEquals(_registry, registry)
+            && ReferenceEquals(_owner.Registry, registry)
+            && _grant.Equals(grant)
+            && _owner.WorldGuidGrant.Equals(grant)
+            && (Volatile.Read(ref _state) == StateRetired);
+
     internal bool TryConsume(WorldGuidRegistry registry, out WorldGuidGrant grant)
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -74,6 +81,25 @@ internal sealed class WorldGuidRetirementPermit
             && ReferenceEquals(_owner.Registry, registry)
             && _owner.WorldGuidGrant.Equals(_grant)
             && _owner.IsQuarantinePermitCurrent(_grant)
+            && _grant.IsOwnedBy(registry)
+            && (Volatile.Read(ref _state) == StateAvailable))
+        {
+            grant = _grant;
+            return true;
+        }
+
+        grant = default;
+        return false;
+    }
+
+    internal bool TryGetRetirementGrant(WorldGuidRegistry registry, out WorldGuidGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        if (ReferenceEquals(_registry, registry)
+            && ReferenceEquals(_owner.Registry, registry)
+            && _owner.WorldGuidGrant.Equals(_grant)
+            && _owner.IsRetirementPermitCurrent(_grant)
             && _grant.IsOwnedBy(registry)
             && (Volatile.Read(ref _state) == StateAvailable))
         {

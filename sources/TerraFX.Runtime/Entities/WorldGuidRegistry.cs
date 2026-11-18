@@ -19,6 +19,8 @@ internal sealed class WorldGuidRegistry
     internal const int MaximumUseCells = 131_072;
     internal const int MaximumWorldGuidKeys = 16_384;
 
+    // The charged stride is fixed even when GC references change the managed layout.
+    private const int BindingCellChargeStride = 128;
     private const int BindingDirectoryLength = 256;
     private const int CellStateActive = 2;
     private const int CellStateFree = 0;
@@ -55,6 +57,8 @@ internal sealed class WorldGuidRegistry
     private const int StateUninitialized = 0;
     private const int UseDirectoryLength = 512;
     private const int UseRoleCoordinator = 2;
+    private const int UseRoleIndependent = 3;
+    private const int UseRoleIndependentRetiring = 4;
     private const int UseRoleOwner = 1;
 
     private static long s_chargedBytes;
@@ -184,7 +188,7 @@ internal sealed class WorldGuidRegistry
     private static long GetSlabCharge(int category)
         => category switch {
             SlabCategoryKey => ArrayCharge(CellsPerSlab, Unsafe.SizeOf<KeyCell>()),
-            SlabCategoryBinding => ArrayCharge(CellsPerSlab, Unsafe.SizeOf<BindingCell>()),
+            SlabCategoryBinding => ArrayCharge(CellsPerSlab, BindingCellChargeStride),
             SlabCategoryPreparation => ArrayCharge(CellsPerSlab, Unsafe.SizeOf<PreparationCell>()),
             SlabCategoryUse => ArrayCharge(CellsPerSlab, Unsafe.SizeOf<UseCell>()),
             _ => throw new InvalidOperationException("The WorldGuid slab category is invalid."),
@@ -297,6 +301,86 @@ internal sealed class WorldGuidRegistry
 
         using var scope = ReentrantGate.EnterScope(ref _admissionGate);
 
+        return IsActiveUnderAdmissionGate(grant);
+    }
+
+    internal bool TryAcquireIndependentUse(
+        WorldGuidUseControl control,
+        out WorldGuidRefusal refusal)
+        => TryAcquireIndependentUse(control, out refusal, default);
+
+    internal bool TryAcquireIndependentUse(
+        WorldGuidUseControl control,
+        out WorldGuidRefusal refusal,
+        in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        journal.ValidateControl(control);
+        var grant = control.Grant;
+
+        if (!grant.IsOwnedBy(this)
+            || !control.IsActiveUseFor(this, grant))
+        {
+            refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+            return false;
+        }
+
+        while (true)
+        {
+            if (!EnsureCellAvailability(SlabCategoryUse, 1, out refusal))
+            {
+                return false;
+            }
+
+            using (ReentrantGate.EnterScope(ref _admissionGate))
+            {
+                if (!IsActiveUnderAdmissionGate(grant))
+                {
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                    return false;
+                }
+
+                if (GetAvailableCellCount(SlabCategoryUse) == 0)
+                {
+                    continue;
+                }
+
+                if (_useRoleCount >= MaximumUseCells)
+                {
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.UseCapacity);
+                    return false;
+                }
+
+                ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+                ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+                var useCellIndex = AllocateUseCell(
+                    grant.KeyCellIndex,
+                    grant.KeyGeneration,
+                    grant.BindingCellIndex,
+                    grant.BindingGeneration,
+                    UseRoleIndependent,
+                    out var useCellGeneration);
+                ref var useCell = ref GetUseCell(useCellIndex);
+                useCell._independentUseControl = control;
+                journal.RecordProcessIssued(useCellIndex, useCellGeneration);
+                keyCell._roleCount = checked(keyCell._roleCount + 1);
+                bindingCell._independentUseCount = checked(bindingCell._independentUseCount + 1);
+                control.IssueUseCell(useCellIndex, useCellGeneration);
+                refusal = default;
+                return true;
+            }
+        }
+    }
+
+    internal bool TryBindWorldOwner(in WorldGuidGrant grant)
+    {
+        if (!grant.IsOwnedBy(this))
+        {
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
         if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
             || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration)
             || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
@@ -304,20 +388,27 @@ internal sealed class WorldGuidRegistry
             return false;
         }
 
-        ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
-        ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
-        ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
+        ref var key = ref GetKeyCell(grant.KeyCellIndex);
+        ref var binding = ref GetBindingCell(grant.BindingCellIndex);
+        ref var owner = ref GetUseCell(grant.OwnerUseCellIndex);
 
-        return (keyCell._worldGuid == grant.WorldGuid)
-            && (bindingCell._state == CellStateActive)
-            && (bindingCell._keyCellIndex == grant.KeyCellIndex)
-            && (bindingCell._keyGeneration == grant.KeyGeneration)
-            && (ownerUseCell._state == CellStateReserved)
-            && (ownerUseCell._role == UseRoleOwner)
-            && (ownerUseCell._keyCellIndex == grant.KeyCellIndex)
-            && (ownerUseCell._keyGeneration == grant.KeyGeneration)
-            && (ownerUseCell._bindingCellIndex == grant.BindingCellIndex)
-            && (ownerUseCell._bindingGeneration == grant.BindingGeneration);
+        if (binding._worldOwnerBound
+            || (binding._state is not (CellStateReserved or CellStateActive))
+            || (key._worldGuid != grant.WorldGuid)
+            || (binding._keyCellIndex != grant.KeyCellIndex)
+            || (binding._keyGeneration != grant.KeyGeneration)
+            || (owner._state != CellStateReserved)
+            || (owner._role != UseRoleOwner)
+            || (owner._keyCellIndex != grant.KeyCellIndex)
+            || (owner._keyGeneration != grant.KeyGeneration)
+            || (owner._bindingCellIndex != grant.BindingCellIndex)
+            || (owner._bindingGeneration != grant.BindingGeneration))
+        {
+            return false;
+        }
+
+        binding._worldOwnerBound = true;
+        return true;
     }
 
     internal bool TryCaptureReplacement(
@@ -577,7 +668,7 @@ internal sealed class WorldGuidRegistry
         return permit.TryConsumeForQuarantine(this, grant);
     }
 
-    internal bool TryReleaseFresh(in WorldGuidGrant grant)
+    internal bool TryReleaseFresh(in WorldGuidGrant grant, WorldGuidRetirementPermit? permit = null)
     {
         if (!grant.IsOwnedBy(this))
         {
@@ -598,7 +689,9 @@ internal sealed class WorldGuidRegistry
         ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
 
         if ((keyCell._worldGuid != grant.WorldGuid)
-         || (ownerUseCell._state != CellStateReserved))
+         || (ownerUseCell._state != CellStateReserved)
+         || (bindingCell._independentUseCount != 0)
+         || (bindingCell._worldOwnerBound && (permit?.IsConsumedFor(this, grant) != true)))
         {
             return false;
         }
@@ -652,6 +745,115 @@ internal sealed class WorldGuidRegistry
         keyCell._roleCount -= 2;
         ReleaseKeyIfUnowned(grant.KeyCellIndex, ref keyCell);
         return true;
+    }
+
+    internal bool TryReleaseIndependentUse(WorldGuidUseControl control)
+        => TryReleaseIndependentUse(control, default);
+
+    internal bool TryReleaseIndependentUse(WorldGuidUseControl control, in WorldCosmeticCreditOwner.AcquisitionJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        journal.ValidateControl(control);
+        var grant = control.Grant;
+        var useCellIndex = control.UseCellIndex;
+        var useCellGeneration = control.UseCellGeneration;
+        var deferredRetirement = false;
+
+        using (ReentrantGate.EnterScope(ref _admissionGate))
+        {
+            if (!grant.IsOwnedBy(this)
+                || !IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+                || !IsUseCellValid(useCellIndex, useCellGeneration))
+            {
+                return false;
+            }
+
+            ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+            ref var useCell = ref GetUseCell(useCellIndex);
+
+            if ((keyCell._worldGuid != grant.WorldGuid)
+                || (useCell._state != CellStateReserved)
+                || (useCell._role != UseRoleIndependent)
+                || (useCell._keyCellIndex != grant.KeyCellIndex)
+                || (useCell._keyGeneration != grant.KeyGeneration)
+                || (useCell._bindingCellIndex != grant.BindingCellIndex)
+                || (useCell._bindingGeneration != grant.BindingGeneration)
+                || !ReferenceEquals(useCell._independentUseControl, control))
+            {
+                return false;
+            }
+
+            if (!IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration))
+            {
+                return false;
+            }
+
+            ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+
+            if ((bindingCell._keyCellIndex != grant.KeyCellIndex)
+                || (bindingCell._keyGeneration != grant.KeyGeneration)
+                || (bindingCell._independentUseCount <= 0))
+            {
+                return false;
+            }
+
+            bindingCell._independentUseCount--;
+
+            if ((bindingCell._state == CellStateRevoked)
+                && (bindingCell._independentUseCount == 0)
+                && control.Lifetime.IsRetirementPending)
+            {
+                useCell._role = UseRoleIndependentRetiring;
+                deferredRetirement = true;
+            }
+            else
+            {
+                ReleaseUseCell(useCellIndex, ref useCell);
+                journal.RecordProcessReleased();
+                keyCell._roleCount--;
+                ReleaseKeyIfUnowned(grant.KeyCellIndex, ref keyCell);
+            }
+        }
+
+        if (!deferredRetirement)
+        {
+            return true;
+        }
+
+        if (!control.Lifetime.CompleteDeferredRetirement())
+        {
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _admissionGate))
+        {
+            if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+                || !IsUseCellValid(useCellIndex, useCellGeneration))
+            {
+                return false;
+            }
+
+            ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+            ref var useCell = ref GetUseCell(useCellIndex);
+
+            if ((keyCell._worldGuid != grant.WorldGuid)
+                || (useCell._state != CellStateReserved)
+                || (useCell._role != UseRoleIndependentRetiring)
+                || (useCell._keyCellIndex != grant.KeyCellIndex)
+                || (useCell._keyGeneration != grant.KeyGeneration)
+                || (useCell._bindingCellIndex != grant.BindingCellIndex)
+                || (useCell._bindingGeneration != grant.BindingGeneration)
+                || !ReferenceEquals(useCell._independentUseControl, control))
+            {
+                return false;
+            }
+
+            ReleaseUseCell(useCellIndex, ref useCell);
+            journal.RecordProcessReleased();
+            keyCell._roleCount--;
+            ReleaseKeyIfUnowned(grant.KeyCellIndex, ref keyCell);
+            return true;
+        }
     }
 
     internal bool TryReserveFresh(Guid worldGuid, out WorldGuidGrant grant, out WorldGuidRefusal refusal)
@@ -935,11 +1137,42 @@ internal sealed class WorldGuidRegistry
         out WorldGuidRefusal refusal)
         => TryReserveReplacement(current, current.WorldGuid, out replacement, out refusal);
 
-    internal bool TryRetire(WorldGuidRetirementPermit permit)
+    internal bool TryRetire(WorldGuidRetirementPermit permit, out bool deferred)
     {
         ArgumentNullException.ThrowIfNull(permit);
-        return permit.TryConsume(this, out var grant)
-            && TryReleaseFresh(grant);
+        deferred = false;
+
+        if (!permit.TryGetRetirementGrant(this, out var grant))
+        {
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _admissionGate))
+        {
+            if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+                || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration))
+            {
+                return false;
+            }
+
+            ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+
+            if ((bindingCell._keyCellIndex != grant.KeyCellIndex)
+                || (bindingCell._keyGeneration != grant.KeyGeneration)
+                || (bindingCell._state != CellStateRevoked))
+            {
+                return false;
+            }
+
+            if (bindingCell._independentUseCount != 0)
+            {
+                deferred = true;
+                return true;
+            }
+        }
+
+        return permit.TryConsume(this, out grant)
+            && TryReleaseFresh(grant, permit);
     }
 
     internal bool TryRevokeForRetirement(in WorldGuidGrant grant)
@@ -1055,6 +1288,7 @@ internal sealed class WorldGuidRegistry
         cell._keyGeneration = keyGeneration;
         cell._state = CellStateReserved;
         cell._freeNextIndex = -1;
+        cell._independentUseCount = 0;
         _bindingRoleCount++;
         return index;
     }
@@ -1147,6 +1381,7 @@ internal sealed class WorldGuidRegistry
         cell._role = role;
         cell._state = CellStateReserved;
         cell._freeNextIndex = -1;
+        cell._independentUseControl = null;
         _useRoleCount++;
         return index;
     }
@@ -1575,6 +1810,36 @@ internal sealed class WorldGuidRegistry
         throw new InvalidOperationException("The WorldGuid index has no empty bucket.");
     }
 
+    private bool IsActiveUnderAdmissionGate(in WorldGuidGrant grant)
+    {
+        if (!grant.IsOwnedBy(this))
+        {
+            return false;
+        }
+
+        if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+            || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration)
+            || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
+        {
+            return false;
+        }
+
+        ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+        ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+        ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
+
+        return (keyCell._worldGuid == grant.WorldGuid)
+            && (bindingCell._state == CellStateActive)
+            && (bindingCell._keyCellIndex == grant.KeyCellIndex)
+            && (bindingCell._keyGeneration == grant.KeyGeneration)
+            && (ownerUseCell._state == CellStateReserved)
+            && (ownerUseCell._role == UseRoleOwner)
+            && (ownerUseCell._keyCellIndex == grant.KeyCellIndex)
+            && (ownerUseCell._keyGeneration == grant.KeyGeneration)
+            && (ownerUseCell._bindingCellIndex == grant.BindingCellIndex)
+            && (ownerUseCell._bindingGeneration == grant.BindingGeneration);
+    }
+
     private bool IsBindingCellReleaseValid(int index, uint generation)
     {
         var directory = _bindingDirectory;
@@ -1653,6 +1918,8 @@ internal sealed class WorldGuidRegistry
     private void ReleaseBindingCell(int index, ref BindingCell cell)
     {
         _bindingRoleCount--;
+        cell._independentUseCount = 0;
+        cell._worldOwnerBound = false;
 
         if (cell._generation == uint.MaxValue)
         {
@@ -1720,6 +1987,7 @@ internal sealed class WorldGuidRegistry
     private void ReleaseUseCell(int index, ref UseCell cell)
     {
         _useRoleCount--;
+        cell._independentUseControl = null;
 
         if (cell._generation == uint.MaxValue)
         {
@@ -1826,6 +2094,8 @@ internal sealed class WorldGuidRegistry
         internal uint _keyGeneration;
         internal int _state;
         internal int _freeNextIndex;
+        internal int _independentUseCount;
+        internal bool _worldOwnerBound;
     }
 
     private struct GrowthTicket
@@ -1887,5 +2157,17 @@ internal sealed class WorldGuidRegistry
         internal int _role;
         internal int _state;
         internal int _freeNextIndex;
+        internal WorldGuidUseControl? _independentUseControl;
+        internal long _reserved0;
+        internal long _reserved1;
+        internal long _reserved2;
+        internal long _reserved3;
+        internal long _reserved4;
+        internal long _reserved5;
+        internal long _reserved6;
+        internal long _reserved7;
+        internal long _reserved8;
+        internal long _reserved9;
+        internal long _reserved10;
     }
 }

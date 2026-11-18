@@ -19,7 +19,9 @@ public sealed partial class World : IDisposable
     private const long RestoreContextControlBytes = 128;
 
     private long _acceptedOwnerRequests;
+    private long _activeAttachmentMembershipSourceToken;
     private HashSet<Entity>? _activeCommandExcludedEntityHandles;
+    private WorldCommandStaging? _activeCommandMembershipRoot;
     private HashSet<Entity>? _activeCommandProjectedEntityHandles;
     private long _activePersistenceAdmissionBytes;
     private readonly long[] _activeQueryEpochs;
@@ -30,6 +32,7 @@ public sealed partial class World : IDisposable
     private int _archetypeCount;
     private WorldArchetype?[] _archetypes;
     private Exception? _attachmentCallbackStickyFailure;
+    private long _attachmentMembershipSourceTokenSequence;
     private readonly WorldAttachmentTable _attachments = new();
     private long _canonicalMutationRevision;
     private long _committedMutationRevision;
@@ -112,14 +115,13 @@ public sealed partial class World : IDisposable
     private readonly long _restoreEcsArchetypeMetadataByteReservation;
     private WorldRestoreEcsPlan? _restoreEcsPlan;
     private readonly long _restoreEcsStorageByteReservation;
-    private long _restoreSceneHierarchyWorkspaceByteReservation;
+    private WorldRestoreSourceControl? _restoreSourceControl;
     private long _restoreValidationWorkspaceByteReservation;
     private readonly long _restoreValidationWorkspaceCapacity;
     private readonly long _restoreWorkPlanByteReservation;
     private readonly int _restoreWorkPlanCapacity;
     private long _sceneControlPayloadByteReservation;
     private IWorldSceneParticipant? _sceneParticipant;
-    private long _scenePlanStorageByteReservation;
     private readonly Lock _sceneStorageGate = new();
     private readonly long _sceneSupportByteReservation;
     private readonly int[] _scheduledSystemRegistrationIndices;
@@ -142,6 +144,9 @@ public sealed partial class World : IDisposable
     {
         ArgumentNullException.ThrowIfNull(constructionPlan);
         constructionPlan.ValidateForConstruction();
+        constructionPlan.AdmissionDomain.InitializeSceneConstructionBytes(
+            constructionPlan.DomainReservation,
+            constructionPlan.RestoreSceneHierarchyWorkspaceByteReservation);
         var systemQuarantineReservation = constructionPlan.SystemQuarantineReservation;
         var workerPool = constructionPlan.WorkerPool;
 
@@ -204,6 +209,7 @@ public sealed partial class World : IDisposable
         _restoreEcsStorageByteReservation = constructionPlan.RestoreEcsStorageByteReservation;
         _restoreEcsArchetypeMetadataByteReservation = constructionPlan.RestoreEcsArchetypeMetadataByteReservation;
         _restoreEcsPlan = constructionPlan.RestoreEcsPlan;
+        _restoreSourceControl = constructionPlan.PreparedReplacement?.PreparedSourceControl;
         _restoreAttachmentCount = constructionPlan.RestoreAttachmentCount;
         _restoreWorkPlanByteReservation = constructionPlan.RestoreWorkPlanByteReservation;
         _restoreWorkPlanCapacity = constructionPlan.RestoreWorkPlanCapacity;
@@ -213,8 +219,6 @@ public sealed partial class World : IDisposable
             : new WorldControlRecord[constructionPlan.RestoreControlRecordCount];
         _controlStorageByteReservation = constructionPlan.RestoreControlStorageByteReservation;
         _sceneControlPayloadByteReservation = constructionPlan.RestoreSceneControlPayloadByteReservation;
-        _restoreSceneHierarchyWorkspaceByteReservation = constructionPlan.RestoreSceneHierarchyWorkspaceByteReservation;
-        _scenePlanStorageByteReservation = _restoreSceneHierarchyWorkspaceByteReservation;
         _restoreValidationWorkspaceByteReservation = constructionPlan.RestoreValidationWorkspaceByteReservation;
         _restoreValidationWorkspaceCapacity = _restoreValidationWorkspaceByteReservation;
 
@@ -318,6 +322,12 @@ public sealed partial class World : IDisposable
         _initialFrame3 = currentFrame3;
         _initialFrame2 = currentFrame2;
         _currentFrameCohort = new WorldFrameCohort(currentFrame3, currentFrame2, cohortGeneration: 1);
+        _admissionDomain.EnrollWorld(
+            _domainReservation,
+            _lifetimeControl,
+            this,
+            constructionPlan.RestoreSceneHierarchyWorkspaceByteReservation,
+            _lineageGrant);
         constructionPlan.TransferRestoreResourcesToWorld();
     }
 
@@ -478,7 +488,7 @@ public sealed partial class World : IDisposable
 
         for (var index = 0; index < candidate._options.Registration.Resources.Length; index++)
         {
-            candidate._options.Registration.Resources[index].InitializeAndValidate(candidate._resourceStorage[index]);
+            candidate._options.Registration.Resources[index].InitializeAndValidate(candidate._resourceStorage[index], candidate);
         }
 
         candidate.ConfigureOwnedStateBudget();
@@ -529,6 +539,7 @@ public sealed partial class World : IDisposable
         var lineageCommitted = false;
         var publicationCommitted = false;
         var constructionCleanupFailed = false;
+        World? unpublishedWorld = null;
 
         try
         {
@@ -548,6 +559,7 @@ public sealed partial class World : IDisposable
                 ?? hostAdmissionDomain
                 ?? new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
             ownsAdmissionDomain = (options.AdmissionDomain is null) && (hostAdmissionDomain is null);
+
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
             var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
             var diagnosticBytes = (sharedDiagnostics is null)
@@ -594,7 +606,6 @@ public sealed partial class World : IDisposable
             defaultDomainOwner = ownsAdmissionDomain
                 ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
                 : null;
-
             diagnostics = sharedDiagnostics ?? new DiagnosticsService(diagnosticRecordCount);
             var executionSessionId = ExecutionSession.ExecutionSessionId;
             diagnosticsCapability = (sharedDiagnostics is null)
@@ -661,6 +672,7 @@ public sealed partial class World : IDisposable
                 systemQuarantineReservation,
                 workerPool);
             var world = new World(constructionPlan);
+            unpublishedWorld = world;
 
             try
             {
@@ -670,7 +682,7 @@ public sealed partial class World : IDisposable
 
                 for (var index = 0; index < options.Registration.Resources.Length; index++)
                 {
-                    options.Registration.Resources[index].InitializeAndValidate(world._resourceStorage[index]);
+                    options.Registration.Resources[index].InitializeAndValidate(world._resourceStorage[index], world);
                 }
 
                 world.ConfigureOwnedStateBudget();
@@ -693,6 +705,7 @@ public sealed partial class World : IDisposable
             }
             catch (Exception exception)
             {
+                constructionCleanupFailed = true;
                 world._cpuExtractionParticipant?.Dispose();
                 world._sceneParticipant?.Dispose();
                 var cleanupReport = world.ReleaseSystemInstances(
@@ -701,10 +714,10 @@ public sealed partial class World : IDisposable
 
                 if (cleanupReport.FailureCount != 0)
                 {
-                    constructionCleanupFailed = true;
                     throw world._systemCleanupPreparation.CreateCleanupException();
                 }
 
+                constructionCleanupFailed = false;
                 throw;
             }
         }
@@ -712,8 +725,32 @@ public sealed partial class World : IDisposable
         {
             if (!publicationCommitted)
             {
+                WorldAdmissionDomain? closingDomain = null;
+                WorldDomainReservation? closingReservation = null;
+                var unwindSucceeded = false;
+                var lifetimeCapacityReturned = false;
+
                 try
                 {
+                    if ((admissionDomain is { } domain)
+                        && (domainReservation is { } parent)
+                        && domain.IsEnrolledWorld(parent))
+                    {
+                        domain.BeginWorldClose(parent);
+                        closingDomain = domain;
+                        closingReservation = parent;
+
+                        if (unpublishedWorld is not null)
+                        {
+                            _ = Interlocked.Exchange(ref unpublishedWorld._disposed, 1);
+                        }
+
+                        if ((lifetimeControl is null) || !lifetimeControl.BeginRetirement())
+                        {
+                            throw new InvalidOperationException("The unpublished World could not revoke its exact original binding.");
+                        }
+                    }
+
                     if (ownsWorkerPool)
                     {
                         workerPool?.Dispose();
@@ -730,7 +767,7 @@ public sealed partial class World : IDisposable
 
                     var retainsQuarantineDomain = systemQuarantineReservation?.RetainsDomainReservation == true;
 
-                    if (lineageGrant.IsValid && (admissionDomain is not null))
+                    if ((closingDomain is null) && lineageGrant.IsValid && (admissionDomain is not null))
                     {
                         if (lineageCommitted)
                         {
@@ -744,9 +781,15 @@ public sealed partial class World : IDisposable
 
                     systemQuarantineReservation?.Release();
 
-                    if (!constructionCleanupFailed && !retainsQuarantineDomain)
+                    if ((closingDomain is not null)
+                        && (closingReservation is not null)
+                        && (lifetimeControl is not null)
+                        && !lineageCommitted)
                     {
-                        domainReservation?.Dispose();
+                        _ = closingDomain.TryReleaseUnpublishedWorldLineage(
+                            closingReservation,
+                            lifetimeControl,
+                            lineageGrant);
                     }
 
                     if (lifetimeControl is not null)
@@ -769,6 +812,10 @@ public sealed partial class World : IDisposable
                                     ?? throw new InvalidOperationException("The failed World construction has no lifetime quarantine reservation."));
                             lifetimeControl.CloseDefaultDomain();
                         }
+                        else if (closingDomain is not null)
+                        {
+                            lifetimeControl.CloseDefaultDomain();
+                        }
                         else
                         {
                             lifetimeControl.AbandonUnpublished();
@@ -785,12 +832,32 @@ public sealed partial class World : IDisposable
                     {
                         admissionDomain?.Dispose();
                     }
+
+                    unwindSucceeded = !constructionCleanupFailed && !retainsQuarantineDomain;
                 }
                 finally
                 {
-                    if (systemQuarantineReservation is not null)
+                    try
                     {
-                        WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(systemQuarantineReservation);
+                        if (systemQuarantineReservation is not null)
+                        {
+                            WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(systemQuarantineReservation);
+                        }
+
+                        lifetimeCapacityReturned = true;
+                    }
+                    finally
+                    {
+                        if ((closingDomain is not null) && (closingReservation is not null))
+                        {
+                            closingDomain.CompleteWorldClose(
+                                closingReservation,
+                                unwindSucceeded && lifetimeCapacityReturned);
+                        }
+                        else if (unwindSucceeded && lifetimeCapacityReturned)
+                        {
+                            domainReservation?.Dispose();
+                        }
                     }
                 }
             }
@@ -1279,6 +1346,10 @@ public sealed partial class World : IDisposable
 
         WorldAttachmentQuarantineReservation? attachmentQuarantineReservation = null;
         Exception? attachmentCleanupException = null;
+        var admissionDomain = _admissionDomain;
+        var domainReservation = _domainReservation;
+        var closeStarted = false;
+        var closeSucceeded = false;
 
         try
         {
@@ -1304,16 +1375,26 @@ public sealed partial class World : IDisposable
                         }
                     }
                 }
+
+                admissionDomain.BeginWorldClose(domainReservation);
+                closeStarted = true;
             }
 
             if (!_lifetimeControl.BeginRetirement())
             {
-                lock (_sceneStorageGate)
+                if (_registry.IsActive(_lifetimeControl.WorldGuidGrant))
                 {
-                    _ = Interlocked.Exchange(ref _disposed, 0);
+                    lock (_sceneStorageGate)
+                    {
+                        if (admissionDomain.TryReopenWorldClose(domainReservation))
+                        {
+                            _ = Interlocked.Exchange(ref _disposed, 0);
+                            closeStarted = false;
+                        }
+                    }
                 }
 
-                throw new InvalidOperationException("The WorldGuid binding could not be retired; the World remains active.");
+                throw new InvalidOperationException("The WorldGuid binding could not be revoked by its exact close attempt.");
             }
 
             RejectPendingOwnerControlRequestsForDisposal();
@@ -1349,76 +1430,32 @@ public sealed partial class World : IDisposable
                     (systemCleanupReport.FailureCount != 0) ? systemCleanupReport : null);
             }
 
-            var lineageRetired = false;
             var attachmentQuarantineRetainsReservation =
                 WorldAttachmentInstanceRegistry.HasRetainedDomainReservation(_domainReservation);
             var cleanupRequiresQuarantine = (systemCleanupReport.FailureCount != 0)
                 || (attachmentCleanupException is not null)
                 || _systemQuarantineReservation.RetainsDomainReservation
                 || attachmentQuarantineRetainsReservation;
-            var preserveCommittedHistory = cleanupRequiresQuarantine && _lifetimeControl.HasCommittedHistory;
+            _diagnosticsCapability.Close();
+            _identityLedger.ReleaseOwnedStorage();
+            _entitySlots.ReleaseOwnedStorage();
+            _archetypes = [];
+            _queryArchetypes = [];
+            _componentTagWorkPlan = [];
+            _componentTagWorkPlanByteReservation = 0;
+            _componentTagWorkPlanCount = 0;
+            _componentTagWorkPlanEpoch = 0;
+            _controlRecords = [];
+            _controlRecordCount = 0;
+            _controlStorageByteReservation = 0;
+            _sceneControlPayloadByteReservation = 0;
+            _identityBranches = [];
+            _identityBranchCount = 0;
+            _resourceStorage = [];
+            _archetypeCount = 0;
+            _ = _attachments.ReleaseOwnedStorage();
 
-            try
-            {
-                if (!preserveCommittedHistory)
-                {
-                    lineageRetired = _admissionDomain.TryRollbackFreshLineage(_lineageGrant)
-                        || _admissionDomain.TryReleaseFreshLineage(_lineageGrant);
-                }
-            }
-            finally
-            {
-                _diagnosticsCapability.Close();
-                _identityLedger.ReleaseOwnedStorage();
-                _entitySlots.ReleaseOwnedStorage();
-                _archetypes = [];
-                _queryArchetypes = [];
-                _componentTagWorkPlan = [];
-                _componentTagWorkPlanByteReservation = 0;
-                _componentTagWorkPlanCount = 0;
-                _componentTagWorkPlanEpoch = 0;
-                _controlRecords = [];
-                _controlRecordCount = 0;
-                _controlStorageByteReservation = 0;
-                var sceneControlPayloadBytes = _sceneControlPayloadByteReservation;
-                _sceneControlPayloadByteReservation = 0;
-                _identityBranches = [];
-                _identityBranchCount = 0;
-                _resourceStorage = [];
-                _archetypeCount = 0;
-                _ = _attachments.ReleaseOwnedStorage();
-
-                if (sceneControlPayloadBytes != 0)
-                {
-                    _domainReservation.ReleaseAdditional(sceneControlPayloadBytes);
-                }
-
-                if (lineageRetired
-                    && !_systemQuarantineReservation.RetainsDomainReservation
-                    && !attachmentQuarantineRetainsReservation)
-                {
-                    _domainReservation.Dispose();
-                }
-            }
-
-            var lifetimeRetirementFailure = false;
-
-            if (lineageRetired
-                && (systemCleanupReport.FailureCount == 0)
-                && (attachmentCleanupException is null)
-                && !_systemQuarantineReservation.RetainsDomainReservation
-                && !attachmentQuarantineRetainsReservation
-                && !_lifetimeControl.CompleteRetirement())
-            {
-                lifetimeRetirementFailure = true;
-            }
-
-            if (!lineageRetired
-                || lifetimeRetirementFailure
-                || (systemCleanupReport.FailureCount != 0)
-                || (attachmentCleanupException is not null)
-                || _systemQuarantineReservation.RetainsDomainReservation
-                || attachmentQuarantineRetainsReservation)
+            if (cleanupRequiresQuarantine)
             {
                 if (!_lifetimeControl.QuarantineAfterCleanupFailure())
                 {
@@ -1430,28 +1467,6 @@ public sealed partial class World : IDisposable
 
             _lifetimeControl.CloseDefaultDomain();
 
-            if (!cleanupRequiresQuarantine && (!lineageRetired || lifetimeRetirementFailure))
-            {
-                var lifetimeFailure = new InvalidOperationException(
-                    !lineageRetired
-                        ? "The World replay-lineage root could not be retired; the World is already closed."
-                        : "The WorldGuid lifetime could not be retired after cleanup.");
-                var cleanupFailures = new List<Exception>(4) { lifetimeFailure };
-
-                if (systemCleanupReport.FailureCount != 0)
-                {
-                    var cleanupException = _systemCleanupPreparation.CreateCleanupException();
-                    cleanupFailures.Add(cleanupException);
-                }
-
-                if (attachmentCleanupException is not null)
-                {
-                    cleanupFailures.Add(attachmentCleanupException);
-                }
-
-                throw (cleanupFailures.Count == 1) ? lifetimeFailure : new AggregateException(cleanupFailures);
-            }
-
             if (attachmentCleanupException is not null)
             {
                 throw attachmentCleanupException;
@@ -1461,32 +1476,55 @@ public sealed partial class World : IDisposable
             {
                 throw _systemCleanupPreparation.CreateCleanupException();
             }
+
+            closeSucceeded = !cleanupRequiresQuarantine;
         }
         finally
         {
             var restoreLifetimeLease = _restoreLifetimeLease;
-            _restoreLifetimeLease = null;
+            var restoreReturned = false;
+            var systemsReturned = false;
+            var capacityReturned = false;
+            var attachmentsReturned = false;
 
             try
             {
                 restoreLifetimeLease?.Dispose();
+                _restoreLifetimeLease = null;
+                restoreReturned = true;
             }
             finally
             {
                 try
                 {
                     _systemQuarantineReservation.Release();
+                    systemsReturned = true;
                 }
                 finally
                 {
                     try
                     {
                         WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(_systemQuarantineReservation);
+                        capacityReturned = true;
                     }
                     finally
                     {
-                        attachmentQuarantineReservation?.Release();
-                        _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+                        try
+                        {
+                            attachmentQuarantineReservation?.Release();
+                            attachmentsReturned = true;
+                        }
+                        finally
+                        {
+                            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+
+                            if (closeStarted)
+                            {
+                                admissionDomain.CompleteWorldClose(
+                                    domainReservation,
+                                    closeSucceeded && restoreReturned && systemsReturned && capacityReturned && attachmentsReturned);
+                            }
+                        }
                     }
                 }
             }
@@ -1671,6 +1709,15 @@ public sealed partial class World : IDisposable
         return TryGetEntity(identity.EntityId, out entity);
     }
 
+    internal WorldGuidUse AcquireGuidUse(long workspaceLimit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(workspaceLimit);
+        ThrowIfAttachmentCallbackActive();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfFaulted();
+        return _lifetimeControl.AcquireUse(workspaceLimit);
+    }
+
     internal void ApplyHierarchyParentChange(
         IWorldSceneParticipant participant,
         Entity child,
@@ -1780,31 +1827,8 @@ public sealed partial class World : IDisposable
 
     internal long GetWorldOwnedStateBytes()
     {
-        var bytes = checked(
-            _identityLedger.OwnedByteReservation
-            + _entitySlots.OwnedByteReservation
-            + _attachments.OwnedByteReservation
-            + _resourceStorageByteReservation
-            + _systemInstanceStorageByteReservation
-            + _systemInvocationStorageByteReservation
-            + _sceneSupportByteReservation
-            + Interlocked.Read(ref _scenePlanStorageByteReservation)
-            + _componentTagWorkPlanByteReservation
-            + _controlStorageByteReservation
-            + _sceneControlPayloadByteReservation
-            + _cpuExtractionSupportByteReservation
-            + _subscriptionStorageByteReservation
-            + _ownerCommandPreparationByteReservation
-            + _ownerControlQueueByteReservation);
-
-        for (var index = 0; index < _archetypeCount; index++)
-        {
-            var archetype = _archetypes[index]
-                ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
-            bytes = checked(bytes + archetype.MetadataByteReservation + archetype.Storage.OwnedByteReservation);
-        }
-
-        return bytes;
+        var (constructionBytes, storageBytes) = _admissionDomain.GetSceneReservationBytes(_domainReservation);
+        return checked(GetOtherWorldOwnedStateBytes() + constructionBytes + storageBytes);
     }
 
     internal bool HasComponentFromScene(Entity entity, ContentSchemaReference schema)
@@ -1823,32 +1847,6 @@ public sealed partial class World : IDisposable
             && ReferenceEquals(_workerPool, workerPool)
             && ReferenceEquals(_diagnosticsCapability.Diagnostics, diagnostics)
             && ReferenceEquals(_admissionDomain, admissionDomain);
-
-    internal void ReleaseSceneStorageReservation(long bytes)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
-
-        lock (_sceneStorageGate)
-        {
-            var currentReservation = Interlocked.Read(ref _scenePlanStorageByteReservation);
-
-            if (bytes > currentReservation)
-            {
-                throw new InvalidOperationException("The released Scene storage reservation exceeds its live World reservation.");
-            }
-
-            try
-            {
-                _domainReservation.ReleaseAdditional(bytes);
-            }
-            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
-            {
-                return;
-            }
-
-            _ = Interlocked.Exchange(ref _scenePlanStorageByteReservation, currentReservation - bytes);
-        }
-    }
 
     internal bool TryGetEntityByIdentityOrdinal(uint ordinal, out Entity entity)
     {
@@ -1967,72 +1965,21 @@ public sealed partial class World : IDisposable
     internal WorldSceneStorageReservation? TryReserveRestoredSceneStorage(
         IWorldSceneParticipant participant,
         long bytes)
-    {
-        ArgumentNullException.ThrowIfNull(participant);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
-
-        if (!_isRestoreCandidate || (bytes > _restoreSceneHierarchyWorkspaceByteReservation))
-        {
-            return TryReserveSceneStorage(participant, bytes);
-        }
-
-        lock (_sceneStorageGate)
-        {
-            if (Volatile.Read(ref _disposed) != 0)
-            {
-                return null;
-            }
-
-            if (!ReferenceEquals(_sceneParticipant, participant))
-            {
-                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
-            }
-
-            var reservation = new WorldSceneStorageReservation(this, bytes);
-            _restoreSceneHierarchyWorkspaceByteReservation =
-                checked(_restoreSceneHierarchyWorkspaceByteReservation - bytes);
-            return reservation;
-        }
-    }
+        => TryReserveSceneReservation(participant, bytes, null, workspace: false, restoredCapacity: _isRestoreCandidate);
 
     internal WorldSceneStorageReservation? TryReserveSceneStorage(
         IWorldSceneParticipant participant,
+        long bytes,
+        WorldGuidUseControl? useControl = null)
+        => TryReserveSceneReservation(participant, bytes, useControl, workspace: false, restoredCapacity: false);
+
+    internal WorldSceneStorageReservation? TryReserveSceneWorkspace(
+        IWorldSceneParticipant participant,
+        WorldGuidUseControl useControl,
         long bytes)
     {
-        ArgumentNullException.ThrowIfNull(participant);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
-
-        lock (_sceneStorageGate)
-        {
-            if (Volatile.Read(ref _disposed) != 0)
-            {
-                return null;
-            }
-
-            if (!ReferenceEquals(_sceneParticipant, participant))
-            {
-                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
-            }
-
-            var nextReservation = checked(Interlocked.Read(ref _scenePlanStorageByteReservation) + bytes);
-
-            if (!_domainReservation.TryReserveAdditional(bytes))
-            {
-                return null;
-            }
-
-            try
-            {
-                var reservation = new WorldSceneStorageReservation(this, bytes);
-                _ = Interlocked.Exchange(ref _scenePlanStorageByteReservation, nextReservation);
-                return reservation;
-            }
-            catch
-            {
-                _domainReservation.ReleaseAdditional(bytes);
-                throw;
-            }
-        }
+        ArgumentNullException.ThrowIfNull(useControl);
+        return TryReserveSceneReservation(participant, bytes, useControl, workspace: true, restoredCapacity: false);
     }
 
     internal void ValidateEntityReference(Entity target, Entity? excludedEntity, string? parameterName)
@@ -2102,14 +2049,10 @@ public sealed partial class World : IDisposable
     }
 
     private void ConfigureOwnedStateBudget()
-    {
-        var currentAdditionalBytes = checked(_domainReservation.Bytes - _domainReservation.InitialBytes);
-        var remainingOwnedStateBytes = Math.Max(
-            0L,
-            _maximumOwnedStateBytes - GetWorldOwnedStateBytes());
-        _domainReservation.SetMaximumAdditionalBytes(
-            checked(currentAdditionalBytes + remainingOwnedStateBytes));
-    }
+        => _admissionDomain.ConfigureWorldOwnedStateBudget(
+            _domainReservation,
+            _maximumOwnedStateBytes,
+            GetOtherWorldOwnedStateBytes());
 
     private Entity CreateEntityHandle(uint slotIndex, uint generation)
         => new(_ownerId, slotIndex, generation);
@@ -2273,6 +2216,35 @@ public sealed partial class World : IDisposable
         return archetype;
     }
 
+    private long GetOtherWorldOwnedStateBytes()
+    {
+        var bytes = checked(
+            _identityLedger.OwnedByteReservation
+            + _entitySlots.OwnedByteReservation
+            + _attachments.OwnedByteReservation
+            + _resourceStorageByteReservation
+            + Interlocked.Read(ref _resourceOperationByteReservation)
+            + _systemInstanceStorageByteReservation
+            + _systemInvocationStorageByteReservation
+            + _sceneSupportByteReservation
+            + _componentTagWorkPlanByteReservation
+            + _controlStorageByteReservation
+            + _sceneControlPayloadByteReservation
+            + _cpuExtractionSupportByteReservation
+            + _subscriptionStorageByteReservation
+            + _ownerCommandPreparationByteReservation
+            + _ownerControlQueueByteReservation);
+
+        for (var index = 0; index < _archetypeCount; index++)
+        {
+            var archetype = _archetypes[index]
+                ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
+            bytes = checked(bytes + archetype.MetadataByteReservation + archetype.Storage.OwnedByteReservation);
+        }
+
+        return bytes;
+    }
+
     private void InitializeSceneSupport(WorldOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -2426,6 +2398,58 @@ public sealed partial class World : IDisposable
                 _lastFault is { } fault
                     ? $"The World is faulted: {fault.Code}."
                     : "The World is faulted and cannot be used.");
+        }
+    }
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "Installation transfers the receiver to its caller; an uninstalled receiver is ended atomically with its exact original construction claim, not through its installed-only Dispose path.")]
+    private WorldSceneStorageReservation? TryReserveSceneReservation(
+        IWorldSceneParticipant participant,
+        long dataBytes,
+        WorldGuidUseControl? useControl,
+        bool workspace,
+        bool restoredCapacity)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        var bytes = WorldSceneStorageReservation.GetRequiredBytes(dataBytes);
+        var domain = _admissionDomain;
+        var parent = _domainReservation;
+
+        lock (_sceneStorageGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return null;
+            }
+
+            if (!ReferenceEquals(_sceneParticipant, participant))
+            {
+                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
+            }
+
+            if (!domain.TryClaimSceneReservationConstruction(parent, useControl, bytes, restoredCapacity))
+            {
+                return null;
+            }
+        }
+
+        WorldSceneStorageReservation? reservation = null;
+        var installed = false;
+
+        try
+        {
+            reservation = new WorldSceneStorageReservation(parent, bytes, useControl);
+            installed = domain.TryCompleteSceneReservationConstruction(parent, reservation, workspace);
+            return installed ? reservation : null;
+        }
+        finally
+        {
+            if (!installed)
+            {
+                domain.CancelSceneReservationConstruction(parent, reservation, useControl, bytes, restoredCapacity);
+            }
         }
     }
 

@@ -9,6 +9,13 @@ public sealed partial class World
 {
     private long _resourceOperationByteReservation;
 
+    internal void CompleteOperationReturnPart()
+    {
+        var domain = _admissionDomain;
+        var parent = _domainReservation;
+        domain.CompleteWorldReturnPart(parent);
+    }
+
     internal void ReleasePreparedRestoreSourceBytes(long bytes)
     {
         lock (_sceneStorageGate)
@@ -57,17 +64,24 @@ public sealed partial class World
                 throw new InvalidOperationException("The complete resource operation does not fit its resource, World, or domain byte limits.");
             }
 
-            try
-            {
-                var reservation = new WorldResourceOperationReservation(this, bytes);
-                _resourceOperationByteReservation = resourceBytes;
-                return reservation;
-            }
-            catch
+            if (!_admissionDomain.TryRetainWorldReturnPart(_domainReservation))
             {
                 _domainReservation.ReleaseAdditional(bytes);
-                throw;
+                throw new InvalidOperationException("The resource operation cannot retain its original World return part.");
             }
+
+            _resourceOperationByteReservation = resourceBytes;
+        }
+
+        try
+        {
+            return new WorldResourceOperationReservation(this, bytes);
+        }
+        catch
+        {
+            ReleaseResourceOperationBytes(bytes);
+            CompleteOperationReturnPart();
+            throw;
         }
     }
 
@@ -90,9 +104,23 @@ public sealed partial class World
                 throw new InvalidOperationException("The restored source graph does not fit the candidate's existing World/resource byte limits.");
             }
 
-            var reservation = new WorldResourceOperationReservation(this, bytes, ownsDomainCredit: false);
+            if (!_admissionDomain.TryRetainWorldReturnPart(_domainReservation))
+            {
+                throw new InvalidOperationException("The prepared source cannot retain its original World return part.");
+            }
+
             _resourceOperationByteReservation = checked(_resourceOperationByteReservation + bytes);
-            return reservation;
+        }
+
+        try
+        {
+            return new WorldResourceOperationReservation(this, bytes, ownsDomainCredit: false);
+        }
+        catch
+        {
+            ReleasePreparedRestoreSourceBytes(bytes);
+            CompleteOperationReturnPart();
+            throw;
         }
     }
 

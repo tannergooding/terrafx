@@ -52,6 +52,22 @@ public sealed class WorldRegistrationBuilder
 
         foreach (var resource in _resources)
         {
+            if (resource.IsAggregate)
+            {
+                foreach (var system in _systems)
+                {
+                    foreach (var access in system.Description.Access)
+                    {
+                        if ((access.Kind == SystemResourceKind.Resource)
+                            && (access.ResourceId == resource.ResourceId)
+                            && (access.Mode != SystemAccessMode.Read))
+                        {
+                            throw new InvalidOperationException("Engine-owned partition-record resources are read-only to application systems.");
+                        }
+                    }
+                }
+            }
+
             resources.Add(resource.Description);
         }
 
@@ -269,6 +285,11 @@ public sealed class WorldRegistrationBuilder
         }
 
         var descriptor = factoryBinding.Descriptor;
+
+        if (factoryBinding.Control.Dispatch.IsAggregate && description.AllowParallelAccess)
+        {
+            throw new ArgumentException("Engine-owned partition-record resources cannot select parallel access.", nameof(description));
+        }
 
         if ((descriptor.Schema.Scope != ContentSchemaScope.Content)
             || !_schemas.TryGetSchema(descriptor.Schema, out var metadata)
