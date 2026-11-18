@@ -1319,6 +1319,128 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
+    [Test]
+    public async Task GraphCopyPassResourceUsageCountsDistinctImports()
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+
+        try
+        {
+            using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            using var source = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+            using var destination = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+            var range = new GraphBufferRange(0, source.ByteLength);
+            _ = await device.UploadBufferAsync(source, 0, [0, 1, 2, 3, 4, 5, 6, 7])
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var (sourceState, sourceContentsValid, _, _) = source.ResourceOwner.CaptureGraphImportState(range);
+            Assert.That(sourceContentsValid, Is.True);
+            var passId = new RenderPassId(19, 0);
+            var sourceVersion = new GraphBufferVersion(device.DeviceEpoch, 50, 0, source.Description, range);
+            var destinationVersion = new GraphBufferVersion(device.DeviceEpoch, 60, 0, destination.Description, range);
+            var sourceAccess = new GraphResourceAccess(
+                passId,
+                sourceVersion,
+                range,
+                GraphBufferUsage.CopySource,
+                isWrite: false);
+            var destinationAccess = new GraphResourceAccess(
+                passId,
+                destinationVersion,
+                range,
+                GraphBufferUsage.CopyDestination,
+                isWrite: true,
+                contentsValid: false);
+            var accesses = ImmutableArray.Create(sourceAccess, sourceAccess, destinationAccess, destinationAccess);
+
+            void RecordCopy(scoped ref CommandRecorder recorder)
+            {
+                recorder.CopyBuffer(sourceVersion, 0, destinationVersion, 0, source.ByteLength);
+            }
+
+            var recorded = await device.RecordPassAsync(
+                    passId,
+                    CommandRecorderPassKind.Copy,
+                    accesses,
+                    [],
+                    depthTargetFormat: null,
+                    RecordCopy)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            GraphicsGraphSubmission? submission = null;
+
+            try
+            {
+                var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+                var targetVersion = new GraphTextureVersion(
+                    device.DeviceEpoch,
+                    1,
+                    0,
+                    target.Description,
+                    targetRange);
+                var (targetState, targetContentsValid, _, _) = target.ResourceOwner.CaptureGraphImportState(targetRange);
+                var workspaceCharge = GraphicsGraphSubmission.CalculatePreflightWorkspaceBackingByteCharge(
+                    bufferImportCapacity: 2,
+                    textureImportCapacity: 1,
+                    orderedPassCapacity: 1,
+                    bufferAliasingCapacity: 0,
+                    textureAliasingCapacity: 0,
+                    bufferResourceUsageCapacity: 2,
+                    textureResourceUsageCapacity: 1,
+                    passValidationCapacity: 1);
+                submission = new GraphicsGraphSubmission(
+                    device.DeviceEpoch,
+                    target,
+                    surfaceTarget: null,
+                    targetVersion,
+                    surfaceEpoch: 0,
+                    swapchainEpoch: 0,
+                    [passId],
+                    [new GraphicsGraphSubmissionPass(passId, CommandRecorderPassKind.Copy, null, recorded, [])],
+                    [],
+                    [],
+                    [],
+                    accesses,
+                    [
+                        new GraphBufferImportRecord(
+                            source,
+                            sourceVersion,
+                            new GraphImportOptions(sourceState, sourceContentsValid, GraphImportCompletionPolicy.RequireIdle)),
+                        new GraphBufferImportRecord(
+                            destination,
+                            destinationVersion,
+                            new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle)),
+                    ],
+                    [
+                        new GraphTextureImportRecord(
+                            target,
+                            targetVersion,
+                            new GraphImportOptions(targetState, targetContentsValid, GraphImportCompletionPolicy.RequireIdle)),
+                    ],
+                    [recorded],
+                    maximumPreflightWorkspaceBytes: workspaceCharge);
+
+                var exception = Assert.Throws<NotSupportedException>(submission.ValidateNativeRasterSubmission);
+                Assert.That(exception?.Message, Is.EqualTo("Native graph submission requires a graph-output color attachment."));
+            }
+            finally
+            {
+                if (submission is not null)
+                {
+                    submission.DisposeRecordedPassCommandLists();
+                }
+                else
+                {
+                    recorded.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     [TestCase(1)]
     [TestCase(2)]
     [TestCase(3)]

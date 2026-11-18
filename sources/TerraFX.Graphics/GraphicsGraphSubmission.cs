@@ -16,10 +16,18 @@ internal sealed class GraphicsGraphSubmission
     private const byte BufferCopyDestinationResourceFlag = 1 << 0;
     private const byte BufferCopySourcePassFlag = 1 << 1;
     private const byte BufferCopySourceResourceFlag = 1 << 1;
+    private const byte BufferIndexResourceFlag = 1 << 3;
+    private const byte BufferStorageResourceFlag = 1 << 5;
+    private const byte BufferUniformResourceFlag = 1 << 4;
+    private const byte BufferVertexResourceFlag = 1 << 2;
+    private const byte TextureColorResourceFlag = 1 << 0;
     private const byte TextureCopyDestinationPassFlag = 1 << 2;
     private const byte TextureCopyDestinationResourceFlag = 1 << 2;
     private const byte TextureCopySourcePassFlag = 1 << 3;
     private const byte TextureCopySourceResourceFlag = 1 << 3;
+    private const byte TextureDepthResourceFlag = 1 << 1;
+    private const byte TextureSampledResourceFlag = 1 << 4;
+    private const byte TextureStorageResourceFlag = 1 << 5;
 
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
@@ -1752,19 +1760,19 @@ internal sealed class GraphicsGraphSubmission
         var copySourceResourcesUsedCount = 0;
         var copyDestinationResourcesUsedCount = 0;
         var vertexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var vertexBufferResourcesUsed = new HashSet<ulong>();
+        var vertexBufferResourcesUsedCount = 0;
         var indexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var indexBufferResourcesUsed = new HashSet<ulong>();
+        var indexBufferResourcesUsedCount = 0;
         var uniformBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var uniformBufferResourcesUsed = new HashSet<ulong>();
+        var uniformBufferResourcesUsedCount = 0;
         var sampledTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var sampledTextureResourcesUsed = new HashSet<ulong>();
-        var colorTextureResourcesUsed = new HashSet<ulong>();
-        var depthTextureResourcesUsed = new HashSet<ulong>();
+        var sampledTextureResourcesUsedCount = 0;
+        var colorTextureResourcesUsedCount = 0;
+        var depthTextureResourcesUsedCount = 0;
         var storageBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var storageBufferResourcesUsed = new HashSet<ulong>();
+        var storageBufferResourcesUsedCount = 0;
         var storageTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var storageTextureResourcesUsed = new HashSet<ulong>();
+        var storageTextureResourcesUsedCount = 0;
         var colorAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var depthAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var copySourceTextureResourcesUsedCount = 0;
@@ -2607,7 +2615,11 @@ internal sealed class GraphicsGraphSubmission
 
                         if (currentVertexBufferImport is not null)
                         {
-                            _ = vertexBufferResourcesUsed.Add(currentVertexBufferImport.Version.ResourceId);
+                            RecordBufferResourceUsage(
+                                bufferResourceUsageFlags,
+                                currentVertexBufferImport.Version.ResourceId,
+                                BufferVertexResourceFlag,
+                                ref vertexBufferResourcesUsedCount);
                         }
 
                         hasDraw |= (command.Draw.VertexCount > 0) && (command.Draw.InstanceCount > 0);
@@ -2644,11 +2656,19 @@ internal sealed class GraphicsGraphSubmission
                                 throw new InvalidOperationException("An indexed graph draw must bind a vertex buffer exactly when its pipeline has vertex inputs.");
                             }
 
-                            _ = indexBufferResourcesUsed.Add(currentIndexBufferImport.Version.ResourceId);
+                            RecordBufferResourceUsage(
+                                bufferResourceUsageFlags,
+                                currentIndexBufferImport.Version.ResourceId,
+                                BufferIndexResourceFlag,
+                                ref indexBufferResourcesUsedCount);
 
                             if (currentVertexBufferImport is not null)
                             {
-                                _ = vertexBufferResourcesUsed.Add(currentVertexBufferImport.Version.ResourceId);
+                                RecordBufferResourceUsage(
+                                    bufferResourceUsageFlags,
+                                    currentVertexBufferImport.Version.ResourceId,
+                                    BufferVertexResourceFlag,
+                                    ref vertexBufferResourcesUsedCount);
                             }
                         }
 
@@ -2936,7 +2956,11 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 hasUniformBufferAccess = true;
-                _ = uniformBufferResourcesUsed.Add(access.ResourceId);
+                RecordBufferResourceUsage(
+                    bufferResourceUsageFlags,
+                    access.ResourceId,
+                    BufferUniformResourceFlag,
+                    ref uniformBufferResourcesUsedCount);
                 continue;
             }
 
@@ -2951,7 +2975,11 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 hasStorageBufferAccess = true;
-                _ = storageBufferResourcesUsed.Add(access.ResourceId);
+                RecordBufferResourceUsage(
+                    bufferResourceUsageFlags,
+                    access.ResourceId,
+                    BufferStorageResourceFlag,
+                    ref storageBufferResourcesUsedCount);
                 continue;
             }
 
@@ -2966,7 +2994,11 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 hasStorageBufferAccess = true;
-                _ = storageBufferResourcesUsed.Add(access.ResourceId);
+                RecordBufferResourceUsage(
+                    bufferResourceUsageFlags,
+                    access.ResourceId,
+                    BufferStorageResourceFlag,
+                    ref storageBufferResourcesUsedCount);
                 continue;
             }
 
@@ -2976,7 +3008,11 @@ internal sealed class GraphicsGraphSubmission
             {
                 if (access.IsWrite && colorTextureImports.ContainsKey(access.ResourceId))
                 {
-                    _ = colorTextureResourcesUsed.Add(access.ResourceId);
+                    RecordTextureResourceUsage(
+                        textureResourceUsageFlags,
+                        access.ResourceId,
+                        TextureColorResourceFlag,
+                        ref colorTextureResourcesUsedCount);
                 }
 
                 continue;
@@ -2993,7 +3029,11 @@ internal sealed class GraphicsGraphSubmission
 
                 if (access.IsWrite)
                 {
-                    _ = depthTextureResourcesUsed.Add(access.ResourceId);
+                    RecordTextureResourceUsage(
+                        textureResourceUsageFlags,
+                        access.ResourceId,
+                        TextureDepthResourceFlag,
+                        ref depthTextureResourcesUsedCount);
                 }
 
                 continue;
@@ -3056,7 +3096,11 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 hasSampledImageAccess = true;
-                _ = sampledTextureResourcesUsed.Add(access.ResourceId);
+                RecordTextureResourceUsage(
+                    textureResourceUsageFlags,
+                    access.ResourceId,
+                    TextureSampledResourceFlag,
+                    ref sampledTextureResourcesUsedCount);
                 continue;
             }
 
@@ -3071,7 +3115,11 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 hasStorageImageAccess = true;
-                _ = storageTextureResourcesUsed.Add(access.ResourceId);
+                RecordTextureResourceUsage(
+                    textureResourceUsageFlags,
+                    access.ResourceId,
+                    TextureStorageResourceFlag,
+                    ref storageTextureResourcesUsedCount);
                 continue;
             }
 
@@ -3321,7 +3369,7 @@ internal sealed class GraphicsGraphSubmission
             && (!hasUniformBufferPipeline
                 || !hasUniformBufferBinding
                 || !hasUniformBufferAccess
-                || (uniformBufferResourcesUsed.Count != uniformBufferImports.Count)))
+                || (uniformBufferResourcesUsedCount != uniformBufferImports.Count)))
         {
             throw new NotSupportedException("Every imported uniform buffer must be reflected, bound, and declared by a graph pass.");
         }
@@ -3329,14 +3377,14 @@ internal sealed class GraphicsGraphSubmission
         if ((vertexBufferImports.Count != 0)
             && (!hasVertexBufferPipeline
                 || !hasVertexBufferBinding
-                || (vertexBufferResourcesUsed.Count != vertexBufferImports.Count)))
+                || (vertexBufferResourcesUsedCount != vertexBufferImports.Count)))
         {
             throw new NotSupportedException("Every imported vertex buffer must be bound by a vertex-input graphics pipeline and used by a draw.");
         }
 
         if ((indexBufferImports.Count != 0)
             && (!hasIndexBufferBinding
-                || (indexBufferResourcesUsed.Count != indexBufferImports.Count)))
+                || (indexBufferResourcesUsedCount != indexBufferImports.Count)))
         {
             throw new NotSupportedException("Every imported index buffer must be bound and used by an indexed draw.");
         }
@@ -3362,12 +3410,12 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported copy-destination texture must be written by a graph copy command.");
         }
 
-        if (depthTextureResourcesUsed.Count != depthTextureImports.Count)
+        if (depthTextureResourcesUsedCount != depthTextureImports.Count)
         {
             throw new NotSupportedException("Every imported depth attachment must be written by a graph pass.");
         }
 
-        if (colorTextureResourcesUsed.Count != colorTextureImports.Count)
+        if (colorTextureResourcesUsedCount != colorTextureImports.Count)
         {
             throw new NotSupportedException("Every imported color attachment must be written by a graph pass.");
         }
@@ -3378,7 +3426,7 @@ internal sealed class GraphicsGraphSubmission
                 || !hasSampledImageAccess
                 || !hasSamplerPipeline
                 || !hasSamplerBinding
-                || (sampledTextureResourcesUsed.Count != sampledTextureImports.Count)))
+                || (sampledTextureResourcesUsedCount != sampledTextureImports.Count)))
         {
             throw new NotSupportedException("Every imported sampled image must be reflected, bound with its sampler, and declared by a graph pass.");
         }
@@ -3387,7 +3435,7 @@ internal sealed class GraphicsGraphSubmission
             && (!hasStorageBufferPipeline
                 || !hasStorageBufferBinding
                 || !hasStorageBufferAccess
-                || (storageBufferResourcesUsed.Count != storageBufferImports.Count)))
+                || (storageBufferResourcesUsedCount != storageBufferImports.Count)))
         {
             throw new NotSupportedException("Every imported storage buffer must be reflected, bound, and declared by a graph pass.");
         }
@@ -3396,7 +3444,7 @@ internal sealed class GraphicsGraphSubmission
             && (!hasStorageImagePipeline
                 || !hasStorageImageBinding
                 || !hasStorageImageAccess
-                || (storageTextureResourcesUsed.Count != storageTextureImports.Count)))
+                || (storageTextureResourcesUsedCount != storageTextureImports.Count)))
         {
             throw new NotSupportedException("Every imported storage image must be reflected, bound, and declared by a graph pass.");
         }
