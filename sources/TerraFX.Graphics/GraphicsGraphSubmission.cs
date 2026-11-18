@@ -845,6 +845,28 @@ internal sealed class GraphicsGraphSubmission
         return false;
     }
 
+    private static bool HasEarlierPipelineBinding(
+        PipelineBindingLayout bindingLayout,
+        ShaderResourceSignature resource)
+    {
+        foreach (var candidate in bindingLayout.EnumerateDistinctResources())
+        {
+            if (candidate == resource)
+            {
+                return false;
+            }
+
+            if ((candidate.Kind == resource.Kind)
+                && (candidate.Group == resource.Group)
+                && (candidate.Binding == resource.Binding))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool HasPassAttachment(
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
         int[] passValidationIndex,
@@ -1108,6 +1130,28 @@ internal sealed class GraphicsGraphSubmission
             (indices[root], indices[child]) = (indices[child], indices[root]);
             root = child;
         }
+    }
+
+    private static bool TryGetPipelineResource(
+        PipelineBindingLayout bindingLayout,
+        ShaderResourceKind kind,
+        ShaderBindingGroup group,
+        int binding,
+        out ShaderResourceSignature resource)
+    {
+        foreach (var candidate in bindingLayout.EnumerateDistinctResources())
+        {
+            if ((candidate.Kind == kind)
+                && (candidate.Group == group)
+                && (candidate.Binding == binding))
+            {
+                resource = candidate;
+                return true;
+            }
+        }
+
+        resource = default;
+        return false;
     }
 
     [SuppressMessage(
@@ -2315,19 +2359,15 @@ internal sealed class GraphicsGraphSubmission
             GraphBufferImportRecord? currentIndexBufferImport = null;
             var currentPipelineRequiresVertexBuffer = false;
             var currentPipelineRequiresUniformBuffer = false;
-            var currentPipelineUniformBufferBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+            var currentPipelineUniformBufferBindingCount = 0;
             var currentPipelineRequiresSampledImage = false;
             var currentPipelineRequiresSampler = false;
-            var currentPipelineSampledImageBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
-            var currentPipelineSampledImageArraying = new Dictionary<(ShaderBindingGroup Group, int Binding), bool>();
-            var currentPipelineSamplerBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+            var currentPipelineSampledImageBindingCount = 0;
+            var currentPipelineSamplerBindingCount = 0;
             var currentPipelineRequiresStorageBuffer = false;
-            var currentPipelineStorageBufferBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
-            var currentPipelineStorageBufferWriteOnlyBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+            var currentPipelineStorageBufferBindingCount = 0;
             var currentPipelineRequiresStorageImage = false;
-            var currentPipelineStorageImageBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
-            var currentPipelineStorageImageFormats = new Dictionary<(ShaderBindingGroup Group, int Binding), ShaderStorageImageFormat>();
-            var currentPipelineStorageImageDimensions = new Dictionary<(ShaderBindingGroup Group, int Binding), TextureDimension>();
+            var currentPipelineStorageImageBindingCount = 0;
             var currentPipelineBindingsSet = false;
             var hasDraw = false;
             var hasDispatch = false;
@@ -2372,15 +2412,11 @@ internal sealed class GraphicsGraphSubmission
                         currentPipelineRequiresVertexBuffer = !isComputePass && (layout.VertexStride != 0);
                         currentVertexBufferImport = null;
                         currentIndexBufferImport = null;
-                        currentPipelineUniformBufferBindings.Clear();
-                        currentPipelineStorageBufferBindings.Clear();
-                        currentPipelineStorageBufferWriteOnlyBindings.Clear();
-                        currentPipelineSampledImageBindings.Clear();
-                        currentPipelineSampledImageArraying.Clear();
-                        currentPipelineSamplerBindings.Clear();
-                        currentPipelineStorageImageBindings.Clear();
-                        currentPipelineStorageImageFormats.Clear();
-                        currentPipelineStorageImageDimensions.Clear();
+                        currentPipelineUniformBufferBindingCount = 0;
+                        currentPipelineSampledImageBindingCount = 0;
+                        currentPipelineSamplerBindingCount = 0;
+                        currentPipelineStorageBufferBindingCount = 0;
+                        currentPipelineStorageImageBindingCount = 0;
 
                         foreach (var reflection in layout.ShaderReflections)
                         {
@@ -2427,10 +2463,12 @@ internal sealed class GraphicsGraphSubmission
                                 {
                                     currentPipelineRequiresUniformBuffer = true;
 
-                                    if (!currentPipelineUniformBufferBindings.Add((resource.Group, resource.Binding)))
+                                    if (HasEarlierPipelineBinding(layout, resource))
                                     {
                                         throw new NotSupportedException("A graphics pipeline cannot declare conflicting uniform-buffer signatures at one binding.");
                                     }
+
+                                    currentPipelineUniformBufferBindingCount++;
 
                                     break;
                                 }
@@ -2439,13 +2477,12 @@ internal sealed class GraphicsGraphSubmission
                                 {
                                     currentPipelineRequiresSampledImage = true;
 
-                                    if (!currentPipelineSampledImageBindings.Add((resource.Group, resource.Binding))
-                                        || !currentPipelineSampledImageArraying.TryAdd(
-                                            (resource.Group, resource.Binding),
-                                            resource.ImageArrayed))
+                                    if (HasEarlierPipelineBinding(layout, resource))
                                     {
                                         throw new NotSupportedException("A graphics pipeline cannot declare conflicting sampled-image signatures at one binding.");
                                     }
+
+                                    currentPipelineSampledImageBindingCount++;
 
                                     break;
                                 }
@@ -2454,10 +2491,12 @@ internal sealed class GraphicsGraphSubmission
                                 {
                                     currentPipelineRequiresSampler = true;
 
-                                    if (!currentPipelineSamplerBindings.Add((resource.Group, resource.Binding)))
+                                    if (HasEarlierPipelineBinding(layout, resource))
                                     {
                                         throw new NotSupportedException("A graphics pipeline cannot declare conflicting sampler signatures at one binding.");
                                     }
+
+                                    currentPipelineSamplerBindingCount++;
 
                                     break;
                                 }
@@ -2466,15 +2505,12 @@ internal sealed class GraphicsGraphSubmission
                                 {
                                     currentPipelineRequiresStorageBuffer = true;
 
-                                    if (!currentPipelineStorageBufferBindings.Add((resource.Group, resource.Binding)))
+                                    if (HasEarlierPipelineBinding(layout, resource))
                                     {
                                         throw new NotSupportedException("A pipeline cannot declare conflicting storage-buffer signatures at one group binding.");
                                     }
 
-                                    if (resource.Access == ShaderResourceAccess.Write)
-                                    {
-                                        _ = currentPipelineStorageBufferWriteOnlyBindings.Add((resource.Group, resource.Binding));
-                                    }
+                                    currentPipelineStorageBufferBindingCount++;
 
                                     break;
                                 }
@@ -2488,28 +2524,20 @@ internal sealed class GraphicsGraphSubmission
 
                                     currentPipelineRequiresStorageImage = true;
 
-                                    if (!currentPipelineStorageImageBindings.Add((resource.Group, resource.Binding)))
+                                    if (HasEarlierPipelineBinding(layout, resource))
                                     {
                                         throw new NotSupportedException("A pipeline cannot declare conflicting storage-image signatures at one group binding.");
                                     }
 
-                                    if (!currentPipelineStorageImageFormats.TryAdd(
-                                            (resource.Group, resource.Binding),
-                                            resource.StorageImageFormat)
-                                        || !currentPipelineStorageImageDimensions.TryAdd(
-                                            (resource.Group, resource.Binding),
-                                            resource.ImageDimension))
-                                    {
-                                        throw new NotSupportedException("A compute pipeline cannot declare conflicting storage-image signatures at one binding.");
-                                    }
+                                    currentPipelineStorageImageBindingCount++;
 
                                     break;
                                 }
                             }
                         }
 
-                        if ((currentPipelineSampledImageBindings.Count != 0)
-                            && (currentPipelineSamplerBindings.Count == 0))
+                        if ((currentPipelineSampledImageBindingCount != 0)
+                            && (currentPipelineSamplerBindingCount == 0))
                         {
                             throw new NotSupportedException("A graphics pipeline with sampled images must declare at least one sampler.");
                         }
@@ -2664,14 +2692,14 @@ internal sealed class GraphicsGraphSubmission
                         var bindings = command.Bindings
                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
 
-                        var expectedBufferBindingCount = currentPipelineUniformBufferBindings.Count
-                            + currentPipelineStorageBufferBindings.Count;
-                        var expectedTextureBindingCount = currentPipelineSampledImageBindings.Count
-                            + currentPipelineStorageImageBindings.Count;
+                        var expectedBufferBindingCount = currentPipelineUniformBufferBindingCount
+                            + currentPipelineStorageBufferBindingCount;
+                        var expectedTextureBindingCount = currentPipelineSampledImageBindingCount
+                            + currentPipelineStorageImageBindingCount;
 
                         if ((bindings.Textures.Length != expectedTextureBindingCount)
                             || (bindings.Buffers.Length != expectedBufferBindingCount)
-                            || (bindings.Samplers.Length != currentPipelineSamplerBindings.Count))
+                            || (bindings.Samplers.Length != currentPipelineSamplerBindingCount))
                         {
                             throw new NotSupportedException("The graph binding set must provide every reflected uniform, sampled, storage, and sampler resource exactly once.");
                         }
@@ -2682,7 +2710,12 @@ internal sealed class GraphicsGraphSubmission
                             {
                                 case ShaderResourceKind.UniformBuffer:
                                 {
-                                    if (!currentPipelineUniformBufferBindings.Contains((binding.Group, binding.Binding))
+                                    if (!TryGetPipelineResource(
+                                            currentPipeline.BindingLayout,
+                                            ShaderResourceKind.UniformBuffer,
+                                            binding.Group,
+                                            binding.Binding,
+                                            out _)
                                         || !TryGetBufferImport(
                                             bufferImportFlags,
                                             binding.Resource.ResourceId,
@@ -2737,7 +2770,13 @@ internal sealed class GraphicsGraphSubmission
                                         throw new NotSupportedException("The storage-buffer binding must fit the imported graph buffer range.");
                                     }
 
-                                    if (currentPipelineStorageBufferWriteOnlyBindings.Contains((binding.Group, binding.Binding)))
+                                    if (TryGetPipelineResource(
+                                            currentPipeline.BindingLayout,
+                                            ShaderResourceKind.StorageBuffer,
+                                            binding.Group,
+                                            binding.Binding,
+                                            out var storageBufferSignature)
+                                        && (storageBufferSignature.Access == ShaderResourceAccess.Write))
                                     {
                                         var writeAccessDeclared = false;
 
@@ -2823,10 +2862,12 @@ internal sealed class GraphicsGraphSubmission
                             {
                                 case ShaderResourceKind.SampledImage:
                                 {
-                                    if (!currentPipelineSampledImageBindings.Contains((binding.Group, binding.Binding))
-                                        || !currentPipelineSampledImageArraying.TryGetValue(
-                                            (binding.Group, binding.Binding),
-                                            out var imageArrayed)
+                                    if (!TryGetPipelineResource(
+                                            currentPipeline.BindingLayout,
+                                            ShaderResourceKind.SampledImage,
+                                            binding.Group,
+                                            binding.Binding,
+                                            out var sampledImageSignature)
                                         || !TryGetTextureImport(
                                             textureImportFlags,
                                             binding.Resource.ResourceId,
@@ -2836,6 +2877,7 @@ internal sealed class GraphicsGraphSubmission
                                         throw new NotSupportedException("The sampled-image binding must match its reflected 2D or 2D-array shape and fit its imported color or D32 depth range.");
                                     }
 
+                                    var imageArrayed = sampledImageSignature.ImageArrayed;
                                     var isDepthSampledImage = (sampledTextureImport.Version.Description.Format == TextureFormat.D32Float)
                                         && (binding.Range.Aspect == TextureAspect.Depth);
                                     var sampledTextureDescription = sampledTextureImport.Version.Description;
@@ -2885,21 +2927,17 @@ internal sealed class GraphicsGraphSubmission
 
                                 case ShaderResourceKind.StorageImage:
                                 {
-                                    if (!currentPipelineStorageImageFormats.TryGetValue(
-                                            (binding.Group, binding.Binding),
-                                            out var storageImageFormat))
+                                    if (!TryGetPipelineResource(
+                                            currentPipeline.BindingLayout,
+                                            ShaderResourceKind.StorageImage,
+                                            binding.Group,
+                                            binding.Binding,
+                                            out var storageImageSignature))
                                     {
                                         throw new NotSupportedException("The storage-image binding has no matching reflected pipeline signature.");
                                     }
 
-                                    if (!currentPipelineStorageImageDimensions.TryGetValue(
-                                            (binding.Group, binding.Binding),
-                                            out var storageImageDimension))
-                                    {
-                                        throw new NotSupportedException("The storage-image binding has no matching reflected image dimension.");
-                                    }
-
-                                    var expectedStorageImageTextureFormat = storageImageFormat switch {
+                                    var expectedStorageImageTextureFormat = storageImageSignature.StorageImageFormat switch {
                                         ShaderStorageImageFormat.Rgba16Float => TextureFormat.Rgba16Float,
                                         ShaderStorageImageFormat.R32Float => TextureFormat.R32Float,
                                         ShaderStorageImageFormat.R32UInt => TextureFormat.R32UInt,
@@ -2917,7 +2955,7 @@ internal sealed class GraphicsGraphSubmission
                                         || (binding.Range.MipCount != 1)
                                         || (binding.Range.LayerCount != 1)
                                         || (binding.Range.Aspect != TextureAspect.Color)
-                                        || (binding.Resource.Description.Dimension != storageImageDimension)
+                                        || (binding.Resource.Description.Dimension != storageImageSignature.ImageDimension)
                                         || (binding.Resource.Description.Format != expectedStorageImageTextureFormat))
                                     {
                                         throw new NotSupportedException("The storage-image binding must match its reflected format/dimension and fit one imported color mip.");
@@ -2975,7 +3013,12 @@ internal sealed class GraphicsGraphSubmission
 
                         foreach (var binding in bindings.Samplers)
                         {
-                            if (!currentPipelineSamplerBindings.Contains((binding.Group, binding.Binding))
+                            if (!TryGetPipelineResource(
+                                    currentPipeline.BindingLayout,
+                                    ShaderResourceKind.Sampler,
+                                    binding.Group,
+                                    binding.Binding,
+                                    out _)
                                 || !ReferenceEquals(binding.Sampler.ResourceOwner.Device, OutputColorTarget.ResourceOwner.Device)
                                 || (binding.Sampler.DeviceEpoch != DeviceEpoch))
                             {
