@@ -270,7 +270,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             VkPipelineStageFlags2 LastStageMask,
             VkAccessFlags2 LastAccessMask,
             VkPipelineStageFlags2 StageMask,
-            VkAccessFlags2 AccessMask)>(submission.TextureImports.Length - 1);
+            VkAccessFlags2 AccessMask,
+            bool HasSampledAccess)>(submission.TextureImports.Length - 1);
         var depthTextureScopes = new Dictionary<ulong, (
             VulkanBackendTexture Texture,
             TextureSubresource Subresource,
@@ -287,7 +288,6 @@ internal sealed unsafe partial class VulkanBackendDevice
             VkAccessFlags2 LastAccessMask,
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask)>(submission.TextureImports.Length - 1);
-        var colorAttachmentSampledResources = new HashSet<ulong>();
         var storageTextureScopes = new Dictionary<ulong, (
             VulkanBackendTexture Texture,
             TextureSubresource Subresource,
@@ -328,11 +328,6 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (hasColorAttachmentAccess)
                 {
-                    if (hasSampledAccess)
-                    {
-                        _ = colorAttachmentSampledResources.Add(resourceId);
-                    }
-
                     var colorSubresource = new TextureSubresource(
                         colorRange.FirstMip,
                         colorRange.FirstLayer,
@@ -346,7 +341,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                             texture.GetLastStageMask(colorSubresource),
                             texture.GetLastAccessMask(colorSubresource),
                             VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE,
-                            VkAccessFlags2.VK_ACCESS_2_NONE));
+                            VkAccessFlags2.VK_ACCESS_2_NONE,
+                            hasSampledAccess));
                 }
             }
             else if ((import.Version.Description.Usage & TextureUsage.DepthAttachment) != 0)
@@ -566,7 +562,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                     barrier.dstStageMask,
                     barrier.dstAccessMask,
                     copyColorTextureScope.StageMask,
-                    copyColorTextureScope.AccessMask);
+                    copyColorTextureScope.AccessMask,
+                    copyColorTextureScope.HasSampledAccess);
             }
         }
 
@@ -947,7 +944,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 colorLastStageMask,
                                 colorLastAccessMask,
                                 colorStageMask,
-                                colorAccessMask) = colorTextureScope;
+                                colorAccessMask,
+                                colorHasSampledAccess) = colorTextureScope;
                             RecordGraphImageBarrier(
                                 commands,
                                 colorTexture,
@@ -962,7 +960,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 colorLastStageMask,
                                 colorLastAccessMask,
                                 colorStageMask,
-                                colorAccessMask);
+                                colorAccessMask,
+                                colorHasSampledAccess);
 
                             if (copyTextureScopes.TryGetValue(transition.ResourceId, out var colorCopyTextureScope))
                             {
@@ -1657,7 +1656,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 var isColorAttachmentLayout =
                     colorTextureScope.Layout == VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ColorAttachment);
                 // A tone-map pass may sample a transient HDR color attachment after its final color write.
-                var isSampledLayout = colorAttachmentSampledResources.Contains(resourceId)
+                var isSampledLayout = colorTextureScope.HasSampledAccess
                     && (colorTextureScope.Layout == VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ShaderSampledRead));
                 var isCopyLayout = copyTextureScopes.TryGetValue(resourceId, out var copyTextureScope)
                     && copyTextureScope.Layout is VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
@@ -1723,7 +1722,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                     _,
                     _,
                     colorStageMask,
-                    colorAccessMask) = colorTextureScope.Value;
+                    colorAccessMask,
+                    _) = colorTextureScope.Value;
                 colorTexture.SetLayout(colorSubresource, colorLayout);
                 colorTexture.SetLastAccessScope(
                     colorSubresource,
