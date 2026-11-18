@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,9 +17,15 @@ public sealed partial class AssetStore : IAsyncDisposable
     private readonly Lock _gate = new();
     private long _activeDecodeBytes;
     private AssetPackageBacking? _currentBacking;
+    private Exception? _disposeFailure;
+    private int _disposeState;
+    private readonly object _disposeWaitGate = new();
     private bool _disposed;
     private long _liveAssetBytes;
     private int _liveAssetLeases;
+    private AssetPackageBacking? _pendingReleaseBacking;
+    private Exception? _pendingReleaseFailure;
+    private int _replacementInProgress;
 
     private AssetStore(AssetPackageBacking backing)
     {
@@ -80,23 +88,99 @@ public sealed partial class AssetStore : IAsyncDisposable
     }
 
     /// <summary>Disposes the store's package ownership while active leases retain their backing.</summary>
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The terminal package-release failure is retained and rethrown after the independent current backing release is attempted.")]
     public ValueTask DisposeAsync()
     {
         AssetPackageBacking? backing;
 
-        lock (_gate)
+        lock (_disposeWaitGate)
         {
-            if (_disposed)
+            while (_disposeState is 1)
+            {
+                _ = Monitor.Wait(_disposeWaitGate);
+            }
+
+            if (_disposeState is 2)
             {
                 return ValueTask.CompletedTask;
             }
 
-            _disposed = true;
-            backing = _currentBacking;
-            _currentBacking = null;
+            if (_disposeState is 3)
+            {
+                RethrowDisposeFailure();
+            }
+
+            _disposeState = 1;
+
+            lock (_gate)
+            {
+                _disposed = true;
+            }
         }
 
-        backing?.ReleaseOwner();
+        WaitForReplacementRelease();
+
+        AssetPackageBacking? pendingBacking;
+        Exception? firstFailure;
+
+        lock (_gate)
+        {
+            backing = _currentBacking;
+            pendingBacking = _pendingReleaseBacking;
+            firstFailure = _pendingReleaseFailure;
+
+            if ((pendingBacking is not null) && (firstFailure is null))
+            {
+                firstFailure = new InvalidOperationException("A package backing remained pending without a release failure.");
+            }
+        }
+
+        var currentBackingReleased = false;
+
+        try
+        {
+            backing?.ReleaseOwner();
+            currentBackingReleased = true;
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        if (currentBackingReleased)
+        {
+            lock (_gate)
+            {
+                if (ReferenceEquals(_currentBacking, backing))
+                {
+                    _currentBacking = null;
+                }
+            }
+        }
+
+        lock (_disposeWaitGate)
+        {
+            if (firstFailure is null)
+            {
+                _disposeState = 2;
+            }
+            else
+            {
+                _disposeFailure = firstFailure;
+                _disposeState = 3;
+            }
+
+            Monitor.PulseAll(_disposeWaitGate);
+        }
+
+        if (firstFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(firstFailure).Throw();
+        }
+
         return ValueTask.CompletedTask;
     }
 
@@ -137,18 +221,32 @@ public sealed partial class AssetStore : IAsyncDisposable
     /// <param name="cancellationToken">The token that cancels admission before publication.</param>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     /// <exception cref="InvalidDataException">The candidate package fails admission.</exception>
+    /// <exception cref="InvalidOperationException">Another package replacement is active, or a previous backing release remains unresolved.</exception>
     /// <exception cref="ObjectDisposedException">The store has been disposed.</exception>
     public async Task ReplacePackageAsync(
         AssetStoreOptions options,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
-        var replacement = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
-        AssetPackageBacking? previous;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if ((_replacementInProgress != 0) || (_pendingReleaseBacking is not null))
+            {
+                throw new InvalidOperationException("The store has no available package-replacement owner.");
+            }
+
+            _replacementInProgress = 1;
+        }
+
+        AssetPackageBacking? replacement = null;
 
         try
         {
+            replacement = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            AssetPackageBacking previous;
 
             lock (_gate)
             {
@@ -156,15 +254,66 @@ public sealed partial class AssetStore : IAsyncDisposable
                 previous = _currentBacking
                     ?? throw new InvalidOperationException("The asset store has no selected package.");
                 _currentBacking = replacement;
+                _pendingReleaseBacking = previous;
+                replacement = null;
+            }
+
+            try
+            {
+                previous.ReleaseOwner();
+            }
+            catch (Exception failure)
+            {
+                lock (_gate)
+                {
+                    _pendingReleaseFailure = failure;
+                }
+
+                throw;
+            }
+
+            lock (_gate)
+            {
+                if (ReferenceEquals(_pendingReleaseBacking, previous))
+                {
+                    _pendingReleaseBacking = null;
+                }
             }
         }
         catch
         {
-            replacement.ReleaseOwner();
+            if (replacement is not null)
+            {
+                try
+                {
+                    replacement.ReleaseOwner();
+                }
+                catch (Exception failure)
+                {
+                    lock (_gate)
+                    {
+                        _pendingReleaseBacking = replacement;
+                        _pendingReleaseFailure = failure;
+                    }
+
+                    throw;
+                }
+            }
+
             throw;
         }
+        finally
+        {
+            lock (_gate)
+            {
+                Volatile.Write(ref _replacementInProgress, 0);
+            }
 
-        previous.ReleaseOwner();
+            lock (_disposeWaitGate)
+            {
+                Monitor.PulseAll(_disposeWaitGate);
+            }
+        }
     }
 
     internal void ReleaseLeaseReference(long decodedBytes, bool releaseDecodedBytes)
@@ -307,6 +456,13 @@ public sealed partial class AssetStore : IAsyncDisposable
         }
     }
 
+    private void RethrowDisposeFailure()
+    {
+        var failure = _disposeFailure
+            ?? throw new InvalidOperationException("The asset store has no recorded disposal failure.");
+        ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
     private async Task ValidateAssetReferencesAsync(
         AssetPackageBacking backing,
         ImmutableArray<AssetReference> assetReferences,
@@ -368,6 +524,17 @@ public sealed partial class AssetStore : IAsyncDisposable
             finally
             {
                 ReleaseDecodeBudget(targetDecodedBytes);
+            }
+        }
+    }
+
+    private void WaitForReplacementRelease()
+    {
+        lock (_disposeWaitGate)
+        {
+            while (Volatile.Read(ref _replacementInProgress) != 0)
+            {
+                _ = Monitor.Wait(_disposeWaitGate);
             }
         }
     }

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,7 +29,7 @@ public sealed class AssetPackageLease : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Backing.Options.ExpectedPackageSha256;
+            return state.GetPackageSha256(this);
         }
     }
 
@@ -38,7 +39,7 @@ public sealed class AssetPackageLease : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Backing.Options.MaximumDecodedAssetBytes;
+            return state.GetMaximumDecodedAssetBytes(this);
         }
     }
 
@@ -48,27 +49,23 @@ public sealed class AssetPackageLease : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Backing.Options.Registration;
+            return state.GetRegistration(this);
         }
     }
 
     /// <summary>Releases this package backing reference.</summary>
     public void Dispose()
     {
-        var state = Interlocked.Exchange(ref _state, null);
+        var state = Volatile.Read(ref _state);
 
         if (state is null)
         {
             return;
         }
 
-        try
+        if (state.Release())
         {
-            state.Store.ReleaseLeaseReference(0, releaseDecodedBytes: false);
-        }
-        finally
-        {
-            state.Backing.ReleaseReference();
+            _ = Interlocked.CompareExchange(ref _state, null, state);
         }
     }
 
@@ -81,7 +78,7 @@ public sealed class AssetPackageLease : IDisposable
 
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
-        return state.Backing.TryGetEntry(assetId, out _);
+        return state.ContainsAssetId(assetId, this);
     }
 
     internal Task<AssetLease<T>> LoadFromPackageAsync<T>(
@@ -95,9 +92,8 @@ public sealed class AssetPackageLease : IDisposable
 
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
-        var backing = state.Backing;
-        ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
-        return state.Store.LoadFromPackageAsync<T>(assetId, backing, cancellationToken);
+        var (store, backing) = state.AcquireBackingReference(this);
+        return store.LoadFromPackageAsync<T>(assetId, backing, cancellationToken);
     }
 
     internal Task<bool> MatchesAssetReferenceAsync(
@@ -129,15 +125,13 @@ public sealed class AssetPackageLease : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
-        var backing = state.Backing;
-
-        ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
+        var (store, backing) = state.AcquireBackingReference(this);
 
         try
         {
             return requiredMinor is int minor
-                ? await state.Store.MatchesAssetReferenceAsync(backing, reference, minor, cancellationToken).ConfigureAwait(false)
-                : await state.Store.MatchesAssetReferenceAsync(backing, reference, cancellationToken).ConfigureAwait(false);
+                ? await store.MatchesAssetReferenceAsync(backing, reference, minor, cancellationToken).ConfigureAwait(false)
+                : await store.MatchesAssetReferenceAsync(backing, reference, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -145,10 +139,130 @@ public sealed class AssetPackageLease : IDisposable
         }
     }
 
-    private sealed class LeaseState(AssetStore store, AssetPackageBacking backing)
+    private sealed class LeaseState
     {
-        internal AssetPackageBacking Backing { get; } = backing;
+        private readonly AssetPackageBacking _backing;
+        private readonly object _gate = new();
+        private bool _backingReferenceReleased;
+        private Exception? _releaseFailure;
+        private int _releaseState;
+        private readonly AssetStore _store;
 
-        internal AssetStore Store { get; } = store;
+        internal LeaseState(AssetStore store, AssetPackageBacking backing)
+        {
+            ArgumentNullException.ThrowIfNull(store);
+            ArgumentNullException.ThrowIfNull(backing);
+            _backing = backing;
+            _store = store;
+        }
+
+        internal (AssetStore Store, AssetPackageBacking Backing) AcquireBackingReference(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                ObjectDisposedException.ThrowIf(!_backing.TryAcquireReference(), instance);
+                return (_store, _backing);
+            }
+        }
+
+        internal bool ContainsAssetId(AssetId assetId, object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _backing.TryGetEntry(assetId, out _);
+            }
+        }
+
+        internal int GetMaximumDecodedAssetBytes(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _backing.Options.MaximumDecodedAssetBytes;
+            }
+        }
+
+        internal ImmutableArray<byte> GetPackageSha256(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _backing.Options.ExpectedPackageSha256;
+            }
+        }
+
+        internal AssetStoreRegistration GetRegistration(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _backing.Options.Registration;
+            }
+        }
+
+        internal bool Release()
+        {
+            lock (_gate)
+            {
+                while (_releaseState is 1)
+                {
+                    _ = Monitor.Wait(_gate);
+                }
+
+                if (_releaseState is 2)
+                {
+                    return true;
+                }
+
+                if (_releaseState is 3 or 4)
+                {
+                    RethrowReleaseFailure();
+                }
+
+                _releaseState = 1;
+            }
+
+            try
+            {
+                _backing.ReleaseReference();
+
+                lock (_gate)
+                {
+                    _backingReferenceReleased = true;
+                }
+
+                _store.ReleaseLeaseReference(0, releaseDecodedBytes: false);
+            }
+            catch (Exception failure)
+            {
+                lock (_gate)
+                {
+                    _releaseFailure = failure;
+                    _releaseState = _backingReferenceReleased ? 4 : 3;
+                    Monitor.PulseAll(_gate);
+                }
+
+                throw;
+            }
+
+            lock (_gate)
+            {
+                _releaseState = 2;
+                Monitor.PulseAll(_gate);
+                return true;
+            }
+        }
+
+        private void RethrowReleaseFailure()
+        {
+            var failure = _releaseFailure
+                ?? throw new InvalidOperationException("The package lease has no recorded release failure.");
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        private void ThrowIfNotActive(object instance)
+            => ObjectDisposedException.ThrowIf(_releaseState != 0, instance);
     }
 }

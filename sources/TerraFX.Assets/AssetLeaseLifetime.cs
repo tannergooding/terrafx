@@ -7,9 +7,13 @@ namespace TerraFX.Assets;
 
 internal sealed class AssetLeaseLifetime
 {
+    private readonly Lock _gate = new();
     private AssetPackageBacking? _backing;
     private readonly long _decodedBytes;
     private int _referenceCount = 1;
+    private bool _backingReferenceReleased;
+    private Exception? _releaseFailure;
+    private int _releaseState;
     private AssetStore? _store;
 
     internal AssetLeaseLifetime(AssetStore store, AssetPackageBacking backing, long decodedBytes)
@@ -72,37 +76,58 @@ internal sealed class AssetLeaseLifetime
 
     internal (AssetStore Store, AssetPackageBacking Backing) AcquirePackageBackingReference()
     {
-        var store = Volatile.Read(ref _store);
-        var backing = Volatile.Read(ref _backing);
-        ObjectDisposedException.ThrowIf(store is null || backing is null, this);
-        ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
-        return (store, backing);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(
+                (_releaseState != 0)
+                    || (_referenceCount <= 0)
+                    || (_store is null)
+                    || (_backing is null),
+                this);
+            var store = _store;
+            var backing = _backing;
+            ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
+            return (store, backing);
+        }
     }
 
     internal void AddReference()
     {
-        var store = Volatile.Read(ref _store);
-        ObjectDisposedException.ThrowIf(store is null, this);
+        AssetStore store;
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(
+                (_releaseState != 0)
+                    || (_referenceCount <= 0)
+                    || (_store is null),
+                this);
+            store = _store;
+
+            if (_referenceCount == int.MaxValue)
+            {
+                throw new InvalidOperationException("The asset lease has too many retained handles.");
+            }
+        }
+
         store.ReserveRetainedLease();
         var referenceAcquired = false;
 
         try
         {
-            while (true)
+            lock (_gate)
             {
-                var referenceCount = Volatile.Read(ref _referenceCount);
-                ObjectDisposedException.ThrowIf(referenceCount == 0, this);
+                ObjectDisposedException.ThrowIf(
+                    (_releaseState != 0) || (_referenceCount <= 0),
+                    this);
 
-                if (referenceCount == int.MaxValue)
+                if (_referenceCount == int.MaxValue)
                 {
                     throw new InvalidOperationException("The asset lease has too many retained handles.");
                 }
 
-                if (Interlocked.CompareExchange(ref _referenceCount, referenceCount + 1, referenceCount) == referenceCount)
-                {
-                    referenceAcquired = true;
-                    return;
-                }
+                _referenceCount++;
+                referenceAcquired = true;
             }
         }
         finally
@@ -116,36 +141,83 @@ internal sealed class AssetLeaseLifetime
 
     internal void ReleaseReference()
     {
-        var store = Volatile.Read(ref _store)
-            ?? throw new InvalidOperationException("The asset lease lifetime lost its owning store.");
-        var referenceCount = Interlocked.Decrement(ref _referenceCount);
+        AssetStore store;
+        AssetPackageBacking backing;
 
-        if (referenceCount < 0)
+        lock (_gate)
         {
-            throw new InvalidOperationException("The asset lease reference count became negative.");
-        }
-
-        var isFinalReference = referenceCount == 0;
-        var backing = isFinalReference ? Interlocked.Exchange(ref _backing, null) : null;
-
-        if (isFinalReference)
-        {
-            _ = Interlocked.Exchange(ref _store, null)
-                ?? throw new InvalidOperationException("The final asset lease reference lost its owning store.");
-
-            if (backing is null)
+            if (_releaseState is 3 or 4)
             {
-                throw new InvalidOperationException("The final asset lease reference lost its package backing.");
+                RethrowReleaseFailure();
             }
+
+            if (_releaseState is not 0)
+            {
+                throw new InvalidOperationException("The asset lease reference release is already in progress or complete.");
+            }
+
+            if (_referenceCount <= 0)
+            {
+                throw new InvalidOperationException("The asset lease reference count became negative.");
+            }
+
+            store = _store
+                ?? throw new InvalidOperationException("The asset lease lifetime lost its owning store.");
+
+            if (_referenceCount > 1)
+            {
+                store.ReleaseLeaseReference(0, releaseDecodedBytes: false);
+                _referenceCount--;
+                return;
+            }
+
+            backing = _backing
+                ?? throw new InvalidOperationException("The final asset lease reference lost its package backing.");
+            _releaseState = 1;
         }
 
         try
         {
-            store.ReleaseLeaseReference(_decodedBytes, isFinalReference);
+            backing.ReleaseReference();
+            lock (_gate)
+            {
+                _backingReferenceReleased = true;
+            }
+
+            store.ReleaseLeaseReference(_decodedBytes, releaseDecodedBytes: true);
         }
-        finally
+        catch (Exception failure)
         {
-            backing?.ReleaseReference();
+            lock (_gate)
+            {
+                _releaseFailure = failure;
+                _releaseState = _backingReferenceReleased ? 4 : 3;
+            }
+
+            throw;
         }
+
+        lock (_gate)
+        {
+            if ((_releaseState is not 1)
+                || (_referenceCount != 1)
+                || !ReferenceEquals(_store, store)
+                || !ReferenceEquals(_backing, backing))
+            {
+                throw new InvalidOperationException("The asset lease lifetime changed during final reference release.");
+            }
+
+            _store = null;
+            _backing = null;
+            _referenceCount = 0;
+            _releaseState = 2;
+        }
+    }
+
+    private void RethrowReleaseFailure()
+    {
+        var failure = _releaseFailure
+            ?? throw new InvalidOperationException("The asset lease lifetime has no recorded release failure.");
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }

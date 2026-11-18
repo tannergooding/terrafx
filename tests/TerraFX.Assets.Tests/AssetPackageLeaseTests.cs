@@ -14,6 +14,51 @@ namespace TerraFX.Assets.Tests;
 internal sealed class AssetPackageLeaseTests
 {
     [Test]
+    public async Task PackageLeaseConcurrentDisposeReleasesItsCapacityOnce()
+    {
+        var registration = AssetPackageReaderTests.CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, [0xA1]));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        AssetStore? store = null;
+
+        try
+        {
+            var options = new AssetStoreOptions(path, SHA256.HashData(package), registration) {
+                MaximumLiveAssetLeases = 1,
+            };
+            store = await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false);
+            var lease = store.AcquirePackageLease();
+            using var ready = new CountdownEvent(4);
+            using var start = new ManualResetEventSlim();
+            var disposers = new Task[4];
+
+            for (var index = 0; index < disposers.Length; index++)
+            {
+                disposers[index] = Task.Run(() => {
+                    _ = ready.Signal();
+                    start.Wait();
+                    lease.Dispose();
+                });
+            }
+
+            var allDisposersReady = ready.Wait(TimeSpan.FromSeconds(10));
+            start.Set();
+            await Task.WhenAll(disposers).ConfigureAwait(false);
+            Assert.That(allDisposersReady, Is.True);
+            using var replacementLease = store.AcquirePackageLease();
+        }
+        finally
+        {
+            if (store is not null)
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task PackageLeaseConsumesAndReleasesLiveLeaseCapacity()
     {
         var registration = AssetPackageReaderTests.CreateRegistration();
@@ -94,6 +139,49 @@ internal sealed class AssetPackageLeaseTests
 
             File.Delete(firstPath);
             File.Delete(secondPath);
+        }
+    }
+
+    [Test]
+    public async Task StoreConcurrentDisposeIsIdempotentAndJoinsTheRelease()
+    {
+        var registration = AssetPackageReaderTests.CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, [0xA1]));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        AssetStore? store = null;
+
+        try
+        {
+            store = await AssetStore.CreateAsync(
+                AssetPackageReaderTests.CreateOptions(path, package, registration),
+                CancellationToken.None).ConfigureAwait(false);
+            using var ready = new CountdownEvent(4);
+            using var start = new ManualResetEventSlim();
+            var disposers = new Task[4];
+
+            for (var index = 0; index < disposers.Length; index++)
+            {
+                disposers[index] = Task.Run(async () => {
+                    _ = ready.Signal();
+                    start.Wait();
+                    await store.DisposeAsync().ConfigureAwait(false);
+                });
+            }
+
+            var allDisposersReady = ready.Wait(TimeSpan.FromSeconds(10));
+            start.Set();
+            await Task.WhenAll(disposers).ConfigureAwait(false);
+            Assert.That(allDisposersReady, Is.True);
+            _ = Assert.Throws<ObjectDisposedException>(() => store.AcquirePackageLease());
+        }
+        finally
+        {
+            if (store is not null)
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(path);
         }
     }
 }

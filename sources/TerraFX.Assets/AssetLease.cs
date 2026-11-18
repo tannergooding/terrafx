@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -38,7 +39,7 @@ public sealed class AssetLease<T> : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Lifetime.ProfileId;
+            return state.GetProfileId(this);
         }
     }
 
@@ -50,7 +51,7 @@ public sealed class AssetLease<T> : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Lifetime.SpatialSettings;
+            return state.GetSpatialSettings(this);
         }
     }
 
@@ -62,7 +63,7 @@ public sealed class AssetLease<T> : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Value;
+            return state.GetValue(this);
         }
     }
 
@@ -72,15 +73,19 @@ public sealed class AssetLease<T> : IDisposable
         {
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
-            return state.Lifetime.BackingToken;
+            return state.GetBackingToken(this);
         }
     }
 
     /// <summary>Releases this handle's package reference and invalidates <see cref="Value"/>.</summary>
     public void Dispose()
     {
-        var state = Interlocked.Exchange(ref _state, null);
-        state?.Lifetime.ReleaseReference();
+        var state = Volatile.Read(ref _state);
+
+        if ((state is not null) && state.Release())
+        {
+            _ = Interlocked.CompareExchange(ref _state, null, state);
+        }
     }
 
     /// <summary>Loads a typed asset from the exact immutable package backing held by this lease.</summary>
@@ -101,7 +106,7 @@ public sealed class AssetLease<T> : IDisposable
     {
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
-        var (store, backing) = state.Lifetime.AcquirePackageBackingReference();
+        var (store, backing) = state.AcquirePackageBackingReference(this);
         return store.LoadFromPackageAsync<TAsset>(assetId, backing, cancellationToken);
     }
 
@@ -113,23 +118,142 @@ public sealed class AssetLease<T> : IDisposable
     {
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
-        state.Lifetime.AddReference();
-
-        try
-        {
-            return new AssetLease<T>(_assetId, state.Value, state.Lifetime);
-        }
-        catch
-        {
-            state.Lifetime.ReleaseReference();
-            throw;
-        }
+        return state.Retain(_assetId, this);
     }
 
-    private sealed class LeaseState(T value, AssetLeaseLifetime lifetime)
+    private sealed class LeaseState
     {
-        internal AssetLeaseLifetime Lifetime { get; } = lifetime;
+        private readonly object _gate = new();
+        private readonly AssetLeaseLifetime _lifetime;
+        private Exception? _releaseFailure;
+        private int _releaseState;
+        private readonly T _value;
 
-        internal T Value { get; } = value;
+        internal LeaseState(T value, AssetLeaseLifetime lifetime)
+        {
+            ArgumentNullException.ThrowIfNull(lifetime);
+            _value = value;
+            _lifetime = lifetime;
+        }
+
+        internal (AssetStore Store, AssetPackageBacking Backing) AcquirePackageBackingReference(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _lifetime.AcquirePackageBackingReference();
+            }
+        }
+
+        internal AssetPackageBackingToken GetBackingToken(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _lifetime.BackingToken;
+            }
+        }
+
+        internal SpatialProfileId GetProfileId(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _lifetime.ProfileId;
+            }
+        }
+
+        internal SpatialSettings GetSpatialSettings(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _lifetime.SpatialSettings;
+            }
+        }
+
+        internal T GetValue(object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _value;
+            }
+        }
+
+        internal bool Release()
+        {
+            lock (_gate)
+            {
+                while (_releaseState is 1)
+                {
+                    _ = Monitor.Wait(_gate);
+                }
+
+                if (_releaseState is 2)
+                {
+                    return true;
+                }
+
+                if (_releaseState is 3 or 4)
+                {
+                    RethrowReleaseFailure();
+                }
+
+                _releaseState = 1;
+            }
+
+            try
+            {
+                _lifetime.ReleaseReference();
+            }
+            catch (Exception failure)
+            {
+                lock (_gate)
+                {
+                    _releaseFailure = failure;
+                    _releaseState = 3;
+                    Monitor.PulseAll(_gate);
+                }
+
+                throw;
+            }
+
+            lock (_gate)
+            {
+                _releaseState = 2;
+                Monitor.PulseAll(_gate);
+                return true;
+            }
+        }
+
+        internal AssetLease<T> Retain(AssetId assetId, object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                _lifetime.AddReference();
+
+                try
+                {
+                    return new AssetLease<T>(assetId, _value, _lifetime);
+                }
+                catch
+                {
+                    _lifetime.ReleaseReference();
+                    throw;
+                }
+            }
+        }
+
+        private void RethrowReleaseFailure()
+        {
+            var failure = _releaseFailure
+                ?? throw new InvalidOperationException("The asset lease has no recorded release failure.");
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        private void ThrowIfNotActive(object instance)
+            => ObjectDisposedException.ThrowIf(_releaseState != 0, instance);
     }
 }

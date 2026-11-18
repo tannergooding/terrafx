@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,8 +12,11 @@ namespace TerraFX.Assets;
 internal sealed class AssetPackageBacking
 {
     private readonly AssetPackageBackingToken _backingToken = new();
-    private int _ownerReleased;
+    private readonly Lock _gate = new();
+    private bool _ownerReleased;
     private readonly EbinReadLimits _readLimits;
+    private Exception? _releaseFailure;
+    private int _releaseState;
     private FileStream? _stream;
     private int _referenceCount = 1;
 
@@ -72,48 +76,27 @@ internal sealed class AssetPackageBacking
     }
 
     internal void ReleaseOwner()
-    {
-        if (Interlocked.Exchange(ref _ownerReleased, 1) == 0)
-        {
-            ReleaseReference();
-        }
-    }
+        => ReleaseReference(releaseOwner: true);
 
     internal void ReleaseReference()
-    {
-        var referenceCount = Interlocked.Decrement(ref _referenceCount);
-
-        if (referenceCount < 0)
-        {
-            throw new InvalidOperationException("The package backing reference count became negative.");
-        }
-
-        if (referenceCount == 0)
-        {
-            Interlocked.Exchange(ref _stream, null)?.Dispose();
-        }
-    }
+        => ReleaseReference(releaseOwner: false);
 
     internal bool TryAcquireReference()
     {
-        while (true)
+        lock (_gate)
         {
-            var referenceCount = Volatile.Read(ref _referenceCount);
-
-            if (referenceCount == 0)
+            if ((_releaseState is not 0) || (_referenceCount == 0))
             {
                 return false;
             }
 
-            if (referenceCount == int.MaxValue)
+            if (_referenceCount == int.MaxValue)
             {
                 throw new InvalidOperationException("The package backing has too many live references.");
             }
 
-            if (Interlocked.CompareExchange(ref _referenceCount, referenceCount + 1, referenceCount) == referenceCount)
-            {
-                return true;
-            }
+            _referenceCount++;
+            return true;
         }
     }
 
@@ -146,5 +129,94 @@ internal sealed class AssetPackageBacking
 
         entry = default;
         return false;
+    }
+
+    private void ReleaseReference(bool releaseOwner)
+    {
+        FileStream streamToClose;
+
+        lock (_gate)
+        {
+            if (releaseOwner)
+            {
+                if (_ownerReleased)
+                {
+                    if (_releaseState is 1)
+                    {
+                        throw new InvalidOperationException("The package backing owner release is still in progress.");
+                    }
+
+                    if (_releaseState is 3)
+                    {
+                        RethrowReleaseFailure();
+                    }
+
+                    return;
+                }
+
+                _ownerReleased = true;
+            }
+
+            if (_releaseState is 3)
+            {
+                RethrowReleaseFailure();
+            }
+
+            if (_releaseState is not 0)
+            {
+                throw new InvalidOperationException("The package backing release is already in progress or complete.");
+            }
+
+            if (_referenceCount <= 0)
+            {
+                throw new InvalidOperationException("The package backing reference count became negative.");
+            }
+
+            if (_referenceCount > 1)
+            {
+                _referenceCount--;
+                return;
+            }
+
+            streamToClose = _stream
+                ?? throw new InvalidOperationException("The final package backing reference has no retained stream.");
+            _releaseState = 1;
+        }
+
+        try
+        {
+            streamToClose.Dispose();
+        }
+        catch (Exception failure)
+        {
+            lock (_gate)
+            {
+                _releaseFailure = failure;
+                _releaseState = 3;
+            }
+
+            throw;
+        }
+
+        lock (_gate)
+        {
+            if ((_releaseState is not 1)
+                || (_referenceCount != 1)
+                || !ReferenceEquals(_stream, streamToClose))
+            {
+                throw new InvalidOperationException("The package backing changed during final stream release.");
+            }
+
+            _stream = null;
+            _referenceCount = 0;
+            _releaseState = 2;
+        }
+    }
+
+    private void RethrowReleaseFailure()
+    {
+        var failure = _releaseFailure
+            ?? throw new InvalidOperationException("The package backing has no recorded release failure.");
+        ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }

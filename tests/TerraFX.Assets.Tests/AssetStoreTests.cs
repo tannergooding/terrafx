@@ -376,6 +376,50 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStoreConcurrentLeaseDisposeReleasesCapacityOnce()
+    {
+        var registration = CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 15)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration, maximumLiveAssetLeases: 1),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            var lease = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            using var ready = new CountdownEvent(4);
+            using var start = new ManualResetEventSlim();
+            var disposers = new Task[4];
+
+            for (var index = 0; index < disposers.Length; index++)
+            {
+                disposers[index] = Task.Run(() => {
+                    _ = ready.Signal();
+                    start.Wait();
+                    lease.Dispose();
+                });
+            }
+
+            var allDisposersReady = ready.Wait(TimeSpan.FromSeconds(10));
+            start.Set();
+            await Task.WhenAll(disposers).ConfigureAwait(false);
+            Assert.That(allDisposersReady, Is.True);
+
+            using var replacementLease = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(replacementLease.Value.Marker, Is.EqualTo(15));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreHonorsCancellationWithoutLeakingLoadReservations()
     {
         var registration = CreateRegistration();
