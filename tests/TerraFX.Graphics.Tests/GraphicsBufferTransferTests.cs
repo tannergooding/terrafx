@@ -1688,13 +1688,35 @@ internal sealed class GraphicsBufferTransferTests
         {
             using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
             var passId = new RenderPassId(1, 0);
+            var bufferRange = new GraphBufferRange(0, 8);
+            var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var targetVersion = new GraphTextureVersion(
+                device.DeviceEpoch,
+                1,
+                0,
+                target.Description,
+                targetRange);
+            var colorAttachment = new GraphicsGraphSubmissionAttachment(
+                targetVersion,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                default,
+                1.0f,
+                false);
+            var otherColorVersion = new GraphTextureVersion(
+                device.DeviceEpoch,
+                3,
+                0,
+                target.Description,
+                targetRange);
+            var otherColorAttachment = colorAttachment with { Version = otherColorVersion };
             var pass = new GraphicsGraphSubmissionPass(
                 passId,
                 CommandRecorderPassKind.Copy,
                 null,
                 null,
-                []);
-            var bufferRange = new GraphBufferRange(0, 8);
+                [otherColorAttachment, colorAttachment, otherColorAttachment]);
             var bufferVersion = new GraphBufferVersion(
                 device.DeviceEpoch,
                 2,
@@ -1716,14 +1738,16 @@ internal sealed class GraphicsBufferTransferTests
                 bufferImportFlagCapacity: 0,
                 textureImportFlagCapacity: 1,
                 passValidationCapacity: 1,
-                accessPairCapacity: 1);
+                accessPairCapacity: 1,
+                colorAttachmentIndexCapacity: 3);
 
             Assert.That(GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculateAccessValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationIndexBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(1), Is.EqualTo(80));
-            Assert.That(expectedCharge, Is.EqualTo(480));
+            Assert.That(GraphicsGraphSubmission.CalculateColorAttachmentResourceIndexBackingByteCharge(3), Is.EqualTo(112));
+            Assert.That(expectedCharge, Is.EqualTo(592));
             _ = Assert.Throws<ArgumentOutOfRangeException>(
                 () => GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(-1));
             _ = Assert.Throws<OverflowException>(
@@ -1732,6 +1756,10 @@ internal sealed class GraphicsBufferTransferTests
                 () => GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(-1));
             _ = Assert.Throws<OverflowException>(
                 () => GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(long.MaxValue));
+            _ = Assert.Throws<ArgumentOutOfRangeException>(
+                () => GraphicsGraphSubmission.CalculateColorAttachmentResourceIndexBackingByteCharge(-1));
+            _ = Assert.Throws<OverflowException>(
+                () => GraphicsGraphSubmission.CalculateColorAttachmentResourceIndexBackingByteCharge(long.MaxValue));
 
             _ = Assert.Throws<OutOfMemoryException>(
                 () => CreateBufferImportIndexSubmission(
@@ -1753,6 +1781,11 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(submission.AccessPairIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.PassValidationIndexStorageCapacity, Is.EqualTo(1));
             Assert.That(submission.PassValidationIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.ColorAttachmentResourceIndexStorageCapacity, Is.EqualTo(3));
+            Assert.That(submission.ColorAttachmentResourceIndexBackingByteCharge, Is.EqualTo(112));
+            Assert.That(submission.ColorAttachmentResourceCount, Is.EqualTo(2));
+            Assert.That(submission.GetColorAttachmentResourceId(0), Is.EqualTo(otherColorVersion.ResourceId));
+            Assert.That(submission.GetColorAttachmentResourceId(1), Is.EqualTo(targetVersion.ResourceId));
         }
         finally
         {

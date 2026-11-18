@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace TerraFX.Graphics;
@@ -50,6 +51,7 @@ internal sealed class GraphicsGraphSubmission
     private readonly int[] _accessPairIndex;
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
+    private readonly ColorAttachmentResourceIndexEntry[] _colorAttachmentResourceIndex;
     private readonly int[] _orderedPassIndex;
     private readonly int[] _passValidationIndex;
     private int _recordingOwnershipState;
@@ -144,6 +146,19 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
+        var colorAttachmentIndexCapacity = 0;
+
+        foreach (var pass in passes)
+        {
+            foreach (var attachment in pass.Attachments)
+            {
+                if (!attachment.IsDepth && (attachment.Version is not null))
+                {
+                    colorAttachmentIndexCapacity = checked(colorAttachmentIndexCapacity + 1);
+                }
+            }
+        }
+
         ValidatePreflightWorkspaceAllowance(
             bufferImports.Length,
             textureImports.Length,
@@ -151,6 +166,7 @@ internal sealed class GraphicsGraphSubmission
             aliasingBarriers.Length,
             textureAliasingBarriers.Length,
             accesses.Length,
+            colorAttachmentIndexCapacity,
             bufferImports.Length,
             textureImports.Length,
             passes.Length,
@@ -170,6 +186,8 @@ internal sealed class GraphicsGraphSubmission
         Accesses = [.. accesses];
         _accessPairIndex = CreateAccessPairIndex(Accesses);
         Passes = [.. passes];
+        (_colorAttachmentResourceIndex, ColorAttachmentResourceCount) =
+            CreateColorAttachmentResourceIndex(Passes, colorAttachmentIndexCapacity);
         _passValidationIndex = CreatePassValidationIndex(Passes);
         BufferImports = [.. bufferImports];
         _bufferImportIndex = CreateBufferImportIndex(BufferImports);
@@ -199,6 +217,13 @@ internal sealed class GraphicsGraphSubmission
     internal int BufferImportIndexStorageCapacity => _bufferImportIndex.Length;
 
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
+
+    internal int ColorAttachmentResourceCount { get; private set; }
+
+    internal long ColorAttachmentResourceIndexBackingByteCharge
+        => CalculateColorAttachmentResourceIndexBackingByteCharge(_colorAttachmentResourceIndex.LongLength);
+
+    internal int ColorAttachmentResourceIndexStorageCapacity => _colorAttachmentResourceIndex.Length;
 
     internal uint DeviceEpoch { get; }
 
@@ -290,6 +315,14 @@ internal sealed class GraphicsGraphSubmission
         return CalculateIndexBackingByteCharge(capacity);
     }
 
+    internal static long CalculateColorAttachmentResourceIndexBackingByteCharge(long capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return (capacity == 0)
+            ? 0
+            : checked(64 + ((checked(capacity * Unsafe.SizeOf<ColorAttachmentResourceIndexEntry>()) + 15) & ~15L));
+    }
+
     internal static long CalculateImportIndexBackingByteCharge(
         long bufferImportCapacity,
         long textureImportCapacity,
@@ -333,7 +366,8 @@ internal sealed class GraphicsGraphSubmission
         long bufferImportFlagCapacity,
         long textureImportFlagCapacity,
         long passValidationCapacity,
-        long accessPairCapacity = 0)
+        long accessPairCapacity = 0,
+        long colorAttachmentIndexCapacity = 0)
         => checked(
             CalculatePreflightIndexBackingByteCharge(
                 bufferImportCapacity,
@@ -343,6 +377,7 @@ internal sealed class GraphicsGraphSubmission
                 textureAliasingCapacity)
             + CalculateAccessPairIndexBackingByteCharge(accessPairCapacity)
             + CalculateAccessValidationFlagsBackingByteCharge(accessPairCapacity)
+            + CalculateColorAttachmentResourceIndexBackingByteCharge(colorAttachmentIndexCapacity)
             + CalculateBufferImportFlagsBackingByteCharge(bufferImportFlagCapacity)
             + CalculateTextureImportFlagsBackingByteCharge(textureImportFlagCapacity)
             + CalculatePassValidationIndexBackingByteCharge(passValidationCapacity)
@@ -453,6 +488,17 @@ internal sealed class GraphicsGraphSubmission
 
         var comparison = leftImport.Version.ResourceId.CompareTo(rightImport.Version.ResourceId);
         return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int CompareColorAttachmentResourceIndexEntries(
+        ColorAttachmentResourceIndexEntry left,
+        ColorAttachmentResourceIndexEntry right,
+        bool byResourceId)
+    {
+        var comparison = byResourceId
+            ? left.ResourceId.CompareTo(right.ResourceId)
+            : left.FirstOccurrenceIndex.CompareTo(right.FirstOccurrenceIndex);
+        return (comparison != 0) ? comparison : left.FirstOccurrenceIndex.CompareTo(right.FirstOccurrenceIndex);
     }
 
     private static int CompareOrderedPassIndices(
@@ -607,6 +653,45 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return indices;
+    }
+
+    private static (ColorAttachmentResourceIndexEntry[] Entries, int UniqueCount) CreateColorAttachmentResourceIndex(
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int capacity)
+    {
+        if (capacity == 0)
+        {
+            return ([], 0);
+        }
+
+        var entries = new ColorAttachmentResourceIndexEntry[capacity];
+        var resourceCount = 0;
+
+        foreach (var pass in passes)
+        {
+            foreach (var attachment in pass.Attachments)
+            {
+                if (!attachment.IsDepth && (attachment.Version is GraphTextureVersion version))
+                {
+                    entries[resourceCount] = new ColorAttachmentResourceIndexEntry(version.ResourceId, resourceCount);
+                    resourceCount++;
+                }
+            }
+        }
+
+        SortColorAttachmentResourceIndex(entries, resourceCount, byResourceId: true);
+        var uniqueCount = 0;
+
+        for (var index = 0; index < resourceCount; index++)
+        {
+            if ((uniqueCount == 0) || (entries[index].ResourceId != entries[uniqueCount - 1].ResourceId))
+            {
+                entries[uniqueCount++] = entries[index];
+            }
+        }
+
+        SortColorAttachmentResourceIndex(entries, uniqueCount, byResourceId: false);
+        return (entries, uniqueCount);
     }
 
     private static int[] CreateOrderedPassIndex(ImmutableArray<RenderPassId> passes)
@@ -1028,6 +1113,37 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    private static void SiftColorAttachmentResourceIndex(
+        ColorAttachmentResourceIndexEntry[] entries,
+        int root,
+        int length,
+        bool byResourceId)
+    {
+        while (true)
+        {
+            var child = (root * 2) + 1;
+
+            if (child >= length)
+            {
+                return;
+            }
+
+            if (((child + 1) < length)
+                && (CompareColorAttachmentResourceIndexEntries(entries[child], entries[child + 1], byResourceId) < 0))
+            {
+                child++;
+            }
+
+            if (CompareColorAttachmentResourceIndexEntries(entries[root], entries[child], byResourceId) >= 0)
+            {
+                return;
+            }
+
+            (entries[root], entries[child]) = (entries[child], entries[root]);
+            root = child;
+        }
+    }
+
     private static void SiftOrderedPassIndex(
         ImmutableArray<RenderPassId> passes,
         int[] indices,
@@ -1132,6 +1248,23 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    private static void SortColorAttachmentResourceIndex(
+        ColorAttachmentResourceIndexEntry[] entries,
+        int length,
+        bool byResourceId)
+    {
+        for (var root = (length / 2) - 1; root >= 0; root--)
+        {
+            SiftColorAttachmentResourceIndex(entries, root, length, byResourceId);
+        }
+
+        for (var end = length - 1; end > 0; end--)
+        {
+            (entries[0], entries[end]) = (entries[end], entries[0]);
+            SiftColorAttachmentResourceIndex(entries, 0, end, byResourceId);
+        }
+    }
+
     private static bool TryGetPipelineResource(
         PipelineBindingLayout bindingLayout,
         ShaderResourceKind kind,
@@ -1165,6 +1298,7 @@ internal sealed class GraphicsGraphSubmission
         int bufferAliasingCapacity,
         int textureAliasingCapacity,
         int accessPairCapacity,
+        int colorAttachmentIndexCapacity,
         int bufferImportFlagCapacity,
         int textureImportFlagCapacity,
         int passValidationCapacity,
@@ -1181,7 +1315,8 @@ internal sealed class GraphicsGraphSubmission
                 bufferImportFlagCapacity,
                 textureImportFlagCapacity,
                 passValidationCapacity,
-                accessPairCapacity) > maximumBytes)
+                accessPairCapacity,
+                colorAttachmentIndexCapacity) > maximumBytes)
         {
             throw new OutOfMemoryException("The graph preflight workspace exceeds its CPU component allowance.");
         }
@@ -1210,6 +1345,8 @@ internal sealed class GraphicsGraphSubmission
         return buffer.ResourceOwner.BackendResource as IGraphicsBackendBuffer
             ?? throw new InvalidOperationException("The imported buffer lost its backend resource.");
     }
+
+    internal ulong GetColorAttachmentResourceId(int index) => _colorAttachmentResourceIndex[index].ResourceId;
 
     internal IGraphicsBackendTexture GetTexture(ulong resourceId)
     {
@@ -4373,4 +4510,6 @@ internal sealed class GraphicsGraphSubmission
         import = null;
         return false;
     }
+
+    private readonly record struct ColorAttachmentResourceIndexEntry(ulong ResourceId, int FirstOccurrenceIndex);
 }

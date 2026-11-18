@@ -659,22 +659,10 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         var selectedGraphFrameSlot = availableGraphFrameSlot
             ?? throw new InvalidOperationException("Vulkan graph command frame slots are exhausted before graphics admission.");
-        var colorAttachmentResourceIds = new List<ulong>();
-        var colorAttachmentResourceIdSet = new HashSet<ulong>();
+        var colorAttachmentResourceCount = submission.ColorAttachmentResourceCount;
 
-        foreach (var pass in submission.Passes)
-        {
-            foreach (var attachment in pass.Attachments)
-            {
-                if (!attachment.IsDepth && colorAttachmentResourceIdSet.Add(attachment.Version.ResourceId))
-                {
-                    colorAttachmentResourceIds.Add(attachment.Version.ResourceId);
-                }
-            }
-        }
-
-        var graphColorImageViews = new Dictionary<ulong, VkImageView>(colorAttachmentResourceIds.Count);
-        var graphImageViews = new List<VkImageView>(colorAttachmentResourceIds.Count);
+        var graphColorImageViews = new Dictionary<ulong, VkImageView>(colorAttachmentResourceCount);
+        var graphImageViews = new List<VkImageView>(colorAttachmentResourceCount);
         var acquiredImageIndex = 0u;
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
         var currentLayout = target.GetLayout(subresource);
@@ -684,7 +672,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         var hasAcquiredImage = false;
         var hasStartedRecording = false;
         var graphSubmissionAccepted = false;
-        var colorAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(colorAttachmentResourceIds.Count);
+        var colorAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(colorAttachmentResourceCount);
         var depthAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(submission.TextureImports.Length - 1);
         var passIndices = new Dictionary<RenderPassId, int>(submission.Passes.Length);
         var textureContentsAfterSubmission = new Dictionary<ulong, (int PassIndex, bool IsValid)>(
@@ -728,7 +716,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         try
         {
             _ = _uncertainGraphImageViews.EnsureCapacity(
-                checked(_uncertainGraphImageViews.Count + colorAttachmentResourceIds.Count));
+                checked(_uncertainGraphImageViews.Count + colorAttachmentResourceCount));
             _ = _uncertainTextureOwners.EnsureCapacity(checked(_uncertainTextureOwners.Count + 1));
             _ = descriptorSets.EnsureCapacity(descriptorSetCapacity);
 
@@ -751,8 +739,9 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             ownsImageViews = true;
 
-            foreach (var resourceId in colorAttachmentResourceIds)
+            for (var index = 0; index < colorAttachmentResourceCount; index++)
             {
+                var resourceId = submission.GetColorAttachmentResourceId(index);
                 var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
                     ?? throw new InvalidOperationException("A graph color attachment is not a Vulkan texture.");
                 var imageView = CreateGraphColorImageView(_device, texture);
