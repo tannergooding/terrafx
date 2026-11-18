@@ -171,7 +171,10 @@ internal sealed class DiagnosticsServiceTests
     [Test]
     public void MeasuresBoundedWarningRecordAllocationTraffic()
     {
+        const int diagnosticCapacity = 8192;
         var service = new DiagnosticsService(4);
+        var ownedByteReservation = DiagnosticsService.GetOwnedByteReservation(diagnosticCapacity);
+        var diagnosticEntryStride = checked((ownedByteReservation - 256 - 64) / diagnosticCapacity);
         var sessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
         const uint worldOwnerId = 17;
         service.Write(CreateDiagnostic("warm-warning", DiagnosticSeverity.Warning, 0), sessionId, worldOwnerId);
@@ -235,6 +238,8 @@ internal sealed class DiagnosticsServiceTests
         Assert.That(commandIdentity, Has.Length.EqualTo(110));
         Assert.That(context, Has.Length.EqualTo(6));
         TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
+        TestContext.WriteLine(
+            $"DiagnosticsService full-ring reservation: capacity={diagnosticCapacity}, bytes={ownedByteReservation}, entry-stride={diagnosticEntryStride}");
         TestContext.WriteLine($"Producer formatting and Diagnostic construction: {producerAllocatedBytes} bytes");
         TestContext.WriteLine($"DiagnosticsService warning admission: {serviceAllocatedBytes} bytes");
         TestContext.WriteLine($"Total measured allocation traffic: {checked(producerAllocatedBytes + serviceAllocatedBytes)} bytes");
