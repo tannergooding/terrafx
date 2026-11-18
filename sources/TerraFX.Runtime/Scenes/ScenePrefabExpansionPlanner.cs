@@ -6,6 +6,7 @@ using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -246,6 +247,8 @@ internal static class ScenePrefabExpansionPlanner
         private int _buildOccurrenceCursor;
         private int _buildRootCursor;
         private readonly CancellationToken _cancellationToken;
+        private Exception? _disposeFailure;
+        private int _disposeState;
         private ImmutableArray<SceneExpandedEntity>.Builder _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
         private int _entityCount;
         private ImmutableArray<int>.Builder _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
@@ -731,40 +734,96 @@ internal static class ScenePrefabExpansionPlanner
             return true;
         }
 
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "Independent Scene and Prefab leases plus the storage reservation are attempted before the first cleanup failure is retained.")]
         public void Dispose()
         {
+            var state = Interlocked.CompareExchange(ref _disposeState, 1, 0);
+
+            if (state is 2)
+            {
+                return;
+            }
+
+            if (state is 3)
+            {
+                RethrowDisposeFailure();
+            }
+
+            if (state is not 0)
+            {
+                throw new InvalidOperationException("Scene expansion cleanup is already in progress.");
+            }
+
+            Exception? firstFailure = null;
+            var sceneLease = _sceneLease;
+
             try
             {
-                _sceneLease?.Dispose();
+                sceneLease?.Dispose();
                 _sceneLease = null;
-
-                if (_prefabLeases is { } prefabLeases)
-                {
-                    foreach (var lease in prefabLeases.Values)
-                    {
-                        lease.Dispose();
-                    }
-
-                    _prefabLeases = null;
-                }
             }
             catch (Exception failure)
             {
+                firstFailure = failure;
+            }
+
+            if (_prefabLeases is { } prefabLeases)
+            {
+                foreach (var lease in prefabLeases.Values)
+                {
+                    try
+                    {
+                        lease.Dispose();
+                    }
+                    catch (Exception failure)
+                    {
+                        firstFailure ??= failure;
+                    }
+                }
+
+                if (firstFailure is null)
+                {
+                    _prefabLeases = null;
+                }
+            }
+
+            var reservation = _storageReservation;
+
+            try
+            {
+                reservation?.Dispose();
+                _storageReservation = null;
+            }
+            catch (Exception failure)
+            {
+                firstFailure ??= failure;
+            }
+
+            if (firstFailure is not null)
+            {
+                Volatile.Write(ref _disposeFailure, firstFailure);
+                Volatile.Write(ref _disposeState, 3);
+
                 if (_preparationOwner is null)
                 {
                     _useControl?.Quarantine(this, failureStage: 1, failureCategory: 2);
                 }
                 else
                 {
-                    _preparationOwner.RecordPreparationCleanupFailure(failure, stage: 1, category: 2, this);
+                    _preparationOwner.RecordPreparationCleanupFailure(
+                        firstFailure,
+                        stage: 1,
+                        category: 2,
+                        this);
                 }
 
-                throw;
+                RethrowDisposeFailure();
             }
 
-            var reservation = _storageReservation;
-            _storageReservation = null;
-            reservation?.Dispose();
+            Volatile.Write(ref _disposeState, 2);
         }
 
         internal async Task<SceneExpansionPlan> BuildAsync(AssetLease<SceneAsset> sceneLease)
@@ -2283,6 +2342,13 @@ internal static class ScenePrefabExpansionPlanner
             }
 
             return expandedEntityIndex;
+        }
+
+        private void RethrowDisposeFailure()
+        {
+            var failure = Volatile.Read(ref _disposeFailure)
+                ?? throw new InvalidOperationException("Scene expansion cleanup has no recorded failure.");
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
         private void ValidateExpandedReferenceBindings(
