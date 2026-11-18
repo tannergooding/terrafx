@@ -108,6 +108,12 @@ public sealed class SceneLoader
             throw new ArgumentOutOfRangeException(nameof(sceneId));
         }
 
+        if (_world.GetCpuExtractionParticipant<ISceneExpansionResourcePreparer>() is not null)
+        {
+            throw new NotSupportedException(
+                "Scene restore with CPU extraction is unavailable until resource measurement and producer ownership are fully admitted.");
+        }
+
         return PreparePlanCoreAsync(
             sceneId,
             options,

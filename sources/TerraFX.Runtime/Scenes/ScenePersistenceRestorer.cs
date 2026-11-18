@@ -63,6 +63,11 @@ internal static class ScenePersistenceRestorer
             throw new ArgumentException("The candidate state/scenes record does not match its validated shape.", nameof(scenesRecord));
         }
 
+        if ((resourcePreparer is not null) && (contents.InstanceCount != 0))
+        {
+            return null;
+        }
+
         var defaultLimits = SceneExpansionLimits.Default;
         var requiredBytes = 0L;
 
