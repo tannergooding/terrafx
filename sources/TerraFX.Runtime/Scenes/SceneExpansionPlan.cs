@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
@@ -267,6 +269,10 @@ internal sealed class SceneExpansionPlan : IDisposable
         return -1;
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Independent prepared resources and package leases are attempted before retained storage is released.")]
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -274,12 +280,21 @@ internal sealed class SceneExpansionPlan : IDisposable
             return;
         }
 
+        Exception? firstFailure = null;
         var preparedAssets = Volatile.Read(ref _preparedAssets);
-        preparedAssets?.Dispose();
 
-        if (preparedAssets is not null)
+        try
         {
-            _ = Interlocked.CompareExchange(ref _preparedAssets, null, preparedAssets);
+            preparedAssets?.Dispose();
+
+            if (preparedAssets is not null)
+            {
+                _ = Interlocked.CompareExchange(ref _preparedAssets, null, preparedAssets);
+            }
+        }
+        catch (Exception failure)
+        {
+            firstFailure = failure;
         }
 
         var prefabLeases = _prefabLeases;
@@ -288,22 +303,61 @@ internal sealed class SceneExpansionPlan : IDisposable
         {
             foreach (var lease in prefabLeases.Values)
             {
-                lease.Dispose();
+                try
+                {
+                    lease.Dispose();
+                }
+                catch (Exception failure)
+                {
+                    firstFailure ??= failure;
+                }
             }
 
-            _prefabLeases = null;
+            if (firstFailure is null)
+            {
+                _prefabLeases = null;
+            }
         }
 
         var sceneLease = Volatile.Read(ref _sceneLease);
-        sceneLease?.Dispose();
 
-        if (sceneLease is not null)
+        try
         {
-            _ = Interlocked.CompareExchange(ref _sceneLease, null, sceneLease);
+            sceneLease?.Dispose();
+
+            if (sceneLease is not null)
+            {
+                _ = Interlocked.CompareExchange(ref _sceneLease, null, sceneLease);
+            }
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
         }
 
-        var storageReservation = Interlocked.Exchange(ref _storageReservation, null);
-        storageReservation?.Dispose();
+        if (firstFailure is null)
+        {
+            var storageReservation = Volatile.Read(ref _storageReservation);
+
+            try
+            {
+                storageReservation?.Dispose();
+
+                if (storageReservation is not null)
+                {
+                    _ = Interlocked.CompareExchange(ref _storageReservation, null, storageReservation);
+                }
+            }
+            catch (Exception failure)
+            {
+                firstFailure = failure;
+            }
+        }
+
+        if (firstFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(firstFailure).Throw();
+        }
     }
 
     internal PreparedAssetsLifetime.Lease? AcquirePreparedAssets()
