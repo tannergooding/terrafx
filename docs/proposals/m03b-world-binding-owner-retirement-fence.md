@@ -46,7 +46,7 @@ The factories' argument is data/reserved capacity D; `reservation.Bytes` include
 - **Construction:** claim original X or exact World/restore C and a constructor interest before `new`. Construct outside Scene/domain gates. Installation checks the exact parent and open World admission, then links the same initialized receiver in a value-only C→S or X→R transaction. Close-first permits only original-claim cancellation. An installed R is not constructor rollback to P.
 - **Admission close:** serialize the World latch with domain admission closure, then revoke outside the domain pair. Cleanup and the World close tail retain the whole parent. Ordinary post-close release does not reclaim an imagined A/H partition.
 - **Data wait:** retain the actual World, lifetime, original process owner and exact S/C/U. Last R, U, constructor unwind or close can progress; none waits under a gate or schedules a worker.
-- **Other return tails:** persistence/resource reservations retain a prepaid parent return part. Their bookkeeping, disposal-gate exit and actual last World access precede the terminal handback. An independent-use control clears its own fields before its domain grant ends.
+- **Other return tails:** persistence/resource reservations retain a prepaid parent return part. Their bookkeeping, disposal-gate exit and actual last World access precede the terminal handback. An independent-use control clears its own fields before its domain grant ends; a separate exact-parent part spans its entire outer `Release`, so nested Domain parts cannot elect retirement early.
 - **Retirement:** after successful close, no constructors/return parts, and ended S/C/U, elect one ordinary return thread. Acknowledge original lineage retirement before consuming the process permit. Record irreversible progress; failure retains the remaining reservation/root instead of recreating a released role.
 - **Parent last:** clear parent/World/lifetime links before its final interest refund. Domain Task publication is outside both gates; the domain's fixed registrar control remains charged through publication return and is not refunded on a thrown publication call.
 
@@ -62,10 +62,9 @@ Ordinary Runtime tests ran Debug before Release:
 
 | Selection | Debug | Release |
 |---|---|---|
-| Receiver/domain/lifetime/persistence/resource and real World lifecycle regressions | [98 executed/passed](../../artifacts/tst/Debug/m03b-receiver-control-debug-20261117.trx) | [98 executed/passed](../../artifacts/tst/Release/m03b-receiver-control-release-20261117.trx) |
-| Actual `TerraFX.Runtime.Tests.WorldGuidRegistryTests` fixture | [11 executed/passed](../../artifacts/tst/Debug/m03b-receiver-registry-debug-20261117.trx) | [11 executed/passed](../../artifacts/tst/Release/m03b-receiver-registry-release-20261117.trx) |
+| Receiver/domain/lifetime/persistence/resource, World lifecycle and actual process-registry fixture | [110 executed/passed](../../artifacts/tst/Debug/m03b-transfer-return-debug-20261118.trx) | [110 executed/passed](../../artifacts/tst/Release/m03b-transfer-return-release-20261118.trx) |
 
-The 19 receiver cases use real Worlds, registered Scene participants, original uses and lower reservation methods. They cover control exact/one-byte-short admission, active transfer, original cancellation across close, C rollback, head/middle/last and duplicate returns, R/U/domain-close orders, actual World/receiver strong roots, a last return on another ordinary thread, foreign-parent/lineage refusal, and GUID exclusion through R and persistence tails. The raw-release case uses the real World and original permit; it constructs no substitute owner.
+The 20 receiver cases use real Worlds, registered Scene participants, original uses and lower reservation methods. They cover control exact/one-byte-short admission, Domain-owned install election and duplicate refusal, active transfer, original cancellation across close, C rollback, head/middle/last and duplicate returns, R/U/domain-close orders, actual World/receiver strong roots, a last return on another ordinary thread, foreign-parent/lineage refusal, and GUID exclusion through R and persistence tails. The raw-release case uses the real World and original permit; it constructs no substitute owner. The combined selection executes twelve fixtures, including the actual `TerraFX.Runtime.Tests.WorldGuidRegistryTests` namespace.
 
 A pending-constructor claim voluntarily canceled after close is **not** an OOM observation. The source protocol retains uncertain cleanup/release debt, but real constructor failure, partial process/domain failure and physical cleanup stimuli remain unsupported where not actually reached. These are framework-test counts, not conformance-case membership. No Scene preparation, fabricated plan/snapshot/owner, production fault hook, native/AOT consumer or milestone acceptance ran.
 
@@ -89,9 +88,49 @@ The lower credit protocol must not be presented as a completed receiver feature.
 
 Keep `PreparedScene.QualifiedFootprint` null. Neither the new fence nor the lower tests authorize public preparation, producer/native qualification, or a numerical H carve-out. Existing restore issuers do not acquire a qualified producer footprint merely by using this lower protocol.
 
+## Review correction: installation and outer-use return
+
+This correction supersedes the earlier candidate's staged installation and use-return suffix reasoning. It does not weaken the producer gates above.
+
+### Nonthrowing managed installation commit
+
+`WorldSceneStorageReservation.TryTransferWorkspaceToStorage` no longer sets `StateTransferring`. Both `TryCompleteSceneReservationConstruction`'s storage branch and `TryInstallSceneWorkspace` enter the domain pair and use the same `TryInstallSceneStorage` transaction:
+
+1. Before changing state, validate the exact open parent, expected Constructing/Workspace lifecycle, empty receiver links, current parent B/U and S/C/pending ledgers, constructor count and existing head ownership/link state.
+2. For use funding, validate the original active use/lifetime, operation-interest index/generation/kind/identity and matching lineage, active X, operation bytes and parent U. Capture the operation's managed array reference before the election. For World/restore funding, validate the exact original C/pending subset.
+3. Perform **every checked sum/subtraction before election**, including new parent B/U, operation bytes, active X, S/C/pending values and constructor count. These calculations and all refusal paths have no ledger or lifecycle side effect. A validation exception leaves the original Workspace/Constructing state and exact original claims intact.
+4. Only then CAS the expected lifecycle to `StateTransferring`, while both gates remain held. If disposal won that CAS, return false without a transfer or state reset.
+5. After a successful CAS, execute only assignments of precomputed values, the two nonvalidating `CommitSceneWorkspaceTransfer` field writers, atomic intrinsics, and captured nonnull neighbor/receiver field stores. No checked arithmetic, index lookup, allocation, callback, physical release, validation helper or throwing ownership handback follows the election. `MarkStorage` publishes `StateStorage` with a final volatile write.
+
+For active use funding the single transaction is:
+
+```text
+X' = X - R                   B' = B + R
+U' = U - R                   S' = S + R
+operation.Bytes' = operation.Bytes - R
+C' = C                       F' = F
+domain total is unchanged
+```
+
+There is no intermediate uninstalled C or `UninstalledActiveWorldWorkspaceBytes` provision to undo. Scene installation no longer calls `TryTransferActiveWorldGuidUseWorkspace` followed by `CompleteWorldWorkspaceInstallation`; the latter helper is removed. World/restore installation instead moves C/pending→S without changing B/U. The parent/control writers contain only scalar field stores or `Interlocked.Exchange`; captured references are nonnull and both gates prevent array replacement or competing ledger mutation. Neighbor setters contain only field stores. Gate exits occur after `StateStorage` is published.
+
+Consequently, a normal refusal does not need to restore Workspace, and the code never resets an uncertain completed transfer to retryable Workspace. The new real lower-owner case calls the Domain endpoint without a pre-elected receiver and verifies successful election, exact conservation, duplicate refusal, subsequent disposal and post-close use return; it would refuse under the former caller-CAS contract.
+
+No valid admitted input supplies a deterministic post-election managed exception: counts and byte products are bounded, and all checks/calculations now precede the CAS. No private-state corruption or production fault hook was added to simulate one. This is a source-level managed transaction proof, **not** qualification of asynchronous CLR/OS interruption, JIT/native failure or an unreachable partial native store sequence. No recovery/refund is inferred for those unexercised modes, and complete preparation remains unavailable.
+
+### Full outer `WorldGuidUseControl.Release` part
+
+After winning Active→Releasing, `Release` captures its Domain/registry locals and obtains `TryRetainWorldGuidUseReturnPart` before process release. Registration checks the original operation interest and exact parent/lifetime/lineage; it does **not** require open World or domain admission. Already accepted U can therefore return after either closure. The part occupies the existing prepaid parent-cell counter and retains the whole original World/parent/lifetime; it creates no new interest, carrier, U or byte allowance.
+
+The outer part remains live across process release, the Domain's nested return part, and every control write. `TryReleaseIndependentUse`/`RollbackUnissuedWorldGuidUse` still call `CompleteDomainRelease` **before** refunding the use credit: anchor ownership/links and `_carrierState` are settled while the original `256+F+X` is still charged. The new part is not an emergency replacement for that 256-byte control grant.
+
+For an enrolled World, the nested Domain part cannot be the last part: its end leaves at least the outer part live. On Domain success, the rest of `Release` uses only captured locals and the final `finally` handback; it does not dereference or write the ended control. The only post-Domain quarantine write is on a **false** return, whose validation has not refunded U. The exception catch that writes quarantine covers only registration/process work while U remains funded, not a successfully refunded Domain/publication suffix.
+
+The outer `finally` ends its exact-parent part as its last owned operation. Until then neither a nested return nor a racing World-close acknowledgment can retire the parent. Normal return does not become quarantine. Unenrolled raw-reservation behavior remains distinct. The unissued rollback caller has no later control-field cleanup; its own terminal field clearing remains before its Domain refund.
+
 ## Frozen scope
 
-Source validation completed at `2026-11-18T00:01:34Z`; hashes were captured at `2026-11-18T00:02:42Z` and after the additional registry runs. HEAD is `ae17833b25879c482660245669cce3d31ec33732`; the implementation is a working-tree candidate, not a commit. Twenty-two directly affected/guard source inputs were also checked unchanged across the final Debug/Release main runs. The following raw-file hashes identify this scoped review input, not a transitive build receipt or repository inventory.
+Review-correction hashes were captured at `2026-11-18T00:42:11Z`. HEAD is `7ffbef5cbbf2cbd0068e93573c01f4e8d1cee919`; the corrected implementation remains uncommitted. The correction explicitly reassesses/replaces the affected input identities from the earlier proposal revision; its prior source hashes and 98+11 selections are not reaccepted as evidence for the changed transaction. The following raw-file hashes identify the complete scoped current review input, not a transitive build receipt or repository inventory.
 
 ```text
 1bce01871321c2df82e887da428ce5c121a6c6541fe65017fe3d249be47e190c  global.json
@@ -102,13 +141,13 @@ a4d86f3fa373a64548435c53582bf5916e29d77f34650f9d161ccec90e6f0245  docs\design\04
 3eb20e1051c55ee77d008cf734007fde8c28aec24abd9755f4d1788475bd4605  docs\proposals\m03b-scene-preparation-finite-envelope-and-return-addendum.md
 c7dcba4dfef58346c6c851f77a8e130b1a4b776248e94663438a5d9e449245a8  sources\TerraFX.Runtime\Entities\World.cs
 a250eecca2cfb4e0eebff7f447e66ac7e44a8d23ad0d6de141e8e1d4c30614e3  sources\TerraFX.Runtime\Entities\WorldAdmissionDomain.cs
-cee0d9b22d01f89536a70364d39d680b289e5b15af04481b4e09851a57d8d452  sources\TerraFX.Runtime\Entities\WorldAdmissionDomain.SceneStorage.cs
-6cb07c538151e25728d0a1a316b9cc4eae231ea849c719fbf44112dee00b9422  sources\TerraFX.Runtime\Entities\WorldDomainReservation.cs
-84b2c458d16e9d05c41dc5631a44ae60240cae96c79496bf1dfe829ef368f9b6  sources\TerraFX.Runtime\Entities\WorldSceneStorageReservation.cs
+53111972c5b480e8357c93d471edcb4e08c7bbe65bd341bfc7260fdc356ba5c3  sources\TerraFX.Runtime\Entities\WorldAdmissionDomain.SceneStorage.cs
+d6cdd6105850b8076d40891b0ed1f583d9fcde6ee190444a7d570879964403dc  sources\TerraFX.Runtime\Entities\WorldDomainReservation.cs
+a91aac1a9eb2ba7b43c111fab8baa9d6588a6c75e725c28ea9825f049472c969  sources\TerraFX.Runtime\Entities\WorldSceneStorageReservation.cs
 ddeb051100a203a4662b883e64ab8d688321dec50000939123ee97c1718011fe  sources\TerraFX.Runtime\Entities\WorldGuidRegistry.cs
 456587893972e153b872dbbd4d849b67260a297db4d6dea2fbde7cfe6e7ec0fc  sources\TerraFX.Runtime\Entities\WorldGuidRetirementPermit.cs
 671390b19880e4ec007a88d588b4da318fa4c67b1d9b03a9cf00636ab051cff2  sources\TerraFX.Runtime\Entities\WorldLifetimeControl.cs
-f850377a78a7d7a08201ba9f9f0216c9611960eba82a523878f8dfb34f22c438  sources\TerraFX.Runtime\Entities\WorldGuidUseControl.cs
+f00b54b0e8f305f90df0d63ffdf6c3419feb8f3d2542e72d76a79ad2d0990946  sources\TerraFX.Runtime\Entities\WorldGuidUseControl.cs
 c6f41de02f0896016fa55845a61661bcd1a4dfe085bf68302767fe9c94da3228  sources\TerraFX.Runtime\Entities\WorldLifetimeControl.CosmeticCredits.cs
 a6120452989f29ec2ef9c2b90e7479cc6635b9b17848c6c683063b3f99d36d22  sources\TerraFX.Runtime\Entities\WorldGuidUse.cs
 921343548584f389fb2fc0db6c03965a206c54c1ded4d35c6bcf5cccf157a7d9  sources\TerraFX.Runtime\Entities\WorldGuidReplacementPreparation.cs
@@ -122,8 +161,9 @@ d3b20bee7fbd4ca540eb9e082dfeca7acb533179bf20ae9ee13b54e5560845a5  sources\TerraF
 1e01cc392652771a948d45f79fca19fc1ed5c4659439ad4ec8879c2e99127876  sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs
 b73dd4314b63084132afc2f9325ed98eeccce65a174f02b16f2ded7ec65f688c  sources\TerraFX.Runtime\Scenes\PreparedScene.cs
 689dd5a2237398fee46b01ed00538cae66d36b8e30ad2aaa0488cc3bb6c08260  sources\TerraFX.Runtime\Rendering\RenderSceneAssetBundle.cs
+8f0ef274c39c3e07e691951011ac86c574311912d7f78348eb8d6780555f0c71  sources\TerraFX.Core\ReentrantGate.cs
 9f884c2185cb3372914457dc72ec760666ede1bd2388a387a08b64f3e17b894c  tests\TerraFX.Runtime.Tests\Entities\WorldAdmissionDomainTests.cs
-4626cc3b7258ffe333451f6e987c7591b5b74bb3db442f272d86d00a4df5937a  tests\TerraFX.Runtime.Tests\Entities\WorldSceneReceiverTests.cs
+70305f994186d58a14fa5a53dcab0bd976d8beaa0cf37106dff13816ef9e58b2  tests\TerraFX.Runtime.Tests\Entities\WorldSceneReceiverTests.cs
 d044b061eeeb2a1b03b4f73ed8d640e4b6138ece9993f6446d9686d0e72b74eb  tests\TerraFX.Runtime.Tests\Entities\WorldDefaultDomainOwnershipTests.cs
 6c987ab754e5e6fa92480bc35c8f449ed08bed3fa548692f46030cafdfee1420  tests\TerraFX.Runtime.Tests\Entities\WorldGuidRegistryTests.cs
 f52196a4ea7f99ab47931b436cf7ce9512d7a10f8ada80860d6928da90f552ae  tests\TerraFX.Runtime.Tests\Entities\WorldLifetimeControlQuarantineTests.cs
@@ -134,10 +174,8 @@ e53a886238a95ff58fd683da45d68cee8d124d12c2087a11ffc27484d54fd385  tests\TerraFX.
 8e98098c036c7692e9d6618d15d2912db904033c702d9279a1ae53a82ae7d2e9  tests\TerraFX.Runtime.Tests\Entities\WorldSystemStatefulFactoryTests.cs
 76b9ed4bd4ea452b0f03626b2ae0b99cdcc5818a84e634d69823a9fd837f2668  tests\TerraFX.Runtime.Tests\Entities\WorldAttachmentTests.cs
 b915bb3b96f7b5008e946c74f2eab726b05a200ea45db7cd7724e16e83e6cc60  tests\TerraFX.Runtime.Tests\Scenes\SceneSupportRegistrationTests.cs
-909876e685e074a0376631c4971a3d6af9b71290b268039db95302cce8c5a364  artifacts\tst\Debug\m03b-receiver-control-debug-20261117.trx
-ba5894e1601298a331a87fff78ca98ab97cd7379c044a059c65cabfbb2bfa6e0  artifacts\tst\Release\m03b-receiver-control-release-20261117.trx
-9b94c6f8ae8f5cfaa247cc700a12b7b7cbab334f3566d2a41839b2e7eda51125  artifacts\tst\Debug\m03b-receiver-registry-debug-20261117.trx
-52b11d738274d8d80ae2f7ee8a1ac7dae876183d277b7b336be3b3bbaa4408e1  artifacts\tst\Release\m03b-receiver-registry-release-20261117.trx
+a71d68c288f4a34c4123ee4e8a6d5e52649435037b834a60171667d0616e18a2  artifacts\tst\Debug\m03b-transfer-return-debug-20261118.trx
+d3122a0306358c85a6dc855dba595ae112d293c18ec7664095949c733b1259d1  artifacts\tst\Release\m03b-transfer-return-release-20261118.trx
 ```
 
-Recheck the scoped hashes before applying a disposition. Existing proposals, maintained contracts/public API and caps were not edited by this implementation task. No commit, amendment, push or PR was made.
+Recheck the scoped hashes before applying a disposition. This proposal captures the receiver candidate at the frozen revision above; it changes no source implementation, maintained contract, public API or cap.
