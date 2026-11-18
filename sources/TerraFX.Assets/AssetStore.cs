@@ -223,7 +223,12 @@ public sealed partial class AssetStore : IAsyncDisposable
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     /// <exception cref="InvalidDataException">The candidate package fails admission.</exception>
     /// <exception cref="InvalidOperationException">Another package replacement is active, or a previous backing release remains unresolved.</exception>
+    /// <exception cref="OperationCanceledException">The operation is canceled before candidate publication.</exception>
     /// <exception cref="ObjectDisposedException">The store has been disposed.</exception>
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Candidate cleanup preserves the original operation failure and retains any lower release failure in the reserved Store owner slot.")]
     public async Task ReplacePackageAsync(
         AssetStoreOptions options,
         CancellationToken cancellationToken = default)
@@ -287,7 +292,7 @@ public sealed partial class AssetStore : IAsyncDisposable
                 }
             }
         }
-        catch
+        catch (Exception operationFailure)
         {
             if (replacement is not null)
             {
@@ -302,11 +307,10 @@ public sealed partial class AssetStore : IAsyncDisposable
                         _pendingReleaseBacking = replacement;
                         _pendingReleaseFailure = failure;
                     }
-
-                    throw;
                 }
             }
 
+            ExceptionDispatchInfo.Capture(operationFailure).Throw();
             throw;
         }
         finally

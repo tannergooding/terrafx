@@ -495,6 +495,95 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStoreDisposeAsyncJoinsActivePackageReplacement()
+    {
+        var registration = CreateRegistration();
+        var originalPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 15)));
+        var replacementPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 16)));
+        var originalPath = AssetPackageReaderTests.WritePackage(originalPackage);
+        var replacementPath = AssetPackageReaderTests.WritePackage(replacementPackage);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(originalPath, originalPackage, registration),
+            CancellationToken.None).ConfigureAwait(false);
+        Task? replacementTask = null;
+        Task? disposeTask = null;
+        Task? backingGateTask = null;
+
+        try
+        {
+            var currentBackingField = typeof(AssetStore).GetField(
+                "_currentBacking",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The selected package backing field was not found.");
+            var currentBacking = currentBackingField.GetValue(store)
+                ?? throw new InvalidOperationException("The selected package backing was not initialized.");
+            var backingGateField = typeof(AssetPackageBacking).GetField(
+                "_gate",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The package backing gate was not found.");
+            var backingGate = backingGateField.GetValue(currentBacking) as Lock
+                ?? throw new InvalidOperationException("The package backing gate has an unexpected type.");
+            var pendingBackingField = typeof(AssetStore).GetField(
+                "_pendingReleaseBacking",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The pending package backing field was not found.");
+            using var backingGateHeld = new ManualResetEventSlim();
+            using var releaseBackingGate = new ManualResetEventSlim();
+            backingGateTask = Task.Run(() => {
+                using var backingGateScope = backingGate.EnterScope();
+                backingGateHeld.Set();
+                releaseBackingGate.Wait();
+            });
+
+            try
+            {
+                Assert.That(backingGateHeld.Wait(TimeSpan.FromSeconds(10)), Is.True);
+                replacementTask = store.ReplacePackageAsync(
+                    CreateOptions(replacementPath, replacementPackage, registration),
+                    CancellationToken.None);
+
+                Assert.That(
+                    SpinWait.SpinUntil(() => pendingBackingField.GetValue(store) is not null, TimeSpan.FromSeconds(10)),
+                    Is.True);
+                disposeTask = store.DisposeAsync().AsTask();
+                Assert.That(disposeTask.IsCompleted, Is.False);
+            }
+            finally
+            {
+                releaseBackingGate.Set();
+            }
+
+            await backingGateTask.ConfigureAwait(false);
+            await Task.WhenAll(replacementTask, disposeTask).ConfigureAwait(false);
+            replacementTask = null;
+            disposeTask = null;
+        }
+        finally
+        {
+            try
+            {
+                if (replacementTask is not null)
+                {
+                    await replacementTask.ConfigureAwait(false);
+                }
+
+                if (disposeTask is not null)
+                {
+                    await disposeTask.ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+                File.Delete(originalPath);
+                File.Delete(replacementPath);
+            }
+        }
+    }
+
+    [Test]
     public async Task AssetStoreHonorsCancellationWithoutLeakingLoadReservations()
     {
         var registration = CreateRegistration();
