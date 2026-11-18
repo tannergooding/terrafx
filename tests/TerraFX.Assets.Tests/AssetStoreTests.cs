@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -416,6 +417,79 @@ internal sealed class AssetStoreTests
         {
             await store.DisposeAsync().ConfigureAwait(false);
             File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task AssetStoreConcurrentPackageReplacementKeepsOneSelectedPackage()
+    {
+        var registration = CreateRegistration();
+        var initialPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 15)));
+        var initialPath = AssetPackageReaderTests.WritePackage(initialPackage);
+        byte[][] replacementPackages = [
+            AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 21))),
+            AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 22))),
+            AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 23))),
+            AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 24))),
+        ];
+        var replacementPaths = replacementPackages
+            .Select(AssetPackageReaderTests.WritePackage)
+            .ToArray();
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(initialPath, initialPackage, registration),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            using var ready = new CountdownEvent(replacementPaths.Length);
+            using var start = new ManualResetEventSlim();
+            var replacements = new Task<bool>[replacementPaths.Length];
+
+            for (var index = 0; index < replacements.Length; index++)
+            {
+                var replacementIndex = index;
+                replacements[index] = Task.Run(async () => {
+                    _ = ready.Signal();
+                    start.Wait();
+
+                    try
+                    {
+                        await store.ReplacePackageAsync(
+                            CreateOptions(
+                                replacementPaths[replacementIndex],
+                                replacementPackages[replacementIndex],
+                                registration),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return true;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        return false;
+                    }
+                });
+            }
+
+            var allReplacementsReady = ready.Wait(TimeSpan.FromSeconds(10));
+            start.Set();
+            var replacementResults = await Task.WhenAll(replacements).ConfigureAwait(false);
+            Assert.That(allReplacementsReady, Is.True);
+            Assert.That(replacementResults, Does.Contain(true));
+
+            using var selected = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(selected.Value.Marker, Is.AnyOf((byte)15, 21, 22, 23, 24));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(initialPath);
+
+            foreach (var path in replacementPaths)
+            {
+                File.Delete(path);
+            }
         }
     }
 
