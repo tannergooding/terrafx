@@ -14,6 +14,7 @@ public sealed partial class PreparedScene : IDisposable
 {
     private int _additionalCleanupFailureCount;
     private readonly AssetId _assetId;
+    private readonly AssetOwnedReadDescriptor _assetReadDescriptor;
     private readonly AssetStore _assets;
     private long _bodyCleanupWorkspaceBytes;
     private SceneActivationRequest? _bodyRequest;
@@ -63,11 +64,13 @@ public sealed partial class PreparedScene : IDisposable
         AssetId sceneId,
         WorldGuidUse use,
         long maximumPreparationBytes,
-        PreparationFootprint footprint)
+        PreparationFootprint footprint,
+        AssetOwnedReadDescriptor assetReadDescriptor)
     {
         _world = world;
         _assets = assets;
         _assetId = sceneId;
+        _assetReadDescriptor = assetReadDescriptor;
         _use = use;
         _maximumPreparationBytes = maximumPreparationBytes;
         _sharedWorkspaceBytes = footprint.SharedWorkspaceBytes;
@@ -86,6 +89,8 @@ public sealed partial class PreparedScene : IDisposable
 
     /// <summary>Gets the prepared root Scene asset identity.</summary>
     public AssetId AssetId => _assetId;
+
+    internal AssetOwnedReadDescriptor AssetReadDescriptor => _assetReadDescriptor;
 
     internal AssetStore Assets => _assets;
 
@@ -112,6 +117,14 @@ public sealed partial class PreparedScene : IDisposable
             + footprint.ProducerWorkspaceBytes
             + footprint.BodyCleanupWorkspaceBytes
             + footprint.PublicationWorkspaceBytes);
+
+        if (world.GetCpuExtractionParticipant<ISceneExpansionResourcePreparer>() is not null)
+        {
+            throw new NotSupportedException(
+                "Scene preparation with CPU resource preparation is unavailable until its operation and resource profiles are admitted.");
+        }
+
+        var assetReadDescriptor = SceneSupport.DescribeSceneAssetRead(assets, sceneId);
         var use = world.AcquireGuidUse(maximumPreparationBytes);
         var control = use.Control;
 
@@ -125,7 +138,14 @@ public sealed partial class PreparedScene : IDisposable
 
         try
         {
-            preparation = new PreparedScene(world, assets, sceneId, use, maximumPreparationBytes, footprint);
+            preparation = new PreparedScene(
+                world,
+                assets,
+                sceneId,
+                use,
+                maximumPreparationBytes,
+                footprint,
+                assetReadDescriptor);
             control.SetRetainedOwner(preparation);
             return preparation;
         }

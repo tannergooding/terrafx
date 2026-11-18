@@ -279,9 +279,13 @@ internal sealed class AssetStoreTests
             Assert.That(
                 registration.TryGetProfiledCodecReceipt<TestAssetValue>(profileOrigin, out var registeredReceipt),
                 Is.True);
+            var storeDescriptor = store.DescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin);
+            var packageDescriptor = packageLease.DescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin);
 
             Assert.Multiple(() => {
                 Assert.That(descriptor.AssetId, Is.EqualTo(new AssetId(1)));
+                Assert.That(storeDescriptor.BackingToken, Is.SameAs(descriptor.BackingToken));
+                Assert.That(packageDescriptor.BackingToken, Is.SameAs(descriptor.BackingToken));
                 Assert.That(descriptor.BackingToken, Is.Not.Null);
                 Assert.That(descriptor.CodecReceipt.IsInitialized, Is.True);
                 Assert.That(descriptor.CodecReceipt.IsSameCodec(registeredReceipt), Is.True);
@@ -308,9 +312,13 @@ internal sealed class AssetStoreTests
             Assert.That(
                 packageLease.TryDescribeOwnedRead<TestAssetValue>(new AssetId(2), profileOrigin, out _),
                 Is.False);
+            _ = Assert.Throws<KeyNotFoundException>(
+                () => store.DescribeOwnedRead<TestAssetValue>(new AssetId(2), profileOrigin));
             Assert.That(
                 packageLease.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), new object(), out _),
                 Is.False);
+            _ = Assert.Throws<NotSupportedException>(
+                () => packageLease.DescribeOwnedRead<TestAssetValue>(new AssetId(1), new object()));
             _ = Assert.Throws<InvalidOperationException>(() => store.AcquirePackageLease());
 
             packageLease.Dispose();
@@ -650,6 +658,15 @@ internal sealed class AssetStoreTests
             Assert.That(
                 store.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out var originalDescriptor),
                 Is.True);
+            using (var sourceAsset = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false))
+            {
+                var assetDescriptor = sourceAsset.DescribeOwnedRead<TestAssetValue>(
+                    new AssetId(2),
+                    profileOrigin);
+                Assert.That(assetDescriptor.BackingToken, Is.SameAs(sourceAsset.BackingToken));
+            }
 
             await store.ReplacePackageAsync(replacementOptions, CancellationToken.None).ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidOperationException>(
@@ -945,6 +962,8 @@ internal sealed class AssetStoreTests
             Assert.That(
                 store.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out _),
                 Is.False);
+            _ = Assert.Throws<NotSupportedException>(
+                () => store.DescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin));
             using var lease = await store.LoadAsync<TestAssetValue>(
                 new AssetId(1),
                 CancellationToken.None).ConfigureAwait(false);

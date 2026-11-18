@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.ExceptionServices;
@@ -66,6 +67,38 @@ internal sealed class AssetPackageBacking
             1_048_576,
             1_048_576,
             1_048_576);
+    }
+
+    internal AssetOwnedReadDescriptor DescribeOwnedRead<T>(
+        AssetStore store,
+        AssetId assetId,
+        object profileOrigin)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+
+        if (!TryGetEntry(assetId, out var entry))
+        {
+            throw new KeyNotFoundException($"Asset {assetId} is absent from the selected content set.");
+        }
+
+        if (!Registration.TryGetCodec<T>(out _))
+        {
+            throw new NotSupportedException($"No asset codec is registered for {typeof(T)}.");
+        }
+
+        if (!Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt))
+        {
+            throw new NotSupportedException($"No profiled asset codec is registered for {typeof(T)}.");
+        }
+
+        if (codecReceipt.RequiredPackageCodec is AssetPackagePayloadCodec requiredCodec
+            && (entry.Codec != (byte)requiredCodec))
+        {
+            throw new NotSupportedException("The selected asset uses a package codec outside its read profile.");
+        }
+
+        return new AssetOwnedReadDescriptor(store, this, entry, codecReceipt);
     }
 
     internal ValueTask ReadExactlyAtAsync(ulong offset, Memory<byte> destination, CancellationToken cancellationToken)

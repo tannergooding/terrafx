@@ -155,7 +155,20 @@ internal static class ScenePrefabExpansionPlanner
             throw new ArgumentOutOfRangeException(nameof(sceneId));
         }
 
-        var sceneLease = await assets.LoadAsync<SceneAsset>(sceneId, cancellationToken).ConfigureAwait(false);
+        if (preparationOwner is not null
+            && ((preparationOwner.AssetId != sceneId)
+                || !ReferenceEquals(preparationOwner.Assets, assets)
+                || (preparationOwner.AssetReadDescriptor.AssetId != sceneId)
+                || !ReferenceEquals(preparationOwner.AssetReadDescriptor.Store, assets)))
+        {
+            throw new ArgumentException("The prepared Scene root descriptor does not match the selected World, AssetStore, and Scene identity.", nameof(preparationOwner));
+        }
+
+        var sceneLease = (preparationOwner is null)
+            ? await assets.LoadAsync<SceneAsset>(sceneId, cancellationToken).ConfigureAwait(false)
+            : await assets.LoadDescribedAsync<SceneAsset>(
+                preparationOwner.AssetReadDescriptor,
+                cancellationToken).ConfigureAwait(false);
 
         if (preparationOwner is null)
         {
@@ -2132,9 +2145,13 @@ internal static class ScenePrefabExpansionPlanner
 
             var sceneLease = _sceneLease
                 ?? throw new InvalidOperationException("The Prefab was requested before the Scene lease was acquired.");
-            var lease = await sceneLease.LoadFromPackageAsync<ScenePrefabAsset>(
-                assetId,
-                _cancellationToken).ConfigureAwait(false);
+            var lease = (_preparationOwner is null)
+                ? await sceneLease.LoadFromPackageAsync<ScenePrefabAsset>(
+                    assetId,
+                    _cancellationToken).ConfigureAwait(false)
+                : await sceneLease.LoadDescribedFromPackageAsync<ScenePrefabAsset>(
+                    SceneSupport.DescribePrefabAssetRead(sceneLease, assetId),
+                    _cancellationToken).ConfigureAwait(false);
             var value = lease.Value;
             var retained = false;
 

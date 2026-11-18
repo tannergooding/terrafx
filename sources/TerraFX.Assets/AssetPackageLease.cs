@@ -81,6 +81,19 @@ public sealed class AssetPackageLease : IDisposable
         return state.ContainsAssetId(assetId, this);
     }
 
+    internal AssetOwnedReadDescriptor DescribeOwnedRead<T>(AssetId assetId, object profileOrigin)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        return state.DescribeOwnedRead<T>(assetId, profileOrigin, this);
+    }
+
     internal Task<AssetLease<T>> LoadDescribedFromPackageAsync<T>(
         AssetOwnedReadDescriptor descriptor,
         CancellationToken cancellationToken)
@@ -198,6 +211,18 @@ public sealed class AssetPackageLease : IDisposable
             {
                 ThrowIfNotActive(instance);
                 return _backing.TryGetEntry(assetId, out _);
+            }
+        }
+
+        internal AssetOwnedReadDescriptor DescribeOwnedRead<T>(
+            AssetId assetId,
+            object profileOrigin,
+            object instance)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _backing.DescribeOwnedRead<T>(_store, assetId, profileOrigin);
             }
         }
 

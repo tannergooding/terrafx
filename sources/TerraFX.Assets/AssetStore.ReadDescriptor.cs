@@ -8,6 +8,24 @@ namespace TerraFX.Assets;
 
 public sealed partial class AssetStore
 {
+    internal AssetOwnedReadDescriptor DescribeOwnedRead<T>(AssetId assetId, object profileOrigin)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var backing = _currentBacking
+                ?? throw new InvalidOperationException("The asset store has no selected package.");
+            return backing.DescribeOwnedRead<T>(this, assetId, profileOrigin);
+        }
+    }
+
     internal async Task<AssetLease<T>> LoadDescribedAsync<T>(
         AssetOwnedReadDescriptor descriptor,
         CancellationToken cancellationToken)

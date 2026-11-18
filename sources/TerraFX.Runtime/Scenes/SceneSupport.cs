@@ -32,6 +32,28 @@ public static class SceneSupport
             AssetPackagePayloadCodec.None);
     }
 
+    internal static AssetOwnedReadDescriptor DescribePrefabAssetRead(
+        AssetLease<SceneAsset> sceneLease,
+        AssetId assetId)
+    {
+        ArgumentNullException.ThrowIfNull(sceneLease);
+        var descriptor = sceneLease.DescribeOwnedRead<ScenePrefabAsset>(
+            assetId,
+            typeof(ScenePrefabCodecV2Origin));
+        ValidatePrefabReadDescriptor(descriptor);
+        return descriptor;
+    }
+
+    internal static AssetOwnedReadDescriptor DescribeSceneAssetRead(
+        AssetStore assets,
+        AssetId assetId)
+    {
+        ArgumentNullException.ThrowIfNull(assets);
+        var descriptor = assets.DescribeOwnedRead<SceneAsset>(assetId, typeof(SceneCodecV2Origin));
+        ValidateSceneReadDescriptor(descriptor);
+        return descriptor;
+    }
+
     internal static bool HasBuiltInAssetCodecReceipts(AssetStoreRegistration registration)
     {
         ArgumentNullException.ThrowIfNull(registration);
@@ -121,6 +143,24 @@ public static class SceneSupport
 
         descriptor = default;
         return false;
+    }
+
+    private static void ValidatePrefabReadDescriptor(AssetOwnedReadDescriptor descriptor)
+    {
+        if ((descriptor.CodecReceipt.Schema != ScenePrefabAssetCodec.Schema)
+            || (descriptor.RequiredPackageCodec != AssetPackagePayloadCodec.None))
+        {
+            throw new NotSupportedException("The Prefab does not match the selected built-in Scene read profile.");
+        }
+    }
+
+    private static void ValidateSceneReadDescriptor(AssetOwnedReadDescriptor descriptor)
+    {
+        if ((descriptor.CodecReceipt.Schema != SceneAssetCodec.Schema)
+            || (descriptor.RequiredPackageCodec != AssetPackagePayloadCodec.None))
+        {
+            throw new NotSupportedException("The Scene does not match the selected built-in Scene read profile.");
+        }
     }
 
     private sealed class BuiltInSceneComponentRegistration : IWorldSceneSupportRegistration
