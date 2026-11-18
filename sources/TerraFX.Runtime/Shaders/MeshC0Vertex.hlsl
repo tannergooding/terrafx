@@ -35,16 +35,7 @@ cbuffer ObjectData : register(b0, space2)
 };
 
 #if defined(TERRAFX_SKINNED)
-struct BonePaletteEntry
-{
-    float4 SkinRow0;
-    float4 SkinRow1;
-    float4 SkinRow2;
-    float4 SkinRow3;
-    float4 NormalRow0;
-    float4 NormalRow1;
-    float4 NormalRow2;
-};
+#include "MeshC0Skinning.hlsl"
 
 #if defined(TERRAFX_SPIRV)
 [[vk::binding(32, 2)]]
@@ -175,46 +166,31 @@ VertexOutput VSMain(VertexInput input)
             + (weights.y * skinnedPosition1)
             + (weights.z * skinnedPosition2)
             + (weights.w * skinnedPosition3);
-        float3 boneNormal0 =
-            mul(input.Normal, float3x3(bone0.NormalRow0.xyz, bone0.NormalRow1.xyz, bone0.NormalRow2.xyz));
-        float3 boneNormal1 =
-            mul(input.Normal, float3x3(bone1.NormalRow0.xyz, bone1.NormalRow1.xyz, bone1.NormalRow2.xyz));
-        float3 boneNormal2 =
-            mul(input.Normal, float3x3(bone2.NormalRow0.xyz, bone2.NormalRow1.xyz, bone2.NormalRow2.xyz));
-        float3 boneNormal3 =
-            mul(input.Normal, float3x3(bone3.NormalRow0.xyz, bone3.NormalRow1.xyz, bone3.NormalRow2.xyz));
-        localNormal = (weights.x * boneNormal0)
-            + (weights.y * boneNormal1)
-            + (weights.z * boneNormal2)
-            + (weights.w * boneNormal3);
+        float3 boneNormal0;
+        float3 boneNormal1;
+        float3 boneNormal2;
+        float3 boneNormal3;
+        localNormal = EvaluateSkinnedNormalBlend(
+            input.Normal,
+            weights,
+            bone0,
+            bone1,
+            bone2,
+            bone3,
+            boneNormal0,
+            boneNormal1,
+            boneNormal2,
+            boneNormal3);
 
-        if (!all(isfinite(localNormal)) || (dot(localNormal, localNormal) < 1.0e-12f))
+        if (IsInvalidSkinnedNormal(localNormal) || IsDegenerateSkinnedNormal(localNormal))
         {
-            float dominantWeight = weights.x;
-            uint dominantJoint = jointIndices.x;
-            localNormal = boneNormal0;
-
-            if ((weights.y > dominantWeight)
-                || ((weights.y == dominantWeight) && (jointIndices.y < dominantJoint)))
-            {
-                dominantWeight = weights.y;
-                dominantJoint = jointIndices.y;
-                localNormal = boneNormal1;
-            }
-
-            if ((weights.z > dominantWeight)
-                || ((weights.z == dominantWeight) && (jointIndices.z < dominantJoint)))
-            {
-                dominantWeight = weights.z;
-                dominantJoint = jointIndices.z;
-                localNormal = boneNormal2;
-            }
-
-            if ((weights.w > dominantWeight)
-                || ((weights.w == dominantWeight) && (jointIndices.w < dominantJoint)))
-            {
-                localNormal = boneNormal3;
-            }
+            localNormal = SelectDominantSkinnedNormal(
+                jointIndices,
+                weights,
+                boneNormal0,
+                boneNormal1,
+                boneNormal2,
+                boneNormal3);
         }
 #if defined(TERRAFX_TEXTURED)
         localTangent =

@@ -39,6 +39,7 @@
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
     <TerraFXShaderInclude Include="Shaders\MeshC0Vertex.hlsl" />
+    <TerraFXShaderInclude Include="Shaders\MeshC0Skinning.hlsl" />
     <TerraFXShaderInclude Include="Shaders\MeshC0Pixel.hlsl" />
     <TerraFXShaderInclude Include="Shaders\MeshC0TexturedPixel.hlsl" />
     <TerraFXShaderInclude Include="Shaders\MeshC0ShadowVertex.hlsl" />
