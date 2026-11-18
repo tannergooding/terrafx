@@ -174,10 +174,21 @@ public sealed partial class Renderer
         async Task<IDisposable?> ISceneExpansionResourcePreparer.PrepareAsync(
             SceneExpansionPlan plan,
             Func<long, WorldSceneStorageReservation?> reserveStorage,
+            Func<long, WorldSceneStorageReservation?> reserveWorkspace,
             CancellationToken cancellationToken)
             => await RenderSceneAssetBundle.PrepareAsync(
                 plan,
                 reserveStorage,
+                reserveWorkspace,
+                cancellationToken).ConfigureAwait(false);
+
+        async Task<IDisposable?> ISceneExpansionResourcePreparer.PrepareOwnedAsync(
+            SceneExpansionPlan plan,
+            ScenePreparationFunding funding,
+            CancellationToken cancellationToken)
+            => await RenderSceneAssetBundle.PrepareOwnedAsync(
+                plan,
+                funding,
                 cancellationToken).ConfigureAwait(false);
     }
 }

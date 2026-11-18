@@ -12,6 +12,16 @@ namespace TerraFX.Runtime.Tests.Scenes;
 internal sealed class SceneLoadOptionsTests
 {
     [Test]
+    public void AcceptsMaximumPreparationByteBudgetExactly()
+    {
+        var snapshot = new SceneLoadOptions {
+            MaximumPreparationBytes = 2_147_483_648,
+        }.ValidateAndFreeze();
+
+        Assert.That(snapshot.MaximumPreparationBytes, Is.EqualTo(2_147_483_648));
+    }
+
+    [Test]
     public void CopiesAndSortsExternalBindingsByRfcSlotId()
     {
         var rfcLater = new Guid("80000000-0000-4000-8000-000000000001");
@@ -44,6 +54,7 @@ internal sealed class SceneLoadOptionsTests
         Assert.That(snapshot.MaximumPrefabEntities, Is.EqualTo(65_536));
         Assert.That(snapshot.MaximumPrefabDepth, Is.EqualTo(32));
         Assert.That(snapshot.MaximumHierarchyDepth, Is.EqualTo(256));
+        Assert.That(snapshot.MaximumPreparationBytes, Is.EqualTo(67_108_864));
     }
 
     [Test]
@@ -59,6 +70,20 @@ internal sealed class SceneLoadOptionsTests
         Assert.That(explicitNull.ExternalBindings, Has.Length.EqualTo(1));
         Assert.That(explicitNull.ExternalBindings[0].SlotId, Is.EqualTo(slotId));
         Assert.That(explicitNull.ExternalBindings[0].Target, Is.Null);
+    }
+
+    [Test]
+    public void DoesNotAllocateWhenValidatingSceneInstanceId()
+    {
+        var options = new SceneLoadOptions {
+            SceneInstanceId = Guid.NewGuid(),
+        };
+        options.ValidateShape();
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread();
+
+        options.ValidateShape();
+
+        Assert.That(GC.GetAllocatedBytesForCurrentThread() - allocatedBytes, Is.Zero);
     }
 
     [Test]
@@ -101,6 +126,15 @@ internal sealed class SceneLoadOptionsTests
             Throws.TypeOf<ArgumentOutOfRangeException>());
         Assert.That(
             () => new SceneLoadOptions { MaximumPrefabDepth = 33 }.ValidateAndFreeze(),
+            Throws.TypeOf<ArgumentOutOfRangeException>());
+        Assert.That(
+            () => new SceneLoadOptions { MaximumPreparationBytes = 0 }.ValidateAndFreeze(),
+            Throws.TypeOf<ArgumentOutOfRangeException>());
+        Assert.That(
+            () => new SceneLoadOptions { MaximumPreparationBytes = -1 }.ValidateAndFreeze(),
+            Throws.TypeOf<ArgumentOutOfRangeException>());
+        Assert.That(
+            () => new SceneLoadOptions { MaximumPreparationBytes = 2_147_483_649 }.ValidateAndFreeze(),
             Throws.TypeOf<ArgumentOutOfRangeException>());
         Assert.That(
             () => new SceneLoadOptions { SceneInstanceId = Guid.Empty }.ValidateAndFreeze(),

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -48,25 +49,107 @@ public sealed class SceneLoader
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(preparedScene);
+        var access = preparedScene.CaptureActivationHeader(_world, _assets, out var activationWorkspaceLimit);
+        PreparedScene.ThrowForPreparationAccess(access);
 
         if (cancellationToken.IsCancellationRequested)
         {
             return Task.FromCanceled<SceneActivationReceipt>(cancellationToken);
         }
 
-        var request = new SceneActivationRequest(preparedScene, _world, cancellationToken);
+        var activationUse = _world.AcquireGuidUse(activationWorkspaceLimit);
+        var activationControl = activationUse.Control;
+        var bootstrapWorkspaceReserved = false;
+        var completionWorkspaceReserved = false;
+        SceneActivationRequest request;
 
-        if (!_registry.TryEnqueue(request))
+        try
         {
-            request.Reject(_world.CreateDiagnostic(
-                "SceneActivation.OwnerQueueFull",
-                DiagnosticSeverity.Warning,
-                "SceneLoader.ActivateAsync",
-                "The target World owner-control queue is full.",
-                preparedScene.AssetId.Value));
+            if (!activationControl.TryReserveWorkspace(SceneActivationRequest.ActivationBootstrapWorkspaceBytes))
+            {
+                throw new InvalidOperationException("The activation use could not reserve its request and task bootstrap.");
+            }
+
+            bootstrapWorkspaceReserved = true;
+
+            if (!activationControl.TryReserveWorkspace(SceneActivationRequest.ActivationCompletionWorkspaceBytes))
+            {
+                throw new InvalidOperationException("The activation use could not reserve its terminal completion workspace.");
+            }
+
+            completionWorkspaceReserved = true;
+            request = new SceneActivationRequest(
+                preparedScene,
+                _world,
+                _assets,
+                activationWorkspaceLimit,
+                activationUse,
+                cancellationToken);
+        }
+        catch
+        {
+            var workspaceReleaseFailed = false;
+
+            if (completionWorkspaceReserved
+                && !activationControl.TryReleaseWorkspace(SceneActivationRequest.ActivationCompletionWorkspaceBytes))
+            {
+                workspaceReleaseFailed = true;
+            }
+
+            if (bootstrapWorkspaceReserved
+                && !activationControl.TryReleaseWorkspace(SceneActivationRequest.ActivationBootstrapWorkspaceBytes))
+            {
+                workspaceReleaseFailed = true;
+            }
+
+            if (workspaceReleaseFailed)
+            {
+                activationControl.Quarantine(activationControl, failureStage: 3, failureCategory: 4);
+                throw new InvalidOperationException("The failed activation request could not return its workspace claims.");
+            }
+
+            activationUse.Dispose();
+            throw;
         }
 
-        return request.Task;
+        var task = request.Task;
+
+        try
+        {
+            var enqueueStatus = _registry.EnqueueActivation(request);
+
+            if (enqueueStatus is SceneActivationEnqueueStatus.QueueFull)
+            {
+                request.Reject(_world.CreateDiagnostic(
+                    "SceneActivation.OwnerQueueFull",
+                    DiagnosticSeverity.Warning,
+                    "SceneLoader.ActivateAsync",
+                    "The target World owner-control queue is full.",
+                    preparedScene.AssetId.Value));
+            }
+            else if (enqueueStatus is SceneActivationEnqueueStatus.RegistryDisposed)
+            {
+                throw new ObjectDisposedException(nameof(SceneWorldRegistry));
+            }
+            else
+            {
+                PreparedScene.ThrowForPreparationAccess(enqueueStatus switch {
+                    SceneActivationEnqueueStatus.Queued => ScenePreparationAccess.Available,
+                    SceneActivationEnqueueStatus.PreparedNotAvailable => ScenePreparationAccess.NotAvailable,
+                    SceneActivationEnqueueStatus.AlreadyAdmitted => ScenePreparationAccess.AlreadyAdmitted,
+                    SceneActivationEnqueueStatus.WrongWorld => ScenePreparationAccess.WrongWorld,
+                    SceneActivationEnqueueStatus.WrongAssetStore => ScenePreparationAccess.WrongAssetStore,
+                    _ => ScenePreparationAccess.PolicyMismatch,
+                });
+            }
+        }
+        catch
+        {
+            request.CancelFromRegistryDisposal();
+            throw;
+        }
+
+        return task;
     }
 
     /// <summary>Loads and validates a Scene and its recursively selected Prefabs.</summary>
@@ -79,6 +162,10 @@ public sealed class SceneLoader
     /// <exception cref="ArgumentException">The World and selected assets use different compiled schema registries.</exception>
     /// <exception cref="InvalidDataException">Root external bindings do not match the Scene slot declarations.</exception>
     /// <exception cref="InvalidOperationException">The selected expansion exceeds its bounded World-owned memory budget.</exception>
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The anchored preparation owns both roles; unescaped freeze failure aborts it and success transfers its body through the captured Task.")]
     public Task<PreparedScene> PrepareAsync(
         AssetId sceneId,
         SceneLoadOptions options,
@@ -91,8 +178,32 @@ public sealed class SceneLoader
             throw new ArgumentOutOfRangeException(nameof(sceneId));
         }
 
-        var snapshot = options.ValidateAndFreeze();
-        return PrepareCoreAsync(sceneId, snapshot, cancellationToken);
+        options.ValidateShape();
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<PreparedScene>(cancellationToken);
+        }
+
+        var maximumPreparationBytes = options.MaximumPreparationBytes;
+        var preparation = PreparedScene.CreatePreparation(_world, _assets, sceneId, maximumPreparationBytes);
+        var bindingArrayBytes = options.ExternalBindings.IsEmpty
+            ? 0
+            : WorldAdmissionDomain.ArrayCharge(options.ExternalBindings.Length, IntPtr.Size);
+
+        try
+        {
+            preparation.FreezeOptions(options, bindingArrayBytes);
+        }
+        catch
+        {
+            preparation.AbortPreparationEntry();
+            throw;
+        }
+
+        var task = preparation.PreparationTask;
+        preparation.StartPreparation(this, cancellationToken);
+        return task;
     }
 
     internal Task<SceneExpansionPlan> PrepareRestorePlanAsync(
@@ -119,21 +230,72 @@ public sealed class SceneLoader
             options,
             packageLease,
             useRestoredStorage: true,
+            useControl: null,
             cancellationToken: cancellationToken);
     }
 
-    private async Task<PreparedScene> PrepareCoreAsync(
+    internal Task<SceneExpansionPlan> StartPlanPreparation(
         AssetId sceneId,
+        SceneLoadOptionsSnapshot options,
+        PreparedScene preparationOwner,
+        CancellationToken cancellationToken)
+    {
+        var useControl = preparationOwner.PreparationControl;
+        WorldSceneStorageReservation? ReserveStorage(long bytes)
+        {
+            return _world.TryReserveSceneStorage(_registry, bytes, useControl);
+        }
+
+        WorldSceneStorageReservation? ReserveWorkspace(long bytes)
+        {
+            return _world.TryReserveSceneWorkspace(_registry, useControl, bytes);
+        }
+
+        var limits = new SceneExpansionLimits(
+            options.MaximumExpandedEntities,
+            options.MaximumPrefabEntities,
+            options.MaximumExpandedOccurrences,
+            options.MaximumPrefabDepth,
+            options.MaximumHierarchyDepth,
+            options.MaximumPreparationBytes,
+            ReserveStorage,
+            rootExternalBindingCount: options.ExternalBindings.Length,
+            reserveWorkspace: ReserveWorkspace);
+        return ScenePrefabExpansionPlanner.PrepareAsync(
+            _assets,
+            sceneId,
+            preparationOwner,
+            limits,
+            cancellationToken);
+    }
+
+    internal Task<IDisposable?> StartResourcePreparation(
+        ISceneExpansionResourcePreparer preparer,
+        SceneExpansionPlan plan,
+        PreparedScene preparationOwner,
+        CancellationToken cancellationToken)
+        => preparer.PrepareOwnedAsync(
+            plan,
+            new ScenePreparationFunding(preparationOwner, _registry),
+            cancellationToken);
+
+    internal ISceneExpansionResourcePreparer? ValidatePreparedPlan(
+        SceneExpansionPlan plan,
         SceneLoadOptionsSnapshot options,
         CancellationToken cancellationToken)
     {
-        var plan = await PreparePlanCoreAsync(
-            sceneId,
-            options,
-            packageLease: null,
-            useRestoredStorage: false,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-        return new PreparedScene(_world, _assets, options, plan);
+        cancellationToken.ThrowIfCancellationRequested();
+        _registry.EnsureBoundTo(_world);
+
+        if (!ReferenceEquals(plan.Schemas, _world.Registration.Schemas))
+        {
+            throw new ArgumentException(
+                "The Scene AssetStore must use the exact compiled schema registry captured by the target World.");
+        }
+
+        ValidateComponentRegistrations(plan, cancellationToken);
+        ValidateRootExternalBindings(plan, options.ExternalBindings, cancellationToken);
+        return _world.GetCpuExtractionParticipant<ISceneExpansionResourcePreparer>();
     }
 
     private async Task<SceneExpansionPlan> PreparePlanCoreAsync(
@@ -141,25 +303,31 @@ public sealed class SceneLoader
         SceneLoadOptionsSnapshot options,
         AssetPackageLease? packageLease,
         bool useRestoredStorage,
+        WorldGuidUseControl? useControl,
         CancellationToken cancellationToken)
     {
         Func<long, WorldSceneStorageReservation?> reserveStorage = useRestoredStorage
             ? bytes => _world.TryReserveRestoredSceneStorage(_registry, bytes)
-            : bytes => _world.TryReserveSceneStorage(_registry, bytes);
+            : bytes => _world.TryReserveSceneStorage(_registry, bytes, useControl);
+        var reserveWorkspace = (useControl is null)
+            ? reserveStorage
+            : bytes => _world.TryReserveSceneWorkspace(_registry, useControl, bytes);
         var limits = new SceneExpansionLimits(
             options.MaximumExpandedEntities,
             options.MaximumPrefabEntities,
             options.MaximumExpandedOccurrences,
             options.MaximumPrefabDepth,
             options.MaximumHierarchyDepth,
-            _world.MaximumOwnedStateBytes,
+            (useControl is null) ? _world.MaximumOwnedStateBytes : options.MaximumPreparationBytes,
             reserveStorage,
-            rootExternalBindingCount: options.ExternalBindings.Length);
+            rootExternalBindingCount: options.ExternalBindings.Length,
+            reserveWorkspace: (useControl is null) ? null : reserveWorkspace);
         var plan = (packageLease is null)
             ? await ScenePrefabExpansionPlanner.PrepareAsync(
                 _assets,
                 sceneId,
                 limits,
+                useControl,
                 cancellationToken).ConfigureAwait(false)
             : await ScenePrefabExpansionPlanner.PrepareAsync(
                 packageLease,
@@ -188,6 +356,7 @@ public sealed class SceneLoader
                 var preparedAssets = await resourcePreparer.PrepareAsync(
                     plan,
                     reserveStorage,
+                    reserveWorkspace,
                     cancellationToken).ConfigureAwait(false);
 
                 if (preparedAssets is not null)
@@ -201,7 +370,16 @@ public sealed class SceneLoader
         }
         catch
         {
-            plan.Dispose();
+            try
+            {
+                plan.Dispose();
+            }
+            catch
+            {
+                useControl?.Quarantine(plan, failureStage: 2, failureCategory: 2);
+                throw;
+            }
+
             throw;
         }
     }

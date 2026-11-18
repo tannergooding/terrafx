@@ -52,7 +52,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         ArgumentNullException.ThrowIfNull(prefabLeases);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(requiredByteReservation);
 
-        if (storageReservation is not null && (storageReservation.Bytes != requiredByteReservation))
+        if (storageReservation is not null && (storageReservation.DataBytes != requiredByteReservation))
         {
             throw new ArgumentException("The retained Scene byte reservation does not match the preflight estimate.", nameof(storageReservation));
         }
@@ -113,7 +113,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         _entityIndicesByAssignmentOrdinal = entityIndicesByAssignmentOrdinal;
         _entityParentIndices = entityParentIndices;
         _occurrenceIds = occurrenceIds;
-        RequiredByteReservation = requiredByteReservation;
+        RequiredByteReservation = WorldSceneStorageReservation.GetRequiredBytes(requiredByteReservation);
         _storageReservation = storageReservation;
     }
 
@@ -274,25 +274,36 @@ internal sealed class SceneExpansionPlan : IDisposable
             return;
         }
 
-        try
-        {
-            Interlocked.Exchange(ref _preparedAssets, null)?.Dispose();
-            var prefabLeases = Interlocked.Exchange(ref _prefabLeases, null);
+        var preparedAssets = Volatile.Read(ref _preparedAssets);
+        preparedAssets?.Dispose();
 
-            if (prefabLeases is not null)
+        if (preparedAssets is not null)
+        {
+            _ = Interlocked.CompareExchange(ref _preparedAssets, null, preparedAssets);
+        }
+
+        var prefabLeases = _prefabLeases;
+
+        if (prefabLeases is not null)
+        {
+            foreach (var lease in prefabLeases.Values)
             {
-                foreach (var lease in prefabLeases.Values)
-                {
-                    lease.Dispose();
-                }
+                lease.Dispose();
             }
 
-            Interlocked.Exchange(ref _sceneLease, null)?.Dispose();
+            _prefabLeases = null;
         }
-        finally
+
+        var sceneLease = Volatile.Read(ref _sceneLease);
+        sceneLease?.Dispose();
+
+        if (sceneLease is not null)
         {
-            Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
+            _ = Interlocked.CompareExchange(ref _sceneLease, null, sceneLease);
         }
+
+        var storageReservation = Interlocked.Exchange(ref _storageReservation, null);
+        storageReservation?.Dispose();
     }
 
     internal PreparedAssetsLifetime.Lease? AcquirePreparedAssets()
@@ -301,7 +312,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         return Volatile.Read(ref _preparedAssets)?.Acquire();
     }
 
-    internal void AttachPreparedAssets(IDisposable preparedAssets)
+    internal void AttachPreparedAssets(IDisposable preparedAssets, PreparedScene? preparationOwner = null)
     {
         ArgumentNullException.ThrowIfNull(preparedAssets);
         PreparedAssetsLifetime? lifetime = null;
@@ -321,7 +332,9 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
         finally
         {
-            if (!transferred)
+            // Ordinary preparation retains the original resource in its pending slot.
+            // On failure that root, not this unescaped lifetime wrapper, owns cleanup.
+            if (!transferred && (preparationOwner is null))
             {
                 if (lifetime is null)
                 {

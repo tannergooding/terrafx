@@ -12,4 +12,5 @@ internal readonly record struct SceneLoadOptionsSnapshot(
     int MaximumExpandedOccurrences,
     int MaximumPrefabEntities,
     int MaximumPrefabDepth,
-    int MaximumHierarchyDepth);
+    int MaximumHierarchyDepth,
+    long MaximumPreparationBytes);

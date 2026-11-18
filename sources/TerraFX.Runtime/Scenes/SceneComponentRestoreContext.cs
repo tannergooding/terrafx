@@ -19,7 +19,7 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
     private readonly int _expandedEntityIndex;
     private Exception? _failure;
     private bool _isActive = true;
-    private readonly SceneLoadOptionsSnapshot _options;
+    private SceneLoadOptionsSnapshot _options;
     private readonly int _ownerThreadId;
     private readonly SceneExpansionPlan _plan;
     private readonly IReadOnlyDictionary<Type, ComponentInitialization> _sameEntityComponents;
@@ -168,11 +168,15 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
         }
     }
 
-    internal void Revoke() => _isActive = false;
+    internal void Revoke()
+    {
+        Volatile.Write(ref _isActive, false);
+        _options = default;
+    }
 
     private void EnsureActive()
     {
-        if (!_isActive)
+        if (!IsActive)
         {
             throw new InvalidOperationException("The Scene component restore context has expired.");
         }

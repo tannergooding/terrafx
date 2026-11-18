@@ -380,6 +380,42 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         }
     }
 
+    internal SceneActivationEnqueueStatus EnqueueActivation(SceneActivationRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        lock (_requestGate)
+        {
+            if (Volatile.Read(ref _isDisposed) != 0)
+            {
+                return SceneActivationEnqueueStatus.RegistryDisposed;
+            }
+
+            if (_isPersistenceCaptureActive || (_pendingRequestCount == _pendingRequests.Length))
+            {
+                return SceneActivationEnqueueStatus.QueueFull;
+            }
+
+            var access = request.AdmitPreparationBody();
+
+            if (access is not ScenePreparationAccess.Available)
+            {
+                return access switch {
+                    ScenePreparationAccess.NotAvailable => SceneActivationEnqueueStatus.PreparedNotAvailable,
+                    ScenePreparationAccess.AlreadyAdmitted => SceneActivationEnqueueStatus.AlreadyAdmitted,
+                    ScenePreparationAccess.WrongWorld => SceneActivationEnqueueStatus.WrongWorld,
+                    ScenePreparationAccess.WrongAssetStore => SceneActivationEnqueueStatus.WrongAssetStore,
+                    _ => SceneActivationEnqueueStatus.PolicyMismatch,
+                };
+            }
+
+            var tail = (_pendingRequestHead + _pendingRequestCount) % _pendingRequests.Length;
+            _pendingRequests[tail] = request;
+            _pendingRequestCount++;
+            return SceneActivationEnqueueStatus.Queued;
+        }
+    }
+
     internal void EnsureBoundTo(World world)
     {
         ArgumentNullException.ThrowIfNull(world);

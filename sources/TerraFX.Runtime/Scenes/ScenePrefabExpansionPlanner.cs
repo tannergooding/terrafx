@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -68,7 +69,12 @@ internal static class ScenePrefabExpansionPlanner
 
         try
         {
-            builder = new SceneExpansionBuilder(limits, cancellationToken);
+            builder = new SceneExpansionBuilder(
+                limits,
+                useControl: null,
+                preparationOwner: null,
+                sceneLease,
+                cancellationToken: cancellationToken);
             return await builder.MeasureRequiredByteReservationAsync(sceneLease).ConfigureAwait(false);
         }
         finally
@@ -97,14 +103,49 @@ internal static class ScenePrefabExpansionPlanner
 
         var sceneLease = await packageLease.LoadFromPackageAsync<SceneAsset>(sceneId, cancellationToken)
             .ConfigureAwait(false);
-        return await PrepareTakingLeaseAsync(sceneLease, limits, cancellationToken).ConfigureAwait(false);
+        return await PrepareTakingLeaseAsync(
+            sceneLease,
+            limits,
+            useControl: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    internal static async Task<SceneExpansionPlan> PrepareAsync(
+    internal static Task<SceneExpansionPlan> PrepareAsync(
+        AssetStore assets,
+        AssetId sceneId,
+        PreparedScene preparationOwner,
+        SceneExpansionLimits limits,
+        CancellationToken cancellationToken)
+        => PrepareCoreAsync(
+            assets,
+            sceneId,
+            limits,
+            preparationOwner.PreparationControl,
+            preparationOwner,
+            cancellationToken);
+
+    internal static Task<SceneExpansionPlan> PrepareAsync(
         AssetStore assets,
         AssetId sceneId,
         SceneExpansionLimits limits,
+        WorldGuidUseControl? useControl = null,
         CancellationToken cancellationToken = default)
+        => PrepareCoreAsync(assets, sceneId, limits, useControl, preparationOwner: null, cancellationToken);
+
+    internal static Task<SceneExpansionPlan> PrepareTakingLeaseAsync(
+        AssetLease<SceneAsset> sceneLease,
+        SceneExpansionLimits limits,
+        WorldGuidUseControl? useControl = null,
+        CancellationToken cancellationToken = default)
+        => PrepareTakingLeaseCoreAsync(sceneLease, limits, useControl, preparationOwner: null, cancellationToken);
+
+    private static async Task<SceneExpansionPlan> PrepareCoreAsync(
+        AssetStore assets,
+        AssetId sceneId,
+        SceneExpansionLimits limits,
+        WorldGuidUseControl? useControl,
+        PreparedScene? preparationOwner,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(assets);
 
@@ -114,31 +155,86 @@ internal static class ScenePrefabExpansionPlanner
         }
 
         var sceneLease = await assets.LoadAsync<SceneAsset>(sceneId, cancellationToken).ConfigureAwait(false);
-        return await PrepareTakingLeaseAsync(sceneLease, limits, cancellationToken).ConfigureAwait(false);
+
+        if (preparationOwner is null)
+        {
+            useControl?.SetRetainedOwner(sceneLease);
+        }
+        else
+        {
+            preparationOwner.StagePreparationOwner(sceneLease);
+            preparationOwner.CommitPreparationOwner(expectedOwner: null);
+        }
+
+        return await PrepareTakingLeaseCoreAsync(
+            sceneLease,
+            limits,
+            useControl,
+            preparationOwner,
+            cancellationToken).ConfigureAwait(false);
     }
 
-    internal static async Task<SceneExpansionPlan> PrepareTakingLeaseAsync(
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The stable root samples cleanup failure without replacing an original planner execution exception.")]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The builder is disposed in finally; failed cleanup retains its graph in the stable preparation root.")]
+    private static async Task<SceneExpansionPlan> PrepareTakingLeaseCoreAsync(
         AssetLease<SceneAsset> sceneLease,
         SceneExpansionLimits limits,
-        CancellationToken cancellationToken = default)
+        WorldGuidUseControl? useControl,
+        PreparedScene? preparationOwner,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sceneLease);
         SceneExpansionBuilder? builder = null;
+        Exception? cleanupFailure = null;
+        SceneExpansionPlan? plan = null;
 
         try
         {
-            builder = new SceneExpansionBuilder(limits, cancellationToken);
-            return await builder.BuildAsync(sceneLease).ConfigureAwait(false);
+            builder = new SceneExpansionBuilder(limits, useControl, preparationOwner, sceneLease, cancellationToken);
+
+            if (preparationOwner is not null)
+            {
+                preparationOwner.StagePreparationOwner(builder);
+                preparationOwner.CommitPreparationOwner(sceneLease);
+            }
+
+            plan = await builder.BuildAsync(sceneLease).ConfigureAwait(false);
         }
         finally
         {
-            if (builder is null)
+            try
             {
-                sceneLease.Dispose();
-            }
+                if (builder is null)
+                {
+                    sceneLease.Dispose();
+                }
 
-            builder?.Dispose();
+                builder?.Dispose();
+                preparationOwner?.AcknowledgePreparationOwnerRelease((IDisposable?)builder ?? sceneLease);
+            }
+            catch (Exception failure) when (preparationOwner is not null)
+            {
+                preparationOwner.RecordPreparationCleanupFailure(
+                    failure,
+                    stage: 1,
+                    category: 2,
+                    (IDisposable?)builder ?? sceneLease);
+                cleanupFailure = failure;
+            }
         }
+
+        if (cleanupFailure is not null)
+        {
+            throw cleanupFailure;
+        }
+
+        return plan ?? throw new InvalidOperationException("The Scene planner produced no expansion plan.");
     }
 
     private sealed class SceneExpansionBuilder : IDisposable
@@ -158,9 +254,11 @@ internal static class ScenePrefabExpansionPlanner
         private ImmutableArray<SceneExpandedExternalSlotBinding>.Builder _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>();
         private readonly SceneExpansionLimits _limits;
         private int _occurrenceCount;
+        private readonly WorldGuidUseControl? _useControl;
         private Guid[] _occurrenceIdentities = [];
         private ImmutableArray<SceneExpandedOccurrence>.Builder _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
         private int _placementOccurrenceCount;
+        private readonly PreparedScene? _preparationOwner;
         private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases = [];
         private List<SceneExpandedReferenceBinding> _referenceBindings = [];
         private long _overrideComponentArrayBytes;
@@ -181,10 +279,21 @@ internal static class ScenePrefabExpansionPlanner
 
         internal SceneExpansionBuilder(
             SceneExpansionLimits limits,
+            WorldGuidUseControl? useControl,
+            PreparedScene? preparationOwner,
+            AssetLease<SceneAsset> sceneLease,
             CancellationToken cancellationToken)
         {
             _limits = limits;
             _cancellationToken = cancellationToken;
+            _useControl = useControl;
+            _preparationOwner = preparationOwner;
+            _sceneLease = sceneLease;
+
+            if (preparationOwner is null)
+            {
+                _useControl?.SetRetainedOwner(this);
+            }
         }
 
         private static ImmutableArray<SceneAuthoredComponentRecord> ApplyRootPoseComponents(
@@ -624,42 +733,56 @@ internal static class ScenePrefabExpansionPlanner
 
         public void Dispose()
         {
-            var sceneLease = _sceneLease;
-            _sceneLease = null;
-            sceneLease?.Dispose();
-
-            var prefabLeases = _prefabLeases;
-            _prefabLeases = null;
-
-            if (prefabLeases is not null)
+            try
             {
-                foreach (var lease in prefabLeases.Values)
+                _sceneLease?.Dispose();
+                _sceneLease = null;
+
+                if (_prefabLeases is { } prefabLeases)
                 {
-                    lease.Dispose();
+                    foreach (var lease in prefabLeases.Values)
+                    {
+                        lease.Dispose();
+                    }
+
+                    _prefabLeases = null;
                 }
             }
+            catch (Exception failure)
+            {
+                if (_preparationOwner is null)
+                {
+                    _useControl?.Quarantine(this, failureStage: 1, failureCategory: 2);
+                }
+                else
+                {
+                    _preparationOwner.RecordPreparationCleanupFailure(failure, stage: 1, category: 2, this);
+                }
 
-            Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
-            _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
-            _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
-            _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
-            _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
-            _referenceBindings = [];
-            _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>();
-            _rootCounts = [];
-            _occurrenceIdentities = [];
+                throw;
+            }
+
+            var reservation = _storageReservation;
+            _storageReservation = null;
+            reservation?.Dispose();
         }
 
         internal async Task<SceneExpansionPlan> BuildAsync(AssetLease<SceneAsset> sceneLease)
         {
             var (sceneSource, rootCount, requiredBytes) = await CountAndMeasureAsync(sceneLease).ConfigureAwait(false);
 
-            if (_limits.ReserveStorage is { } reserveStorage)
+            if (_limits.ReserveWorkspace is { } reserveWorkspace)
+            {
+                _storageReservation = reserveWorkspace(requiredBytes)
+                    ?? throw new InvalidOperationException("The selected Scene preparation cap cannot reserve the retained Scene expansion plan.");
+            }
+            else if (_limits.ReserveStorage is { } reserveStorage)
             {
                 _storageReservation = reserveStorage(requiredBytes)
                     ?? throw new InvalidOperationException("The World-owned state budget cannot reserve the retained Scene expansion plan.");
             }
 
+            _storageReservation?.SetRetainedOwner(this);
             _rootCounts = new int[_occurrenceCount];
             _rootCountCursor = 0;
             var populatedRootCount = await FillOccurrenceRootCountsAsync(
@@ -758,6 +881,14 @@ internal static class ScenePrefabExpansionPlanner
 
             var prefabLeases = _prefabLeases
                 ?? throw new InvalidOperationException("The Scene expansion lost its Prefab lease set.");
+
+            if ((_limits.ReserveWorkspace is not null)
+                && ((_storageReservation is null)
+                    || !_storageReservation.TryTransferWorkspaceToStorage()))
+            {
+                throw new InvalidOperationException("The prepared Scene expansion could not transfer its exact active workspace claim into retained storage.");
+            }
+
             var plan = new SceneExpansionPlan(
                 sceneLease,
                 prefabLeases,
@@ -774,9 +905,22 @@ internal static class ScenePrefabExpansionPlanner
                 _occurrenceIdentities,
                 requiredBytes,
                 _storageReservation);
+            _storageReservation?.SetRetainedOwner(plan);
+
+            if (_preparationOwner is null)
+            {
+                _useControl?.SetRetainedOwner(plan);
+            }
+            else
+            {
+                _preparationOwner.StagePreparationOwner(plan);
+            }
+
             _sceneLease = null;
             _prefabLeases = null;
             _storageReservation = null;
+
+            _preparationOwner?.CommitPreparationOwner(this);
             _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
             _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
             _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
@@ -788,7 +932,8 @@ internal static class ScenePrefabExpansionPlanner
         }
 
         internal async Task<long> MeasureRequiredByteReservationAsync(AssetLease<SceneAsset> sceneLease)
-            => (await CountAndMeasureAsync(sceneLease).ConfigureAwait(false)).RequiredByteReservation;
+            => WorldSceneStorageReservation.GetRequiredBytes(
+                (await CountAndMeasureAsync(sceneLease).ConfigureAwait(false)).RequiredByteReservation);
 
         private void ApplyOverrideLayer(
             ImmutableArray<ScenePrefabOverride> overrides,
@@ -1198,7 +1343,7 @@ internal static class ScenePrefabExpansionPlanner
 
             var requiredBytes = GetRequiredByteReservation();
 
-            if (requiredBytes > _limits.MaximumExpandedBytes)
+            if (WorldSceneStorageReservation.GetRequiredBytes(requiredBytes) > _limits.MaximumExpandedBytes)
             {
                 throw new InvalidOperationException("The Scene expansion exceeds its selected byte budget.");
             }

@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Animation;
@@ -19,32 +20,51 @@ internal sealed class RenderSceneAssetBundle : IDisposable
     private static readonly Guid s_spriteSchemaId = new ContentSchemaIdentityAssignment("render/sprite").SchemaId;
     private static readonly Guid s_meshSchemaId = new ContentSchemaIdentityAssignment("render/mesh").SchemaId;
 
-    private readonly AtlasEntry[] _atlasEntries;
-    private int _isDisposed;
-    private readonly MaterialEntry[] _materialEntries;
-    private readonly MeshEntry[] _meshEntries;
+    private int _additionalCleanupFailureCount;
+    private AtlasEntry[] _atlasEntries;
+    private long _atlasEntriesWorkspaceClaimBytes;
+    private int[] _atlasIds;
+    private RenderAtlasPageLoader.OwnedProgress? _atlasPageLoadingProgress;
+    private Exception? _disposeFailure;
+    private int _disposeState;
+    private int _loadedAtlasCount;
+    private int _loadedMaterialCount;
+    private int _loadedMeshCount;
+    private MaterialEntry[] _materialEntries;
+    private long _materialEntriesWorkspaceClaimBytes;
+    private int[] _materialIds;
+    private WorldSceneStorageReservation? _materialScratchReservation;
+    private long _materialScratchWorkspaceClaimBytes;
+    private RenderMaterialTextureLoader.OwnedProgress? _materialTextureLoadingProgress;
+    private MeshEntry[] _meshEntries;
+    private long _meshEntriesWorkspaceClaimBytes;
+    private int[] _meshIds;
+    private int[] _meshMaterialIds;
+    private AssetLease<RenderAtlasAsset>? _pendingAtlasLease;
+    private AssetLease<RenderMaterialAsset>? _pendingMaterialLease;
+    private AssetLease<RenderMeshAsset>? _pendingMeshLease;
+    private RenderAtlasPageSet? _pendingPageSet;
+    private AssetLease<RenderMaterialAsset>? _pendingRetainedMaterialLease;
+    private AssetLease<RenderMeshAsset>? _pendingRetainedMeshLease;
+    private AssetLease<SkeletonAsset>? _pendingSkeletonLease;
+    private RenderMaterialTextureSet? _pendingTextureSet;
+    private ScenePreparationFunding _preparationFunding;
+    private WorldSceneStorageReservation? _scratchReservation;
+    private long _scratchWorkspaceClaimBytes;
+    private int _spriteMaterialIdCount;
+    private int[] _spriteMaterialIds;
     private WorldSceneStorageReservation? _storageReservation;
 
-    private RenderSceneAssetBundle(
-        AtlasEntry[] atlasEntries,
-        MaterialEntry[] materialEntries,
-        MeshEntry[] meshEntries,
-        WorldSceneStorageReservation storageReservation)
+    private RenderSceneAssetBundle()
     {
-        ArgumentNullException.ThrowIfNull(atlasEntries);
-        ArgumentNullException.ThrowIfNull(materialEntries);
-        ArgumentNullException.ThrowIfNull(meshEntries);
-        ArgumentNullException.ThrowIfNull(storageReservation);
-
-        if ((atlasEntries.Length == 0) && (meshEntries.Length == 0))
-        {
-            throw new ArgumentException("A render asset bundle requires a prepared Sprite Atlas or Mesh.", nameof(atlasEntries));
-        }
-
-        _atlasEntries = atlasEntries;
-        _materialEntries = materialEntries;
-        _meshEntries = meshEntries;
-        _storageReservation = storageReservation;
+        _atlasEntries = [];
+        _atlasIds = [];
+        _materialIds = [];
+        _materialEntries = [];
+        _meshIds = [];
+        _meshEntries = [];
+        _meshMaterialIds = [];
+        _spriteMaterialIds = [];
     }
 
     internal static async Task<long> MeasureStorageByteReservationAsync(
@@ -109,20 +129,57 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         return checked(
             GetScratchByteReservation(spriteCount, meshComponentCount)
             + GetMaterialScratchByteReservation(spriteMaterialIdCount, meshMaterialReferenceCount)
-            + GetRequiredByteReservation(atlasCount, materialCount, meshCount));
+            + GetRequiredByteReservation(atlasCount, materialCount, meshCount)
+            + (3 * WorldSceneStorageReservation.ControlByteCharge));
     }
 
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
         Justification = "Prepared Mesh, Material, texture, and page leases transfer together into the Scene bundle and snapshot pin owners; all failure paths dispose untransferred leases.")]
-    internal static async Task<RenderSceneAssetBundle?> PrepareAsync(
+    internal static Task<RenderSceneAssetBundle?> PrepareAsync(
         SceneExpansionPlan plan,
         Func<long, WorldSceneStorageReservation?> reserveStorage,
+        Func<long, WorldSceneStorageReservation?> reserveWorkspace,
+        CancellationToken cancellationToken)
+        => PrepareOwnedCoreAsync(plan, reserveStorage, reserveWorkspace, funding: default, cancellationToken);
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The exact PreparedScene stages the empty bundle before it acquires package-backed state and owns cleanup on every asynchronous failure.")]
+    internal static Task<RenderSceneAssetBundle?> PrepareOwnedAsync(
+        SceneExpansionPlan plan,
+        ScenePreparationFunding funding,
+        CancellationToken cancellationToken)
+    {
+        if (!funding.IsInitialized)
+        {
+            throw new ArgumentException("The Scene preparation funding value is uninitialized.", nameof(funding));
+        }
+
+        return PrepareOwnedCoreAsync(plan, reserveStorage: null, reserveWorkspace: null, funding, cancellationToken);
+    }
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "Prepared Mesh, Material, texture, and page leases transfer together into the Scene bundle and snapshot pin owners; all failure paths dispose untransferred leases.")]
+    internal static async Task<RenderSceneAssetBundle?> PrepareOwnedCoreAsync(
+        SceneExpansionPlan plan,
+        Func<long, WorldSceneStorageReservation?>? reserveStorage,
+        Func<long, WorldSceneStorageReservation?>? reserveWorkspace,
+        ScenePreparationFunding funding,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        ArgumentNullException.ThrowIfNull(reserveStorage);
+
+        if (!funding.IsInitialized)
+        {
+            ArgumentNullException.ThrowIfNull(reserveStorage);
+            ArgumentNullException.ThrowIfNull(reserveWorkspace);
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         var spriteCount = CountSprites(plan);
         var meshComponentCount = CountMeshes(plan);
@@ -132,22 +189,67 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             return null;
         }
 
-        var scratchReservation = reserveStorage(GetScratchByteReservation(spriteCount, meshComponentCount))
-            ?? throw new InvalidOperationException("The World cannot reserve render asset-preparation scratch storage.");
-        WorldSceneStorageReservation? finalReservation = null;
-        WorldSceneStorageReservation? materialScratchReservation = null;
-        AtlasEntry[]? atlasEntries = null;
-        var loadedAtlasCount = 0;
-        MaterialEntry[]? materialEntries = null;
-        var loadedMaterialCount = 0;
-        MeshEntry[]? meshEntries = null;
-        var loadedMeshCount = 0;
+        RenderSceneAssetBundle? bundle = null;
+        var preparationOwner = funding.IsInitialized ? funding.Preparation : null;
+
+        if (preparationOwner is not null)
+        {
+            if (!preparationOwner.TryBeginPendingOwnerConstruction())
+            {
+                throw new InvalidOperationException("The Scene preparation cannot elect its render bundle receiver.");
+            }
+
+            var constructionCommitted = false;
+
+            try
+            {
+                bundle = new RenderSceneAssetBundle();
+                constructionCommitted = preparationOwner.TryCommitPendingOwnerConstruction(bundle);
+
+                if (!constructionCommitted)
+                {
+                    throw new InvalidOperationException("The Scene preparation cannot publish its empty render bundle receiver.");
+                }
+
+                bundle._preparationFunding = funding;
+            }
+            finally
+            {
+                if (!constructionCommitted)
+                {
+                    preparationOwner.CancelPendingOwnerConstruction();
+                }
+            }
+        }
+
+        WorldSceneStorageReservation? scratchReservation = null;
 
         try
         {
-            var atlasIds = new int[spriteCount];
-            var spriteMaterialIds = new int[spriteCount];
-            var meshIds = new int[meshComponentCount];
+            var scratchBytes = GetScratchByteReservation(spriteCount, meshComponentCount);
+            bundle ??= new RenderSceneAssetBundle();
+
+            if (funding.IsInitialized)
+            {
+                if (!funding.TryClaimWorkspace(scratchBytes))
+                {
+                    throw new InvalidOperationException("The Scene preparation cannot claim render asset-preparation scratch storage.");
+                }
+
+                bundle._scratchWorkspaceClaimBytes = scratchBytes;
+            }
+            else
+            {
+                scratchReservation = (reserveWorkspace
+                    ?? throw new InvalidOperationException("The render asset-preparation workspace owner is unavailable."))(scratchBytes)
+                    ?? throw new InvalidOperationException("The World cannot reserve render asset-preparation scratch storage.");
+                bundle._scratchReservation = scratchReservation;
+                scratchReservation = null;
+            }
+
+            var atlasIds = bundle._atlasIds = new int[spriteCount];
+            var spriteMaterialIds = bundle._spriteMaterialIds = new int[spriteCount];
+            var meshIds = bundle._meshIds = new int[meshComponentCount];
             var spriteMaterialIdCount = 0;
             FillAssetIds(
                 plan,
@@ -156,77 +258,86 @@ internal sealed class RenderSceneAssetBundle : IDisposable
                 ref spriteMaterialIdCount,
                 meshIds,
                 cancellationToken);
+            bundle._spriteMaterialIdCount = spriteMaterialIdCount;
             Array.Sort(atlasIds);
             Array.Sort(spriteMaterialIds, 0, spriteMaterialIdCount);
             Array.Sort(meshIds);
             var atlasCount = CompactDistinct(atlasIds, atlasIds.Length);
             var meshCount = CompactDistinct(meshIds, meshIds.Length);
-            atlasEntries = new AtlasEntry[atlasCount];
-            meshEntries = new MeshEntry[meshCount];
+            var atlasEntriesBytes = ArrayBytes(atlasCount, Unsafe.SizeOf<AtlasEntry>());
+
+            if (funding.IsInitialized)
+            {
+                if (!funding.TryClaimWorkspace(atlasEntriesBytes))
+                {
+                    throw new InvalidOperationException("The Scene preparation cannot claim Atlas-entry storage.");
+                }
+
+                bundle._atlasEntriesWorkspaceClaimBytes = atlasEntriesBytes;
+            }
+
+            var atlasEntries = bundle._atlasEntries = new AtlasEntry[atlasCount];
+
+            var meshEntriesBytes = ArrayBytes(meshCount, Unsafe.SizeOf<MeshEntry>());
+
+            if (funding.IsInitialized)
+            {
+                if (!funding.TryClaimWorkspace(meshEntriesBytes))
+                {
+                    throw new InvalidOperationException("The Scene preparation cannot claim Mesh-entry storage.");
+                }
+
+                bundle._meshEntriesWorkspaceClaimBytes = meshEntriesBytes;
+            }
+
+            var meshEntries = bundle._meshEntries = new MeshEntry[meshCount];
 
             for (var index = 0; index < atlasCount; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var assetId = new AssetId(atlasIds[index]);
-                var atlasLease = await plan.LoadFromPackageAsync<RenderAtlasAsset>(
+                bundle._pendingAtlasLease = await plan.LoadFromPackageAsync<RenderAtlasAsset>(
                     assetId,
                     cancellationToken).ConfigureAwait(false);
-
-                try
-                {
-                    var pageSet = (RenderAtlasPageSet?)await RenderAtlasPageLoader.RetainAsync(
-                            atlasLease,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-
-                    try
-                    {
-                        var ownedPageSet = pageSet
-                            ?? throw new InvalidOperationException("The Atlas page loader returned no retained page set.");
-                        atlasEntries[index] = new AtlasEntry(assetId.Value, ownedPageSet);
-                        loadedAtlasCount++;
-                        pageSet = null;
-                    }
-                    finally
-                    {
-                        pageSet?.Dispose();
-                    }
-                }
-                finally
-                {
-                    atlasLease.Dispose();
-                }
+                var atlasLease = bundle._pendingAtlasLease
+                    ?? throw new InvalidOperationException("The Atlas load returned no owned lease.");
+                var atlasPageLoadingProgress = bundle._atlasPageLoadingProgress ??=
+                    new RenderAtlasPageLoader.OwnedProgress();
+                var pageSet = await RenderAtlasPageLoader.RetainOwnedAsync(
+                    atlasLease,
+                    atlasPageLoadingProgress,
+                    cancellationToken).ConfigureAwait(false);
+                bundle._pendingPageSet = pageSet;
+                _ = atlasPageLoadingProgress.TakeResult();
+                atlasEntries[index] = new AtlasEntry(assetId.Value, pageSet);
+                bundle._loadedAtlasCount++;
+                bundle._pendingPageSet = null;
+                DisposePending(ref bundle._pendingAtlasLease);
             }
 
             for (var index = 0; index < meshCount; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var assetId = new AssetId(meshIds[index]);
-                var meshLease = await plan.LoadFromPackageAsync<RenderMeshAsset>(
+                bundle._pendingMeshLease = await plan.LoadFromPackageAsync<RenderMeshAsset>(
                     assetId,
                     cancellationToken).ConfigureAwait(false);
-                AssetLease<RenderMeshAsset>? retainedMeshLease = null;
-                AssetLease<SkeletonAsset>? skeletonLease = null;
-
-                try
-                {
-                    skeletonLease = await RenderMeshAssetBinding.LoadSkeletonAsync(
-                        meshLease,
-                        cancellationToken).ConfigureAwait(false);
-                    retainedMeshLease = meshLease.Retain();
-                    var ownedMeshLease = retainedMeshLease
-                        ?? throw new InvalidOperationException("The Mesh lease could not be retained.");
-                    meshEntries[index] = new MeshEntry(assetId.Value, ownedMeshLease, skeletonLease);
-                    loadedMeshCount++;
-                    retainedMeshLease = null;
-                    skeletonLease = null;
-                }
-                finally
-                {
-                    retainedMeshLease?.Dispose();
-                    skeletonLease?.Dispose();
-                    meshLease.Dispose();
-                }
+                var meshLease = bundle._pendingMeshLease
+                    ?? throw new InvalidOperationException("The Mesh load returned no owned lease.");
+                bundle._pendingSkeletonLease = await RenderMeshAssetBinding.LoadSkeletonAsync(
+                    meshLease,
+                    cancellationToken).ConfigureAwait(false);
+                bundle._pendingRetainedMeshLease = meshLease.Retain();
+                var ownedMeshLease = bundle._pendingRetainedMeshLease
+                    ?? throw new InvalidOperationException("The Mesh lease could not be retained.");
+                meshEntries[index] = new MeshEntry(
+                    assetId.Value,
+                    ownedMeshLease,
+                    bundle._pendingSkeletonLease);
+                bundle._loadedMeshCount++;
+                bundle._pendingRetainedMeshLease = null;
+                bundle._pendingSkeletonLease = null;
+                DisposePending(ref bundle._pendingMeshLease);
             }
 
             var meshMaterialReferenceCount = 0;
@@ -238,12 +349,29 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             }
 
             var totalMaterialReferenceCount = checked(spriteMaterialIdCount + meshMaterialReferenceCount);
-            materialScratchReservation = reserveStorage(
-                GetMaterialScratchByteReservation(spriteMaterialIdCount, meshMaterialReferenceCount))
-                ?? throw new InvalidOperationException("The World cannot reserve Mesh Material-reference scratch storage.");
-            var materialIds = new int[totalMaterialReferenceCount];
+            var materialScratchBytes = GetMaterialScratchByteReservation(
+                spriteMaterialIdCount,
+                meshMaterialReferenceCount);
+
+            if (funding.IsInitialized)
+            {
+                if (!funding.TryClaimWorkspace(materialScratchBytes))
+                {
+                    throw new InvalidOperationException("The Scene preparation cannot claim Mesh Material-reference scratch storage.");
+                }
+
+                bundle._materialScratchWorkspaceClaimBytes = materialScratchBytes;
+            }
+            else
+            {
+                bundle._materialScratchReservation = (reserveWorkspace
+                    ?? throw new InvalidOperationException("The render asset-preparation workspace owner is unavailable."))(materialScratchBytes)
+                    ?? throw new InvalidOperationException("The World cannot reserve Mesh Material-reference scratch storage.");
+            }
+
+            var materialIds = bundle._materialIds = new int[totalMaterialReferenceCount];
             spriteMaterialIds.AsSpan(0, spriteMaterialIdCount).CopyTo(materialIds);
-            var meshMaterialIds = new int[meshMaterialReferenceCount];
+            var meshMaterialIds = bundle._meshMaterialIds = new int[meshMaterialReferenceCount];
             var materialWriteIndex = 0;
 
             foreach (var meshEntry in meshEntries)
@@ -259,131 +387,123 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             Array.Sort(materialIds);
             Array.Sort(meshMaterialIds);
             var materialCount = CompactDistinct(materialIds, materialIds.Length);
-            finalReservation = reserveStorage(GetRequiredByteReservation(atlasCount, materialCount, meshCount))
-                ?? throw new InvalidOperationException("The World cannot reserve retained render asset-bundle storage.");
-            materialEntries = new MaterialEntry[materialCount];
+            var materialEntriesBytes = ArrayBytes(materialCount, Unsafe.SizeOf<MaterialEntry>());
+
+            if (funding.IsInitialized)
+            {
+                if (!funding.TryClaimWorkspace(materialEntriesBytes))
+                {
+                    throw new InvalidOperationException("The Scene preparation cannot claim Material-entry storage.");
+                }
+
+                bundle._materialEntriesWorkspaceClaimBytes = materialEntriesBytes;
+            }
+
+            var materialEntries = bundle._materialEntries = new MaterialEntry[materialCount];
 
             for (var index = 0; index < materialCount; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var assetId = new AssetId(materialIds[index]);
-                var materialLease = await plan.LoadFromPackageAsync<RenderMaterialAsset>(
+                bundle._pendingMaterialLease = await plan.LoadFromPackageAsync<RenderMaterialAsset>(
                     assetId,
                     cancellationToken).ConfigureAwait(false);
-                AssetLease<RenderMaterialAsset>? retainedMaterialLease = null;
-                RenderMaterialTextureSet? retainedTextureSet = null;
+                var materialLease = bundle._pendingMaterialLease
+                    ?? throw new InvalidOperationException("The Material load returned no owned lease.");
+                var material = materialLease.Value;
+                var isSpriteMaterial = Array.BinarySearch(
+                    spriteMaterialIds,
+                    0,
+                    spriteMaterialIdCount,
+                    assetId.Value) >= 0;
+                var isMeshMaterial = Array.BinarySearch(meshMaterialIds, assetId.Value) >= 0;
 
-                try
+                if (isSpriteMaterial)
                 {
-                    var material = materialLease.Value;
-                    var isSpriteMaterial = Array.BinarySearch(
-                        spriteMaterialIds,
-                        0,
-                        spriteMaterialIdCount,
-                        assetId.Value) >= 0;
-                    var isMeshMaterial = Array.BinarySearch(meshMaterialIds, assetId.Value) >= 0;
-
-                    if (isSpriteMaterial)
+                    if (!material.IsSprite)
                     {
-                        if (!material.IsSprite)
-                        {
-                            throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
-                        }
-
-                        if (material.Parameters.SpriteTexture is { } texture
-                            && (texture.Sampler.Mip != 0))
-                        {
-                            throw new InvalidDataException("An Atlas-page Sprite Material cannot sample unavailable mip levels.");
-                        }
+                        throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
                     }
 
-                    if (isMeshMaterial)
+                    if (material.Parameters.SpriteTexture is { } texture
+                        && (texture.Sampler.Mip != 0))
                     {
-                        var meshTextureSet = await RenderMaterialTextureLoader.RetainAsync(
-                            materialLease,
-                            cancellationToken).ConfigureAwait(false);
-                        retainedTextureSet = meshTextureSet;
+                        throw new InvalidDataException("An Atlas-page Sprite Material cannot sample unavailable mip levels.");
                     }
-                    else
-                    {
-                        retainedMaterialLease = materialLease.Retain();
-                    }
-
-                    materialEntries[index] = new MaterialEntry(
-                        assetId.Value,
-                        retainedMaterialLease,
-                        retainedTextureSet);
-                    loadedMaterialCount++;
-                    retainedMaterialLease = null;
-                    retainedTextureSet = null;
                 }
-                finally
+
+                if (isMeshMaterial)
                 {
-                    retainedMaterialLease?.Dispose();
-                    retainedTextureSet?.Dispose();
-                    materialLease.Dispose();
+                    var materialTextureLoadingProgress = bundle._materialTextureLoadingProgress ??=
+                        new RenderMaterialTextureLoader.OwnedProgress();
+                    var textureSet = await RenderMaterialTextureLoader.RetainOwnedAsync(
+                        materialLease,
+                        materialTextureLoadingProgress,
+                        cancellationToken).ConfigureAwait(false);
+                    bundle._pendingTextureSet = textureSet;
+                    _ = materialTextureLoadingProgress.TakeResult();
                 }
+                else
+                {
+                    bundle._pendingRetainedMaterialLease = materialLease.Retain();
+                }
+
+                materialEntries[index] = new MaterialEntry(
+                    assetId.Value,
+                    bundle._pendingRetainedMaterialLease,
+                    bundle._pendingTextureSet);
+                bundle._loadedMaterialCount++;
+                bundle._pendingRetainedMaterialLease = null;
+                bundle._pendingTextureSet = null;
+                DisposePending(ref bundle._pendingMaterialLease);
             }
 
             ValidateMeshBindings(meshEntries, materialEntries);
             ValidateSpriteBindings(plan, atlasEntries, materialEntries, cancellationToken);
-            var ownedStorageReservation = finalReservation
-                ?? throw new InvalidOperationException("The prepared render bundle has no storage reservation.");
-            var bundle = new RenderSceneAssetBundle(
-                atlasEntries,
-                materialEntries,
-                meshEntries,
-                ownedStorageReservation);
-            finalReservation = null;
-            atlasEntries = null;
-            materialEntries = null;
-            meshEntries = null;
-            loadedAtlasCount = 0;
-            loadedMaterialCount = 0;
-            loadedMeshCount = 0;
+
+            if (funding.IsInitialized)
+            {
+                throw new InvalidOperationException(
+                    "Scene asset-bundle settlement remains unavailable until its complete retained-storage charge is qualified.");
+            }
+
+            var storageReservation = (reserveStorage
+                ?? throw new InvalidOperationException("The render asset-bundle storage owner is unavailable."))(
+                GetRequiredByteReservation(atlasCount, materialCount, meshCount))
+                ?? throw new InvalidOperationException("The World cannot reserve retained render asset-bundle storage.");
+            bundle._storageReservation = storageReservation;
+            storageReservation.SetRetainedOwner(bundle);
+            bundle.ReleaseWorkspaceReservations();
+            bundle._atlasIds = [];
+            bundle._spriteMaterialIds = [];
+            bundle._meshIds = [];
+            bundle._materialIds = [];
+            bundle._meshMaterialIds = [];
+            bundle._spriteMaterialIdCount = 0;
+            atlasIds = [];
+            spriteMaterialIds = [];
+            meshIds = [];
+            materialIds = [];
+            meshMaterialIds = [];
             return bundle;
         }
         catch
         {
-            if (atlasEntries is not null)
+            if (!funding.IsInitialized)
             {
-                for (var index = 0; index < loadedAtlasCount; index++)
-                {
-                    atlasEntries[index].PageSet.Dispose();
-                }
-            }
-
-            if (materialEntries is not null)
-            {
-                for (var index = 0; index < loadedMaterialCount; index++)
-                {
-                    materialEntries[index].Dispose();
-                }
-            }
-
-            if (meshEntries is not null)
-            {
-                for (var index = 0; index < loadedMeshCount; index++)
-                {
-                    meshEntries[index].Dispose();
-                }
+                bundle?.Dispose();
             }
 
             throw;
         }
         finally
         {
-            finalReservation?.Dispose();
-            materialScratchReservation?.Dispose();
-            scratchReservation.Dispose();
+            scratchReservation?.Dispose();
         }
     }
 
     private static long ArrayBytes(int count, int elementSize)
-    {
-        var payloadBytes = checked((long)count * elementSize);
-        return checked(64L + ((payloadBytes + 7L) & ~7L));
-    }
+        => WorldAdmissionDomain.ArrayCharge(count, elementSize);
 
     private static int CompactDistinct(int[] values, int count)
     {
@@ -445,6 +565,18 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         }
 
         return spriteCount;
+    }
+
+    private static void DisposePending<T>(ref T? owner)
+        where T : class, IDisposable
+    {
+        var current = Volatile.Read(ref owner);
+        current?.Dispose();
+
+        if (current is not null)
+        {
+            _ = Interlocked.CompareExchange(ref owner, null, current);
+        }
     }
 
     private static void FillAssetIds(
@@ -683,45 +815,123 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Independent bundle entries, pending owners, and reservation debts are all attempted before failure is retained.")]
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        var state = Interlocked.CompareExchange(ref _disposeState, 1, 0);
+
+        if (state is 2)
         {
             return;
         }
 
-        try
+        if (state is 3)
         {
-            foreach (var atlasEntry in _atlasEntries)
-            {
-                atlasEntry.PageSet.Dispose();
-            }
+            RethrowDisposeFailure();
         }
-        finally
+
+        if (state is not 0)
+        {
+            throw new InvalidOperationException("Render asset-bundle cleanup is already in progress.");
+        }
+
+        Exception? firstFailure = null;
+
+        for (var index = 0; index < _loadedAtlasCount; index++)
         {
             try
             {
-                foreach (var materialEntry in _materialEntries)
-                {
-                    materialEntry.Dispose();
-                }
+                _atlasEntries[index].PageSet.Dispose();
             }
-            finally
+            catch (Exception failure)
             {
-                foreach (var meshEntry in _meshEntries)
-                {
-                    meshEntry.Dispose();
-                }
+                RecordCleanupFailure(ref firstFailure, failure);
             }
         }
 
-        var storageReservation = Volatile.Read(ref _storageReservation);
-        storageReservation?.Dispose();
-
-        if (storageReservation is not null)
+        for (var index = 0; index < _loadedMaterialCount; index++)
         {
-            _ = Interlocked.CompareExchange(ref _storageReservation, null, storageReservation);
+            try
+            {
+                _materialEntries[index].Dispose();
+            }
+            catch (Exception failure)
+            {
+                RecordCleanupFailure(ref firstFailure, failure);
+            }
         }
+
+        for (var index = 0; index < _loadedMeshCount; index++)
+        {
+            try
+            {
+                _meshEntries[index].Dispose();
+            }
+            catch (Exception failure)
+            {
+                RecordCleanupFailure(ref firstFailure, failure);
+            }
+        }
+
+        try
+        {
+            DisposePendingAssets();
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        if (firstFailure is not null)
+        {
+            Volatile.Write(ref _disposeFailure, firstFailure);
+            Volatile.Write(ref _disposeState, 3);
+            RethrowDisposeFailure();
+        }
+
+        _atlasEntries = [];
+        _atlasIds = [];
+        _loadedAtlasCount = 0;
+        _materialEntries = [];
+        _materialIds = [];
+        _loadedMaterialCount = 0;
+        _meshEntries = [];
+        _meshIds = [];
+        _meshMaterialIds = [];
+        _loadedMeshCount = 0;
+        _spriteMaterialIds = [];
+        _spriteMaterialIdCount = 0;
+
+        try
+        {
+            ReleaseWorkspaceReservations();
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _storageReservation);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        if (firstFailure is not null)
+        {
+            Volatile.Write(ref _disposeFailure, firstFailure);
+            Volatile.Write(ref _disposeState, 3);
+            RethrowDisposeFailure();
+        }
+
+        _preparationFunding = default;
+        Volatile.Write(ref _disposeState, 2);
     }
 
     internal RenderAtlasPageSet GetAtlasPageSet(int atlasAssetId)
@@ -898,8 +1108,230 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Each pending child owner is attempted independently and failed references remain in their exact fields.")]
+    private void DisposePendingAssets()
+    {
+        Exception? firstFailure = null;
+
+        try
+        {
+            DisposePending(ref _pendingPageSet);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _atlasPageLoadingProgress);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingTextureSet);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _materialTextureLoadingProgress);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingRetainedMaterialLease);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingRetainedMeshLease);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingSkeletonLease);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingMaterialLease);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingMeshLease);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        try
+        {
+            DisposePending(ref _pendingAtlasLease);
+        }
+        catch (Exception failure)
+        {
+            RecordCleanupFailure(ref firstFailure, failure);
+        }
+
+        if (firstFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(firstFailure).Throw();
+        }
+    }
+
+    private void RecordCleanupFailure(ref Exception? firstFailure, Exception failure)
+    {
+        if (firstFailure is null)
+        {
+            firstFailure = failure;
+        }
+        else
+        {
+            _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
+        }
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Independent workspace claims and reservation owners are all attempted before the first cleanup failure is rethrown.")]
+    private void ReleaseWorkspaceReservations()
+    {
+        Exception? firstFailure = null;
+
+        try
+        {
+            ReturnWorkspaceClaim(
+                ref _materialEntriesWorkspaceClaimBytes,
+                "The render bundle could not return its Material-entry claim.");
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        try
+        {
+            ReturnWorkspaceClaim(
+                ref _meshEntriesWorkspaceClaimBytes,
+                "The render bundle could not return its Mesh-entry claim.");
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        try
+        {
+            ReturnWorkspaceClaim(
+                ref _atlasEntriesWorkspaceClaimBytes,
+                "The render bundle could not return its Atlas-entry claim.");
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        try
+        {
+            ReturnWorkspaceClaim(
+                ref _materialScratchWorkspaceClaimBytes,
+                "The render bundle could not return its Material scratch claim.");
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        try
+        {
+            DisposePending(ref _materialScratchReservation);
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        try
+        {
+            ReturnWorkspaceClaim(
+                ref _scratchWorkspaceClaimBytes,
+                "The render bundle could not return its initial scratch claim.");
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        try
+        {
+            DisposePending(ref _scratchReservation);
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+        }
+
+        if (firstFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(firstFailure).Throw();
+        }
+    }
+
+    private void RethrowDisposeFailure()
+    {
+        var failure = Volatile.Read(ref _disposeFailure)
+            ?? new InvalidOperationException("Render asset-bundle cleanup failed without a retained failure.");
+        ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private void ReturnWorkspaceClaim(ref long claimBytes, string failureMessage)
+    {
+        var bytes = claimBytes;
+
+        if ((bytes != 0) && !_preparationFunding.TryReturnWorkspaceClaim(bytes))
+        {
+            throw new InvalidOperationException(failureMessage);
+        }
+
+        claimBytes = 0;
+    }
+
     private void ThrowIfDisposed()
-        => ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+        => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
 
     private readonly record struct AtlasEntry(int AssetId, RenderAtlasPageSet PageSet);
 
@@ -913,15 +1345,35 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             ?? Lease?.Value
             ?? throw new ObjectDisposedException(nameof(MaterialEntry));
 
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "The independently retained Material and texture owners are both attempted before failure is returned.")]
         internal void Dispose()
         {
+            Exception? firstFailure = null;
+
             try
             {
                 Lease?.Dispose();
             }
-            finally
+            catch (Exception failure)
+            {
+                firstFailure = failure;
+            }
+
+            try
             {
                 TextureSet?.Dispose();
+            }
+            catch (Exception failure)
+            {
+                firstFailure ??= failure;
+            }
+
+            if (firstFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(firstFailure).Throw();
             }
         }
     }
@@ -935,15 +1387,35 @@ internal sealed class RenderSceneAssetBundle : IDisposable
 
         internal SkeletonAsset? Skeleton => SkeletonLease?.Value;
 
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "The Mesh and optional Skeleton leases are independent owners and both are attempted before failure is returned.")]
         internal void Dispose()
         {
+            Exception? firstFailure = null;
+
             try
             {
                 Lease.Dispose();
             }
-            finally
+            catch (Exception failure)
+            {
+                firstFailure = failure;
+            }
+
+            try
             {
                 SkeletonLease?.Dispose();
+            }
+            catch (Exception failure)
+            {
+                firstFailure ??= failure;
+            }
+
+            if (firstFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(firstFailure).Throw();
             }
         }
     }

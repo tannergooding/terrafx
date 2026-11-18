@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using TerraFX;
+using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
 
@@ -32,6 +33,9 @@ public sealed class SceneLoadOptions
     /// <summary>Gets the maximum hierarchy depth, up to 256.</summary>
     public int MaximumHierarchyDepth { get; init; } = 256;
 
+    /// <summary>Gets the maximum Scene preparation and per-activation byte budget, from 1 through 2147483648.</summary>
+    public long MaximumPreparationBytes { get; init; } = 67_108_864;
+
     /// <summary>Gets the optional requested Scene instance identity.</summary>
     public Guid? SceneInstanceId { get; init; }
 
@@ -39,7 +43,17 @@ public sealed class SceneLoadOptions
         => FoundationCatalogue.CompareRfc(left.SlotId, right.SlotId);
 
     private static bool IsUuidV8(Guid value)
-        => (value.ToByteArray(bigEndian: true)[6] & 0xF0) == 0x80;
+    {
+        Span<byte> bytes = stackalloc byte[16];
+
+        if (!value.TryWriteBytes(bytes, bigEndian: true, out var bytesWritten)
+            || (bytesWritten != bytes.Length))
+        {
+            throw new InvalidOperationException("The UUID could not be written to its fixed validation buffer.");
+        }
+
+        return (bytes[6] & 0xF0) == 0x80;
+    }
 
     private static void ValidateLimit(int value, int maximum, string parameterName)
     {
@@ -49,35 +63,19 @@ public sealed class SceneLoadOptions
         }
     }
 
+    private static void ValidatePreparationLimit(long value, string parameterName)
+    {
+        if ((value <= 0) || (value > WorldSchedulingLimits.Default.MaximumOwnedStateBytes))
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
+        }
+    }
+
     internal SceneLoadOptionsSnapshot ValidateAndFreeze()
     {
-        ValidateLimit(MaximumExpandedEntities, 1_048_576, nameof(MaximumExpandedEntities));
-        ValidateLimit(MaximumExpandedOccurrences, 1_048_576, nameof(MaximumExpandedOccurrences));
-        ValidateLimit(MaximumPrefabEntities, 65_536, nameof(MaximumPrefabEntities));
-        ValidateLimit(MaximumPrefabDepth, 32, nameof(MaximumPrefabDepth));
-        ValidateLimit(MaximumHierarchyDepth, 256, nameof(MaximumHierarchyDepth));
-
-        if (SceneInstanceId is Guid sceneInstanceId
-            && ((sceneInstanceId == Guid.Empty) || IsUuidV8(sceneInstanceId)))
-        {
-            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(SceneInstanceId));
-        }
-
-        if (ExternalBindings.IsDefault)
-        {
-            throw new ArgumentException("The external-binding array must be initialized.", nameof(ExternalBindings));
-        }
+        ValidateShape();
 
         var externalBindings = ExternalBindings.AsSpan().ToArray();
-
-        for (var index = 0; index < externalBindings.Length; index++)
-        {
-            if (externalBindings[index] is null)
-            {
-                throw new ArgumentException("The external-binding array cannot contain null.", nameof(ExternalBindings));
-            }
-        }
-
         Array.Sort(externalBindings, CompareBindings);
 
         for (var index = 1; index < externalBindings.Length; index++)
@@ -95,6 +93,36 @@ public sealed class SceneLoadOptions
             MaximumExpandedOccurrences,
             MaximumPrefabEntities,
             MaximumPrefabDepth,
-            MaximumHierarchyDepth);
+            MaximumHierarchyDepth,
+            MaximumPreparationBytes);
+    }
+
+    internal void ValidateShape()
+    {
+        ValidateLimit(MaximumExpandedEntities, 1_048_576, nameof(MaximumExpandedEntities));
+        ValidateLimit(MaximumExpandedOccurrences, 1_048_576, nameof(MaximumExpandedOccurrences));
+        ValidateLimit(MaximumPrefabEntities, 65_536, nameof(MaximumPrefabEntities));
+        ValidateLimit(MaximumPrefabDepth, 32, nameof(MaximumPrefabDepth));
+        ValidateLimit(MaximumHierarchyDepth, 256, nameof(MaximumHierarchyDepth));
+        ValidatePreparationLimit(MaximumPreparationBytes, nameof(MaximumPreparationBytes));
+
+        if (SceneInstanceId is Guid sceneInstanceId
+            && ((sceneInstanceId == Guid.Empty) || IsUuidV8(sceneInstanceId)))
+        {
+            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(SceneInstanceId));
+        }
+
+        if (ExternalBindings.IsDefault)
+        {
+            throw new ArgumentException("The external-binding array must be initialized.", nameof(ExternalBindings));
+        }
+
+        for (var index = 0; index < ExternalBindings.Length; index++)
+        {
+            if (ExternalBindings[index] is null)
+            {
+                throw new ArgumentException("The external-binding array cannot contain null.", nameof(ExternalBindings));
+            }
+        }
     }
 }

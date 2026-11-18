@@ -16,5 +16,11 @@ internal interface ISceneExpansionResourcePreparer
     Task<IDisposable?> PrepareAsync(
         SceneExpansionPlan plan,
         Func<long, WorldSceneStorageReservation?> reserveStorage,
+        Func<long, WorldSceneStorageReservation?> reserveWorkspace,
+        CancellationToken cancellationToken);
+
+    Task<IDisposable?> PrepareOwnedAsync(
+        SceneExpansionPlan plan,
+        ScenePreparationFunding funding,
         CancellationToken cancellationToken);
 }
