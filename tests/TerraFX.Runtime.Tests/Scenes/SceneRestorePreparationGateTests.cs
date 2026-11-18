@@ -15,6 +15,20 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
+    [TestCase(0)]
+    [TestCase(1)]
+    public void RestoreHierarchyReservationMatchesItsDataAndReceiverControl(int nodeCount)
+    {
+        var dataBytes = ScenePersistenceRestorer.MeasureHierarchyRestoreWorkspaceBytes(nodeCount);
+        var expectedReservationBytes = (dataBytes == 0)
+            ? 0
+            : WorldSceneStorageReservation.GetRequiredBytes(dataBytes);
+
+        Assert.That(
+            ScenePersistenceRestorer.MeasureHierarchyRestoreReservationBytes(nodeCount),
+            Is.EqualTo(expectedReservationBytes));
+    }
+
     [Test]
     public async Task RestorePlanWithCpuExtractionRefusesBeforePackageExpansion()
     {

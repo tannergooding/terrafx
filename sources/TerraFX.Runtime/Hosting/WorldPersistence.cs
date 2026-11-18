@@ -1491,7 +1491,7 @@ public sealed class WorldPersistence : IAsyncDisposable
             }
 
             var restoreSceneHierarchyWorkspaceByteReservation = checked(
-                ScenePersistenceRestorer.MeasureHierarchyRestoreWorkspaceBytes(
+                ScenePersistenceRestorer.MeasureHierarchyRestoreReservationBytes(
                     checkpointContents.WorldContents.Scenes.HierarchyNodeCount)
                 + scenePlanStorageBytes);
             long targetBytes;

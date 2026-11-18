@@ -29,6 +29,14 @@ internal static class ScenePersistenceRestorer
     private static readonly Guid s_sceneInstanceSchemaId = new ContentSchemaIdentityAssignment("state/scene-instance").SchemaId;
     private static readonly Guid s_scenesSchemaId = new ContentSchemaIdentityAssignment("state/scenes").SchemaId;
 
+    internal static long MeasureHierarchyRestoreReservationBytes(int nodeCount)
+    {
+        var workspaceBytes = MeasureHierarchyRestoreWorkspaceBytes(nodeCount);
+        return (workspaceBytes == 0)
+            ? 0
+            : WorldSceneStorageReservation.GetRequiredBytes(workspaceBytes);
+    }
+
     internal static long MeasureHierarchyRestoreWorkspaceBytes(int nodeCount)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(nodeCount);
@@ -99,11 +107,12 @@ internal static class ScenePersistenceRestorer
             {
                 requiredBytes = checked(
                     requiredBytes
-                    + await ScenePrefabExpansionPlanner.MeasureRequiredByteReservationAsync(
-                        packageLease,
-                        sceneId,
-                        limits,
-                        cancellationToken).ConfigureAwait(false));
+                    + WorldSceneStorageReservation.GetRequiredBytes(
+                        await ScenePrefabExpansionPlanner.MeasureRequiredByteReservationAsync(
+                            packageLease,
+                            sceneId,
+                            limits,
+                            cancellationToken).ConfigureAwait(false)));
             }
             else
             {
@@ -137,7 +146,10 @@ internal static class ScenePersistenceRestorer
                     var resourceStorageBytes = await resourcePreparer.MeasureStorageByteReservationAsync(
                         plan,
                         cancellationToken).ConfigureAwait(false);
-                    requiredBytes = checked(requiredBytes + planRequiredBytes + resourceStorageBytes);
+                    requiredBytes = checked(
+                        requiredBytes
+                        + WorldSceneStorageReservation.GetRequiredBytes(planRequiredBytes)
+                        + resourceStorageBytes);
                 }
                 finally
                 {
