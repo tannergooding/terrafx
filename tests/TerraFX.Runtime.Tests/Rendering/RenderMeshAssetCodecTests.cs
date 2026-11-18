@@ -189,7 +189,8 @@ internal sealed class RenderMeshAssetCodecTests
         ushort[] indices,
         EbinRecord[] groups,
         RenderMeshBounds bounds,
-        bool includeSkeleton = false)
+        bool includeSkeleton = false,
+        EbinRecord[]? materialSlots = null)
     {
         var fields = new List<EbinField>
         {
@@ -197,7 +198,9 @@ internal sealed class RenderMeshAssetCodecTests
             EbinPrimitives.RecordArray(2, streams),
             EbinPrimitives.Record(3, CreateIndex16Record(indices)),
             EbinPrimitives.RecordArray(4, groups),
-            EbinPrimitives.RecordArray(5, [CreateAssetReference(MaterialAssetId, new ContentSchemaIdentityAssignment("native/material").SchemaId)]),
+            EbinPrimitives.RecordArray(
+                5,
+                materialSlots ?? [CreateAssetReference(MaterialAssetId, new ContentSchemaIdentityAssignment("native/material").SchemaId)]),
             EbinPrimitives.Record(6, CreateBounds(bounds.Minimum, bounds.Maximum, bounds.SphereCenter, bounds.SphereRadius)),
         };
 
@@ -588,6 +591,56 @@ internal sealed class RenderMeshAssetCodecTests
             using var meshLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(1)).ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
                 await RenderMeshAssetBinding.ValidatePackageBindingsAsync(meshLease).ConfigureAwait(false));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task MeshAssetCodecAccepts256MaterialSlotsAndRejects257()
+    {
+        var schemas = CreateRegistry();
+        var builder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(builder);
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var materialReference = CreateAssetReference(
+            MaterialAssetId,
+            new ContentSchemaIdentityAssignment("native/material").SchemaId);
+        var maximumSlots = new EbinRecord[256];
+        Array.Fill(maximumSlots, materialReference);
+        var excessSlots = new EbinRecord[257];
+        Array.Fill(excessSlots, materialReference);
+        var validMesh = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions)],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(Vector3.Zero, new Vector3(1.0f, 1.0f, 0.0f), new Vector3(0.5f, 0.5f, 0.0f), 1.0f),
+            materialSlots: maximumSlots);
+        var invalidMesh = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions)],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(Vector3.Zero, new Vector3(1.0f, 1.0f, 0.0f), new Vector3(0.5f, 0.5f, 0.0f), 1.0f),
+            materialSlots: excessSlots);
+        var (store, packagePath) = await CreateStoreAsync(
+            CreatePackage([validMesh, invalidMesh]),
+            builder.Build()).ConfigureAwait(false);
+
+        try
+        {
+            using var meshLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(1)).ConfigureAwait(false);
+            Assert.That(meshLease.Value.MaterialSlots, Has.Length.EqualTo(256));
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await store.LoadAsync<RenderMeshAsset>(new AssetId(2)).ConfigureAwait(false));
         }
         finally
         {
