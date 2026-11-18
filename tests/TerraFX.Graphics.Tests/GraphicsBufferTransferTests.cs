@@ -30,12 +30,13 @@ internal sealed class GraphicsBufferTransferTests
         GraphicsDevice device,
         GpuTexture target,
         ImmutableArray<GraphBufferImportRecord> imports,
-        long maximumPreflightIndexBytes,
+        long maximumPreflightWorkspaceBytes,
         ImmutableArray<RenderPassId> orderedPasses = default,
         ImmutableArray<GraphTextureImportRecord> additionalTextureImports = default,
         ImmutableArray<GraphResourceAliasingBarrier> aliasingBarriers = default,
         ImmutableArray<GraphTextureAliasingBarrier> textureAliasingBarriers = default,
-        ImmutableArray<GraphResourceAccess> accesses = default)
+        ImmutableArray<GraphResourceAccess> accesses = default,
+        ImmutableArray<GraphicsGraphSubmissionPass> submissionPasses = default)
     {
         var version = new GraphTextureVersion(
             device.DeviceEpoch, 1, 0, target.Description, new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
@@ -59,7 +60,7 @@ internal sealed class GraphicsBufferTransferTests
             surfaceEpoch: 0,
             swapchainEpoch: 0,
             orderedPasses.IsDefault ? [] : orderedPasses,
-            [],
+            submissionPasses.IsDefault ? [] : submissionPasses,
             [],
             aliasingBarriers.IsDefault ? [] : aliasingBarriers,
             textureAliasingBarriers.IsDefault ? [] : textureAliasingBarriers,
@@ -67,7 +68,7 @@ internal sealed class GraphicsBufferTransferTests
             imports,
             textureImports.MoveToImmutable(),
             [],
-            maximumPreflightIndexBytes: maximumPreflightIndexBytes);
+            maximumPreflightWorkspaceBytes: maximumPreflightWorkspaceBytes);
     }
 
     private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true, bool includeUploadHeap = false)
@@ -1453,6 +1454,59 @@ internal sealed class GraphicsBufferTransferTests
         {
             buffer.Dispose();
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphPassValidationWorkspaceUsesExactOwnedCapacity()
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+
+        try
+        {
+            using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            var pass = new GraphicsGraphSubmissionPass(
+                new RenderPassId(1, 0),
+                CommandRecorderPassKind.Copy,
+                null,
+                null,
+                []);
+            var expectedCharge = GraphicsGraphSubmission.CalculatePreflightWorkspaceBackingByteCharge(
+                bufferImportCapacity: 0,
+                textureImportCapacity: 1,
+                orderedPassCapacity: 0,
+                bufferAliasingCapacity: 0,
+                textureAliasingCapacity: 0,
+                passValidationCapacity: 1);
+
+            Assert.That(GraphicsGraphSubmission.CalculatePassValidationIndexBackingByteCharge(1), Is.EqualTo(80));
+            Assert.That(GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
+            Assert.That(expectedCharge, Is.EqualTo(240));
+            _ = Assert.Throws<ArgumentOutOfRangeException>(
+                () => GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(-1));
+            _ = Assert.Throws<OverflowException>(
+                () => GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(long.MaxValue));
+
+            _ = Assert.Throws<OutOfMemoryException>(
+                () => CreateBufferImportIndexSubmission(
+                    device,
+                    target,
+                    [],
+                    expectedCharge - 1,
+                    submissionPasses: [pass]));
+
+            var submission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [],
+                expectedCharge,
+                submissionPasses: [pass]);
+            Assert.That(submission.PassValidationIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.PassValidationIndexBackingByteCharge, Is.EqualTo(80));
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
 

@@ -12,9 +12,15 @@ internal sealed class GraphicsGraphSubmission
 {
     internal const int MaximumNativeColorAttachmentCount = 8;
 
+    private const byte BufferCopyDestinationPassFlag = 1 << 0;
+    private const byte BufferCopySourcePassFlag = 1 << 1;
+    private const byte TextureCopyDestinationPassFlag = 1 << 2;
+    private const byte TextureCopySourcePassFlag = 1 << 3;
+
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
     private readonly int[] _orderedPassIndex;
+    private readonly int[] _passValidationIndex;
     private int _recordingOwnershipState;
     private readonly int[] _textureAliasingAfterIndex;
     private readonly int[] _textureImportIndex;
@@ -35,7 +41,7 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
-        long maximumPreflightIndexBytes = long.MaxValue)
+        long maximumPreflightWorkspaceBytes = long.MaxValue)
     {
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
         ArgumentNullException.ThrowIfNull(outputColorTarget);
@@ -102,18 +108,19 @@ internal sealed class GraphicsGraphSubmission
         {
             if (pass.CommandList?.HasDiagnosticRecipe == true)
             {
-                maximumPreflightIndexBytes = Math.Min(maximumPreflightIndexBytes, 32L * 1024 * 1024);
+                maximumPreflightWorkspaceBytes = Math.Min(maximumPreflightWorkspaceBytes, 32L * 1024 * 1024);
                 break;
             }
         }
 
-        ValidatePreflightIndexAllowance(
+        ValidatePreflightWorkspaceAllowance(
             bufferImports.Length,
             textureImports.Length,
             orderedPasses.Length,
             aliasingBarriers.Length,
             textureAliasingBarriers.Length,
-            maximumPreflightIndexBytes);
+            passes.Length,
+            maximumPreflightWorkspaceBytes);
         DeviceEpoch = deviceEpoch;
         OutputColorTarget = outputColorTarget;
         SurfaceTarget = surfaceTarget;
@@ -121,13 +128,14 @@ internal sealed class GraphicsGraphSubmission
         SurfaceEpoch = surfaceEpoch;
         SwapchainEpoch = swapchainEpoch;
         OrderedPasses = [.. orderedPasses];
-        Passes = [.. passes];
         StateTransitions = [.. stateTransitions];
         AliasingBarriers = [.. aliasingBarriers];
         _bufferAliasingAfterIndex = CreateBufferAliasingAfterIndex(AliasingBarriers);
         TextureAliasingBarriers = [.. textureAliasingBarriers];
         _textureAliasingAfterIndex = CreateTextureAliasingAfterIndex(TextureAliasingBarriers);
         Accesses = [.. accesses];
+        Passes = [.. passes];
+        _passValidationIndex = CreatePassValidationIndex(Passes);
         BufferImports = [.. bufferImports];
         _bufferImportIndex = CreateBufferImportIndex(BufferImports);
         TextureImports = [.. textureImports];
@@ -162,6 +170,11 @@ internal sealed class GraphicsGraphSubmission
     internal ImmutableArray<RenderPassId> OrderedPasses { get; }
 
     internal GpuTexture OutputColorTarget { get; }
+
+    internal long PassValidationIndexBackingByteCharge
+        => CalculatePassValidationIndexBackingByteCharge(_passValidationIndex.LongLength);
+
+    internal int PassValidationIndexStorageCapacity => _passValidationIndex.Length;
 
     internal ImmutableArray<GraphicsGraphSubmissionPass> Passes { get; private set; }
 
@@ -237,6 +250,15 @@ internal sealed class GraphicsGraphSubmission
     internal static long CalculateOrderedPassIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
 
+    internal static long CalculatePassValidationFlagsBackingByteCharge(long capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(byte)) + 15) & ~15L));
+    }
+
+    internal static long CalculatePassValidationIndexBackingByteCharge(long capacity)
+        => CalculateIndexBackingByteCharge(capacity);
+
     internal static long CalculatePreflightIndexBackingByteCharge(
         long bufferImportCapacity,
         long textureImportCapacity,
@@ -249,6 +271,23 @@ internal sealed class GraphicsGraphSubmission
                 textureImportCapacity,
                 orderedPassCapacity)
             + CalculateAliasingIndexBackingByteCharge(bufferAliasingCapacity, textureAliasingCapacity));
+
+    internal static long CalculatePreflightWorkspaceBackingByteCharge(
+        long bufferImportCapacity,
+        long textureImportCapacity,
+        long orderedPassCapacity,
+        long bufferAliasingCapacity,
+        long textureAliasingCapacity,
+        long passValidationCapacity)
+        => checked(
+            CalculatePreflightIndexBackingByteCharge(
+                bufferImportCapacity,
+                textureImportCapacity,
+                orderedPassCapacity,
+                bufferAliasingCapacity,
+                textureAliasingCapacity)
+            + CalculatePassValidationIndexBackingByteCharge(passValidationCapacity)
+            + CalculatePassValidationFlagsBackingByteCharge(passValidationCapacity));
 
     internal static long CalculateTextureAliasingAfterIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
@@ -337,6 +376,15 @@ internal sealed class GraphicsGraphSubmission
         var rightPass = passes[right];
         var comparison = CompareRenderPassIds(leftPass, rightPass);
 
+        return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int ComparePassValidationIndices(
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int left,
+        int right)
+    {
+        var comparison = CompareRenderPassIds(passes[left].PassId, passes[right].PassId);
         return (comparison != 0) ? comparison : left.CompareTo(right);
     }
 
@@ -473,6 +521,34 @@ internal sealed class GraphicsGraphSubmission
         return indices;
     }
 
+    private static int[] CreatePassValidationIndex(ImmutableArray<GraphicsGraphSubmissionPass> passes)
+    {
+        if (passes.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[passes.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftPassValidationIndex(passes, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftPassValidationIndex(passes, indices, 0, end);
+        }
+
+        return indices;
+    }
+
     private static int[] CreateTextureAliasingAfterIndex(ImmutableArray<GraphTextureAliasingBarrier> barriers)
     {
         if (barriers.IsEmpty)
@@ -527,6 +603,67 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return indices;
+    }
+
+    private static int FindPassValidationIndex(
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int[] passValidationIndex,
+        RenderPassId passId,
+        out int passIndex)
+    {
+        var first = 0;
+        var last = passValidationIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var candidateIndex = passValidationIndex[middle];
+
+            if (CompareRenderPassIds(passes[candidateIndex].PassId, passId) < 0)
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first < passValidationIndex.Length)
+        {
+            var candidateIndex = passValidationIndex[first];
+
+            if (passes[candidateIndex].PassId == passId)
+            {
+                passIndex = candidateIndex;
+                return first;
+            }
+        }
+
+        passIndex = -1;
+        return -1;
+    }
+
+    private static bool HasPassValidationFlag(
+        byte[] passValidationFlags,
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int[] passValidationIndex,
+        RenderPassId passId,
+        byte flag)
+        => (FindPassValidationIndex(passes, passValidationIndex, passId, out var passIndex) >= 0)
+            && ((passValidationFlags[passIndex] & flag) != 0);
+
+    private static void SetPassValidationFlag(
+        byte[] passValidationFlags,
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int[] passValidationIndex,
+        RenderPassId passId,
+        byte flag)
+    {
+        if (FindPassValidationIndex(passes, passValidationIndex, passId, out var passIndex) >= 0)
+        {
+            passValidationFlags[passIndex] |= flag;
+        }
     }
 
     private static void SiftBufferAliasingAfterIndex(
@@ -607,6 +744,32 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    private static void SiftPassValidationIndex(
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (ComparePassValidationIndices(passes, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (ComparePassValidationIndices(passes, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
+        }
+    }
+
     private static void SiftTextureAliasingAfterIndex(
         ImmutableArray<GraphTextureAliasingBarrier> barriers,
         int[] indices,
@@ -662,25 +825,27 @@ internal sealed class GraphicsGraphSubmission
     [SuppressMessage(
         "Usage",
         "CA2201:Do not raise reserved exception types",
-        Justification = "An index backing exceeding its component allowance is refused before allocation.")]
-    private static void ValidatePreflightIndexAllowance(
+        Justification = "A preflight workspace exceeding its component allowance is refused before allocation.")]
+    private static void ValidatePreflightWorkspaceAllowance(
         int bufferImportCapacity,
         int textureImportCapacity,
         int orderedPassCapacity,
         int bufferAliasingCapacity,
         int textureAliasingCapacity,
+        int passValidationCapacity,
         long maximumBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maximumBytes);
 
-        if (CalculatePreflightIndexBackingByteCharge(
+        if (CalculatePreflightWorkspaceBackingByteCharge(
                 bufferImportCapacity,
                 textureImportCapacity,
                 orderedPassCapacity,
                 bufferAliasingCapacity,
-                textureAliasingCapacity) > maximumBytes)
+                textureAliasingCapacity,
+                passValidationCapacity) > maximumBytes)
         {
-            throw new OutOfMemoryException("The graph preflight index backings exceed their CPU component allowance.");
+            throw new OutOfMemoryException("The graph preflight workspace exceeds its CPU component allowance.");
         }
     }
 
@@ -912,6 +1077,7 @@ internal sealed class GraphicsGraphSubmission
     internal void ValidateNativeRasterSubmission()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
+        var passValidationFlags = new byte[Passes.Length];
 
         if ((TextureImports.Length < 1)
             || !ReferenceEquals(TextureImports[0].Texture, OutputColorTarget))
@@ -1571,12 +1737,8 @@ internal sealed class GraphicsGraphSubmission
         var storageBufferResourcesUsed = new HashSet<ulong>();
         var storageTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var storageTextureResourcesUsed = new HashSet<ulong>();
-        var copySourcePasses = new HashSet<RenderPassId>();
-        var copyDestinationPasses = new HashSet<RenderPassId>();
         var colorAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var depthAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var copySourceTexturePasses = new HashSet<RenderPassId>();
-        var copyDestinationTexturePasses = new HashSet<RenderPassId>();
         var copySourceTextureResourcesUsed = new HashSet<ulong>();
         var copyDestinationTextureResourcesUsed = new HashSet<ulong>();
 
@@ -1626,7 +1788,12 @@ internal sealed class GraphicsGraphSubmission
                         throw new InvalidOperationException("A Surface terminal pass must read its selected source for presentation.");
                     }
 
-                    _ = copySourceTexturePasses.Add(pass.PassId);
+                    SetPassValidationFlag(
+                        passValidationFlags,
+                        Passes,
+                        _passValidationIndex,
+                        pass.PassId,
+                        TextureCopySourcePassFlag);
                 }
 
                 continue;
@@ -2540,8 +2707,12 @@ internal sealed class GraphicsGraphSubmission
                             throw new InvalidOperationException("A native graph buffer copy has no matching declared source and destination ranges.");
                         }
 
-                        _ = copySourcePasses.Add(pass.PassId);
-                        _ = copyDestinationPasses.Add(pass.PassId);
+                        SetPassValidationFlag(
+                            passValidationFlags,
+                            Passes,
+                            _passValidationIndex,
+                            pass.PassId,
+                            BufferCopySourcePassFlag | BufferCopyDestinationPassFlag);
                         hasBufferCopy = true;
                         break;
                     }
@@ -2612,8 +2783,12 @@ internal sealed class GraphicsGraphSubmission
                             throw new InvalidOperationException("A native graph texture copy has no matching declared source and destination ranges.");
                         }
 
-                        _ = copySourceTexturePasses.Add(pass.PassId);
-                        _ = copyDestinationTexturePasses.Add(pass.PassId);
+                        SetPassValidationFlag(
+                            passValidationFlags,
+                            Passes,
+                            _passValidationIndex,
+                            pass.PassId,
+                            TextureCopySourcePassFlag | TextureCopyDestinationPassFlag);
                         hasTextureCopy = true;
                         break;
                     }
@@ -2655,7 +2830,12 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.CopySource)
                 && !access.IsWrite)
             {
-                if (!copySourcePasses.Contains(access.PassId))
+                if (!HasPassValidationFlag(
+                        passValidationFlags,
+                        Passes,
+                        _passValidationIndex,
+                        access.PassId,
+                        BufferCopySourcePassFlag))
                 {
                     throw new InvalidOperationException("The imported copy-source buffer is declared by a pass without a matching copy command.");
                 }
@@ -2669,7 +2849,12 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.CopyDestination)
                 && access.IsWrite)
             {
-                if (!copyDestinationPasses.Contains(access.PassId))
+                if (!HasPassValidationFlag(
+                        passValidationFlags,
+                        Passes,
+                        _passValidationIndex,
+                        access.PassId,
+                        BufferCopyDestinationPassFlag))
                 {
                     throw new InvalidOperationException("The imported copy-destination buffer is declared by a pass without a matching copy command.");
                 }
@@ -2783,7 +2968,12 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.CopySource)
                 && !access.IsWrite)
             {
-                if (!copySourceTexturePasses.Contains(access.PassId))
+                if (!HasPassValidationFlag(
+                        passValidationFlags,
+                        Passes,
+                        _passValidationIndex,
+                        access.PassId,
+                        TextureCopySourcePassFlag))
                 {
                     throw new InvalidOperationException("The imported copy-source texture is declared by a pass without a matching copy command.");
                 }
@@ -2797,7 +2987,12 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.CopyDestination)
                 && access.IsWrite)
             {
-                if (!copyDestinationTexturePasses.Contains(access.PassId))
+                if (!HasPassValidationFlag(
+                        passValidationFlags,
+                        Passes,
+                        _passValidationIndex,
+                        access.PassId,
+                        TextureCopyDestinationPassFlag))
                 {
                     throw new InvalidOperationException("The imported copy-destination texture is declared by a pass without a matching copy command.");
                 }
@@ -2898,7 +3093,12 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && copySourcePasses.Contains(transition.PassId))
+                && HasPassValidationFlag(
+                    passValidationFlags,
+                    Passes,
+                    _passValidationIndex,
+                    transition.PassId,
+                    BufferCopySourcePassFlag))
             {
                 continue;
             }
@@ -2914,7 +3114,12 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && copyDestinationPasses.Contains(transition.PassId))
+                && HasPassValidationFlag(
+                    passValidationFlags,
+                    Passes,
+                    _passValidationIndex,
+                    transition.PassId,
+                    BufferCopyDestinationPassFlag))
             {
                 continue;
             }
@@ -2977,7 +3182,12 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && copySourceTexturePasses.Contains(transition.PassId))
+                && HasPassValidationFlag(
+                    passValidationFlags,
+                    Passes,
+                    _passValidationIndex,
+                    transition.PassId,
+                    TextureCopySourcePassFlag))
             {
                 continue;
             }
@@ -2995,7 +3205,12 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && copyDestinationTexturePasses.Contains(transition.PassId))
+                && HasPassValidationFlag(
+                    passValidationFlags,
+                    Passes,
+                    _passValidationIndex,
+                    transition.PassId,
+                    TextureCopyDestinationPassFlag))
             {
                 continue;
             }
