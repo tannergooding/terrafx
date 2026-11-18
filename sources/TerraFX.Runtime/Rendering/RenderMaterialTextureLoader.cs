@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
@@ -215,68 +217,154 @@ internal static class RenderMaterialTextureLoader
         internal RenderMaterialTextureSet? Result;
         internal ImmutableArray<AssetLease<RenderTextureAsset>> TextureLeaseArray;
         internal ImmutableArray<AssetLease<RenderTextureAsset>>.Builder? TextureLeases;
+        private int _additionalCleanupFailureCount;
+        private Exception? _disposeFailure;
+        private int _disposeState;
 
-        private static void DisposePending<T>(ref T? value)
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "Each independently owned Material helper value is attempted while failed references remain rooted.")]
+        private static void DisposePending<T>(
+            ref T? value,
+            ref Exception? firstFailure,
+            ref int additionalCleanupFailureCount)
             where T : class, IDisposable
         {
-            var pending = value;
-
-            if (pending is null)
+            if (value is not { } pending)
             {
                 return;
             }
 
-            pending.Dispose();
-            value = null;
-        }
-
-        public void Dispose()
-        {
             try
             {
-                DisposePending(ref Result);
+                pending.Dispose();
+                value = null;
             }
-            finally
+            catch (Exception failure)
             {
-                try
+                if (firstFailure is null)
                 {
-                    DisposePending(ref PendingTextureLease);
+                    firstFailure = failure;
                 }
-                finally
+                else
+                {
+                    additionalCleanupFailureCount = checked(additionalCleanupFailureCount + 1);
+                }
+            }
+        }
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "All Texture, Material and helper-owned release operations are attempted before failure remains rooted.")]
+        public void Dispose()
+        {
+            var state = Interlocked.CompareExchange(ref _disposeState, 1, 0);
+
+            if (state is 2)
+            {
+                return;
+            }
+
+            if (state is 3)
+            {
+                RethrowDisposeFailure();
+            }
+
+            if (state is not 0)
+            {
+                throw new InvalidOperationException("Material helper cleanup is already in progress.");
+            }
+
+            Exception? firstFailure = null;
+
+            DisposePending(ref Result, ref firstFailure, ref _additionalCleanupFailureCount);
+            DisposePending(ref PendingTextureLease, ref firstFailure, ref _additionalCleanupFailureCount);
+
+            if (TextureLeases is { } textureLeases)
+            {
+                for (var index = 0; index < textureLeases.Count; index++)
                 {
                     try
                     {
-                        if (TextureLeases is { } textureLeases)
-                        {
-                            foreach (var textureLease in textureLeases)
-                            {
-                                textureLease.Dispose();
-                            }
-
-                            TextureLeases = null;
-                        }
-                        else if (!TextureLeaseArray.IsDefault)
-                        {
-                            foreach (var textureLease in TextureLeaseArray)
-                            {
-                                textureLease.Dispose();
-                            }
-
-                            TextureLeaseArray = default;
-                        }
+                        textureLeases[index].Dispose();
                     }
-                    finally
+                    catch (Exception failure)
                     {
-                        var materialLease = MaterialLease;
-                        materialLease?.Dispose();
-
-                        if (materialLease is not null)
+                        if (firstFailure is null)
                         {
-                            MaterialLease = null;
+                            firstFailure = failure;
+                        }
+                        else
+                        {
+                            _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
                         }
                     }
                 }
+
+                if (firstFailure is null)
+                {
+                    TextureLeases = null;
+                }
             }
+            else if (!TextureLeaseArray.IsDefault)
+            {
+                for (var index = 0; index < TextureLeaseArray.Length; index++)
+                {
+                    try
+                    {
+                        TextureLeaseArray[index].Dispose();
+                    }
+                    catch (Exception failure)
+                    {
+                        if (firstFailure is null)
+                        {
+                            firstFailure = failure;
+                        }
+                        else
+                        {
+                            _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
+                        }
+                    }
+                }
+
+                if (firstFailure is null)
+                {
+                    TextureLeaseArray = default;
+                }
+            }
+
+            if (MaterialLease is not null)
+            {
+                try
+                {
+                    MaterialLease.Dispose();
+                    MaterialLease = null;
+                }
+                catch (Exception failure)
+                {
+                    if (firstFailure is null)
+                    {
+                        firstFailure = failure;
+                    }
+                    else
+                    {
+                        _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
+                    }
+                }
+            }
+
+            if (firstFailure is not null)
+            {
+                Volatile.Write(ref _disposeFailure, firstFailure);
+                Volatile.Write(ref _disposeState, 3);
+                RethrowDisposeFailure();
+            }
+
+            TextureLeases = null;
+            TextureLeaseArray = default;
+            Volatile.Write(ref _disposeState, 2);
         }
 
         internal void RetainMaterialLease(AssetLease<RenderMaterialAsset> materialLease)
@@ -301,7 +389,8 @@ internal static class RenderMaterialTextureLoader
 
         private void EnsureEmpty()
         {
-            if ((MaterialLease is not null)
+            if ((_disposeState != 0)
+                || (MaterialLease is not null)
                 || (PendingTextureLease is not null)
                 || (Result is not null)
                 || !TextureLeaseArray.IsDefault
@@ -309,6 +398,13 @@ internal static class RenderMaterialTextureLoader
             {
                 throw new InvalidOperationException("The Material texture operation still owns unfinished progress.");
             }
+        }
+
+        private void RethrowDisposeFailure()
+        {
+            var failure = Volatile.Read(ref _disposeFailure)
+                ?? new InvalidOperationException("Material helper cleanup failed without a retained failure.");
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 }

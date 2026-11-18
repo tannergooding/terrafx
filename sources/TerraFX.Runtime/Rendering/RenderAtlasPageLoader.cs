@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
@@ -297,75 +299,155 @@ internal static class RenderAtlasPageLoader
         internal AssetLease<RenderTextureAsset>? PendingPageLease;
         internal PaddedRectangle[]? Rectangles;
         internal RenderAtlasPageSet? Result;
+        private int _additionalCleanupFailureCount;
+        private Exception? _disposeFailure;
+        private int _disposeState;
 
-        private static void DisposePending<T>(ref T? value)
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "Each independently owned Atlas helper value is attempted while failed references remain rooted.")]
+        private static void DisposePending<T>(
+            ref T? value,
+            ref Exception? firstFailure,
+            ref int additionalCleanupFailureCount)
             where T : class, IDisposable
         {
-            var pending = value;
-
-            if (pending is null)
+            if (value is not { } pending)
             {
                 return;
             }
 
-            pending.Dispose();
-            value = null;
-        }
-
-        public void Dispose()
-        {
             try
             {
-                DisposePending(ref Result);
+                pending.Dispose();
+                value = null;
             }
-            finally
+            catch (Exception failure)
             {
-                try
+                if (firstFailure is null)
                 {
-                    DisposePending(ref PendingPageLease);
+                    firstFailure = failure;
                 }
-                finally
+                else
+                {
+                    additionalCleanupFailureCount = checked(additionalCleanupFailureCount + 1);
+                }
+            }
+        }
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "All page, Atlas and helper-owned release operations are attempted before failure remains rooted.")]
+        public void Dispose()
+        {
+            var state = Interlocked.CompareExchange(ref _disposeState, 1, 0);
+
+            if (state is 2)
+            {
+                return;
+            }
+
+            if (state is 3)
+            {
+                RethrowDisposeFailure();
+            }
+
+            if (state is not 0)
+            {
+                throw new InvalidOperationException("Atlas helper cleanup is already in progress.");
+            }
+
+            Exception? firstFailure = null;
+            DisposePending(ref Result, ref firstFailure, ref _additionalCleanupFailureCount);
+            DisposePending(ref PendingPageLease, ref firstFailure, ref _additionalCleanupFailureCount);
+
+            if (PageLeases is { } pageLeases)
+            {
+                for (var index = 0; index < pageLeases.Count; index++)
                 {
                     try
                     {
-                        if (PageLeases is { } pageLeases)
-                        {
-                            foreach (var pageLease in pageLeases)
-                            {
-                                pageLease.Dispose();
-                            }
-
-                            PageLeases = null;
-                        }
-                        else if (!PageLeaseArray.IsDefault)
-                        {
-                            foreach (var pageLease in PageLeaseArray)
-                            {
-                                pageLease.Dispose();
-                            }
-
-                            PageLeaseArray = default;
-                        }
+                        pageLeases[index].Dispose();
                     }
-                    finally
+                    catch (Exception failure)
                     {
-                        try
+                        if (firstFailure is null)
                         {
-                            var atlasLease = AtlasLease;
-                            atlasLease?.Dispose();
-
-                            if (atlasLease is not null)
-                            {
-                                AtlasLease = null;
-                            }
+                            firstFailure = failure;
                         }
-                        finally
+                        else
                         {
-                            ClearValidationScratch();
+                            _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
                         }
                     }
                 }
+
+                if (firstFailure is null)
+                {
+                    PageLeases = null;
+                }
             }
+            else if (!PageLeaseArray.IsDefault)
+            {
+                for (var index = 0; index < PageLeaseArray.Length; index++)
+                {
+                    try
+                    {
+                        PageLeaseArray[index].Dispose();
+                    }
+                    catch (Exception failure)
+                    {
+                        if (firstFailure is null)
+                        {
+                            firstFailure = failure;
+                        }
+                        else
+                        {
+                            _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
+                        }
+                    }
+                }
+
+                if (firstFailure is null)
+                {
+                    PageLeaseArray = default;
+                }
+            }
+
+            if (AtlasLease is not null)
+            {
+                try
+                {
+                    AtlasLease.Dispose();
+                    AtlasLease = null;
+                }
+                catch (Exception failure)
+                {
+                    if (firstFailure is null)
+                    {
+                        firstFailure = failure;
+                    }
+                    else
+                    {
+                        _additionalCleanupFailureCount = checked(_additionalCleanupFailureCount + 1);
+                    }
+                }
+            }
+
+            ClearValidationScratch();
+
+            if (firstFailure is not null)
+            {
+                Volatile.Write(ref _disposeFailure, firstFailure);
+                Volatile.Write(ref _disposeState, 3);
+                RethrowDisposeFailure();
+            }
+
+            PageLeases = null;
+            PageLeaseArray = default;
+            Volatile.Write(ref _disposeState, 2);
         }
 
         internal void ClearValidationScratch()
@@ -399,7 +481,8 @@ internal static class RenderAtlasPageLoader
 
         private void EnsureEmpty()
         {
-            if ((AtlasLease is not null)
+            if ((_disposeState != 0)
+                || (AtlasLease is not null)
                 || (PageLeases is not null)
                 || !PageLeaseArray.IsDefault
                 || (PendingPageLease is not null)
@@ -412,6 +495,13 @@ internal static class RenderAtlasPageLoader
             {
                 throw new InvalidOperationException("The Atlas page operation still owns unfinished progress.");
             }
+        }
+
+        private void RethrowDisposeFailure()
+        {
+            var failure = Volatile.Read(ref _disposeFailure)
+                ?? new InvalidOperationException("Atlas helper cleanup failed without a retained failure.");
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 
