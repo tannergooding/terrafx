@@ -929,7 +929,7 @@ internal sealed class GraphicsBufferTransferTests
                 bufferAliasingCapacity: 2,
                 textureAliasingCapacity: 2,
                 bufferImportFlagCapacity: 0,
-                textureResourceUsageCapacity: 1,
+                textureImportFlagCapacity: 1,
                 passValidationCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(
                 device,
@@ -1041,7 +1041,7 @@ internal sealed class GraphicsBufferTransferTests
                 bufferAliasingCapacity: 0,
                 textureAliasingCapacity: 0,
                 bufferImportFlagCapacity: identities.Length,
-                textureResourceUsageCapacity: 1,
+                textureImportFlagCapacity: 1,
                 passValidationCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(device, target, frozenImports, expectedCharge);
             Assert.That(submission.BufferImportIndexStorageCapacity, Is.EqualTo(identities.Length));
@@ -1132,7 +1132,7 @@ internal sealed class GraphicsBufferTransferTests
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
                     bufferImportFlagCapacity: 2,
-                    textureResourceUsageCapacity: 1,
+                    textureImportFlagCapacity: 1,
                     passValidationCapacity: 0));
             var field = typeof(GraphicsGraphSubmission).GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("The private index backing was not found.");
@@ -1183,7 +1183,7 @@ internal sealed class GraphicsBufferTransferTests
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
                     bufferImportFlagCapacity: imports.Length,
-                    textureResourceUsageCapacity: 1,
+                    textureImportFlagCapacity: 1,
                     passValidationCapacity: 0));
             var exception = Assert.Throws<NotSupportedException>(submission.ValidateNativeRasterSubmission);
             Assert.That(exception?.Message, Is.EqualTo("Native graph submission requires each imported buffer to have a supported declared usage."));
@@ -1255,7 +1255,7 @@ internal sealed class GraphicsBufferTransferTests
                         bufferAliasingCapacity: 1,
                         textureAliasingCapacity: 1,
                         bufferImportFlagCapacity: 1,
-                        textureResourceUsageCapacity: 2,
+                        textureImportFlagCapacity: 2,
                         passValidationCapacity: 0),
                 [pass],
                     [textureImport],
@@ -1386,7 +1386,7 @@ internal sealed class GraphicsBufferTransferTests
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
                     bufferImportFlagCapacity: 2,
-                    textureResourceUsageCapacity: 1,
+                    textureImportFlagCapacity: 1,
                     passValidationCapacity: 1,
                     accessPairCapacity: accesses.Length);
                 submission = new GraphicsGraphSubmission(
@@ -1503,6 +1503,8 @@ internal sealed class GraphicsBufferTransferTests
         Assert.That(GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 4, 3, 2, 2), Is.EqualTo(320));
         Assert.That(GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(0), Is.Zero);
         Assert.That(GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(17), Is.EqualTo(112));
+        Assert.That(GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(0), Is.Zero);
+        Assert.That(GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(17), Is.EqualTo(112));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(-1, 0, 0));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
@@ -1515,6 +1517,10 @@ internal sealed class GraphicsBufferTransferTests
             () => GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(-1));
         _ = Assert.Throws<OverflowException>(
             () => GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(long.MaxValue));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(-1));
+        _ = Assert.Throws<OverflowException>(
+            () => GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(long.MaxValue));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 0, 0, -1, 0));
         _ = Assert.Throws<OverflowException>(
@@ -1559,11 +1565,52 @@ internal sealed class GraphicsBufferTransferTests
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
                     bufferImportFlagCapacity: 0,
-                    textureResourceUsageCapacity: 3,
+                    textureImportFlagCapacity: 3,
                     passValidationCapacity: 0),
                 additionalTextureImports: duplicateTransientImports);
             var textureException = Assert.Throws<NotSupportedException>(duplicateTextureSubmission.ValidateNativeRasterSubmission);
             Assert.That(textureException?.Message, Is.EqualTo("Native graph submission requires one transient import per graph texture resource."));
+
+            var duplicateColorVersion = new GraphTextureVersion(
+                device.DeviceEpoch,
+                91,
+                0,
+                transientTexture.Description,
+                range);
+            var duplicateColorImports = ImmutableArray.Create(
+                new GraphTextureImportRecord(transientTexture, duplicateColorVersion, options),
+                new GraphTextureImportRecord(transientTexture, duplicateColorVersion, options));
+            var duplicateColorAccess = new GraphResourceAccess(
+                duplicatePass,
+                duplicateColorVersion,
+                range,
+                TextureUsage.ColorAttachment,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                isWrite: true,
+                contentsValid: false);
+            var duplicateColorWorkspaceCharge = GraphicsGraphSubmission.CalculatePreflightWorkspaceBackingByteCharge(
+                bufferImportCapacity: 0,
+                textureImportCapacity: 3,
+                orderedPassCapacity: 0,
+                bufferAliasingCapacity: 0,
+                textureAliasingCapacity: 0,
+                bufferImportFlagCapacity: 0,
+                textureImportFlagCapacity: 3,
+                passValidationCapacity: 0,
+                accessPairCapacity: 1);
+            var duplicateColorSubmission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [],
+                duplicateColorWorkspaceCharge,
+                additionalTextureImports: duplicateColorImports,
+                accesses: [duplicateColorAccess]);
+            var duplicateColorException = Assert.Throws<NotSupportedException>(
+                duplicateColorSubmission.ValidateNativeRasterSubmission);
+            Assert.That(
+                duplicateColorException?.Message,
+                Is.EqualTo("Native graph color attachments require valid 2D color imports in a supported state."));
 
             var duplicatePassSubmission = CreateBufferImportIndexSubmission(
                 device,
@@ -1667,7 +1714,7 @@ internal sealed class GraphicsBufferTransferTests
                 bufferAliasingCapacity: 0,
                 textureAliasingCapacity: 0,
                 bufferImportFlagCapacity: 0,
-                textureResourceUsageCapacity: 1,
+                textureImportFlagCapacity: 1,
                 passValidationCapacity: 1,
                 accessPairCapacity: 1);
 
@@ -1675,7 +1722,7 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(GraphicsGraphSubmission.CalculateAccessValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationIndexBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
-            Assert.That(GraphicsGraphSubmission.CalculateResourceUsageFlagsBackingByteCharge(1), Is.EqualTo(80));
+            Assert.That(GraphicsGraphSubmission.CalculateTextureImportFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(expectedCharge, Is.EqualTo(480));
             _ = Assert.Throws<ArgumentOutOfRangeException>(
                 () => GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(-1));
@@ -2550,7 +2597,7 @@ internal sealed class GraphicsBufferTransferTests
                 bufferAliasingCapacity: 0,
                 textureAliasingCapacity: 0,
                 bufferImportFlagCapacity: 0,
-                textureResourceUsageCapacity: 4,
+                textureImportFlagCapacity: 4,
                 passValidationCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(
                 device,

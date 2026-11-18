@@ -30,16 +30,22 @@ internal sealed class GraphicsGraphSubmission
     private const byte BufferVertexBindingFlag = 1 << 2;
     private const ushort BufferVertexImportFlag = 1 << 6;
     private const ushort BufferVertexResourceFlag = 1 << 2;
-    private const byte TextureColorResourceFlag = 1 << 0;
+    private const ushort TextureColorImportFlag = 1 << 6;
+    private const ushort TextureColorResourceFlag = 1 << 0;
+    private const ushort TextureCopyDestinationImportFlag = 1 << 11;
     private const byte TextureCopyDestinationPassFlag = 1 << 2;
-    private const byte TextureCopyDestinationResourceFlag = 1 << 2;
+    private const ushort TextureCopyDestinationResourceFlag = 1 << 2;
+    private const ushort TextureCopySourceImportFlag = 1 << 10;
     private const byte TextureCopySourcePassFlag = 1 << 3;
-    private const byte TextureCopySourceResourceFlag = 1 << 3;
-    private const byte TextureDepthResourceFlag = 1 << 1;
+    private const ushort TextureCopySourceResourceFlag = 1 << 3;
+    private const ushort TextureDepthImportFlag = 1 << 7;
+    private const ushort TextureDepthResourceFlag = 1 << 1;
     private const byte TextureSampledBindingFlag = 1 << 4;
-    private const byte TextureSampledResourceFlag = 1 << 4;
+    private const ushort TextureSampledImportFlag = 1 << 9;
+    private const ushort TextureSampledResourceFlag = 1 << 4;
     private const byte TextureStorageBindingFlag = 1 << 5;
-    private const byte TextureStorageResourceFlag = 1 << 5;
+    private const ushort TextureStorageImportFlag = 1 << 8;
+    private const ushort TextureStorageResourceFlag = 1 << 5;
 
     private readonly int[] _accessPairIndex;
     private readonly int[] _bufferAliasingAfterIndex;
@@ -325,7 +331,7 @@ internal sealed class GraphicsGraphSubmission
         long bufferAliasingCapacity,
         long textureAliasingCapacity,
         long bufferImportFlagCapacity,
-        long textureResourceUsageCapacity,
+        long textureImportFlagCapacity,
         long passValidationCapacity,
         long accessPairCapacity = 0)
         => checked(
@@ -338,15 +344,15 @@ internal sealed class GraphicsGraphSubmission
             + CalculateAccessPairIndexBackingByteCharge(accessPairCapacity)
             + CalculateAccessValidationFlagsBackingByteCharge(accessPairCapacity)
             + CalculateBufferImportFlagsBackingByteCharge(bufferImportFlagCapacity)
-            + CalculateResourceUsageFlagsBackingByteCharge(textureResourceUsageCapacity)
+            + CalculateTextureImportFlagsBackingByteCharge(textureImportFlagCapacity)
             + CalculatePassValidationIndexBackingByteCharge(passValidationCapacity)
             + CalculatePassValidationFlagsBackingByteCharge(passValidationCapacity));
 
-    internal static long CalculateResourceUsageFlagsBackingByteCharge(long capacity)
-        => CalculatePassValidationFlagsBackingByteCharge(capacity);
-
     internal static long CalculateTextureAliasingAfterIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
+
+    internal static long CalculateTextureImportFlagsBackingByteCharge(long capacity)
+        => CalculateBufferImportFlagsBackingByteCharge(capacity);
 
     internal static long CalculateTextureImportIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
@@ -384,16 +390,7 @@ internal sealed class GraphicsGraphSubmission
         return colorIndex == formats.Length;
     }
 
-    private static void AddBufferResourceUsageFlag(ushort[] flags, int importIndex, ushort flag, ref int usedCount)
-    {
-        if ((flags[importIndex] & flag) == 0)
-        {
-            flags[importIndex] |= flag;
-            usedCount++;
-        }
-    }
-
-    private static void AddResourceUsageFlag(byte[] flags, int importIndex, byte flag, ref int usedCount)
+    private static void AddImportResourceUsageFlag(ushort[] flags, int importIndex, ushort flag, ref int usedCount)
     {
         if ((flags[importIndex] & flag) == 0)
         {
@@ -1125,7 +1122,7 @@ internal sealed class GraphicsGraphSubmission
         int textureAliasingCapacity,
         int accessPairCapacity,
         int bufferImportFlagCapacity,
-        int textureResourceUsageCapacity,
+        int textureImportFlagCapacity,
         int passValidationCapacity,
         long maximumBytes)
     {
@@ -1138,7 +1135,7 @@ internal sealed class GraphicsGraphSubmission
                 bufferAliasingCapacity,
                 textureAliasingCapacity,
                 bufferImportFlagCapacity,
-                textureResourceUsageCapacity,
+                textureImportFlagCapacity,
                 passValidationCapacity,
                 accessPairCapacity) > maximumBytes)
         {
@@ -1375,7 +1372,7 @@ internal sealed class GraphicsGraphSubmission
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
         var bufferImportFlags = new ushort[BufferImports.Length];
-        var textureResourceUsageFlags = new byte[TextureImports.Length];
+        var textureImportFlags = new ushort[TextureImports.Length];
         var passValidationFlags = new byte[Passes.Length];
         var accessValidationFlags = new byte[Accesses.Length];
 
@@ -1421,8 +1418,12 @@ internal sealed class GraphicsGraphSubmission
         var storageBufferImportCount = 0;
         var copySourceBufferImportCount = 0;
         var copyDestinationBufferImportCount = 0;
-        var copySourceTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-        var copyDestinationTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
+        var copySourceTextureImportCount = 0;
+        var copyDestinationTextureImportCount = 0;
+        var colorTextureImportCount = 0;
+        var depthTextureImportCount = 0;
+        var sampledTextureImportCount = 0;
+        var storageTextureImportCount = 0;
 
         for (var index = 0; index < OrderedPasses.Length; index++)
         {
@@ -1575,10 +1576,16 @@ internal sealed class GraphicsGraphSubmission
             var outputTargetImport = TextureImports[0];
 
             if (((outputTargetImport.Version.Description.Usage & TextureUsage.CopySource) == 0)
-                || !copySourceTextureImports.TryAdd(targetResourceId, outputTargetImport))
+                || !TryAddTextureImportFlag(
+                    textureImportFlags,
+                    0,
+                    targetResourceId,
+                    TextureCopySourceImportFlag))
             {
                 throw new NotSupportedException("The graph output color target requires copy-source usage before it can be copied.");
             }
+
+            copySourceTextureImportCount++;
         }
 
         for (var aliasingBarrierIndex = 0; aliasingBarrierIndex < AliasingBarriers.Length; aliasingBarrierIndex++)
@@ -1640,11 +1647,6 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var colorTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-        var depthTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-        var sampledTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-        var storageTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-
         for (var index = 1; index < TextureImports.Length; index++)
         {
             var import = TextureImports[index];
@@ -1689,16 +1691,34 @@ internal sealed class GraphicsGraphSubmission
                 if (hasCopySourceImportAccess
                     && (((usage & TextureUsage.CopySource) == 0)
                         || (hasCopyDestinationImportAccess && !import.IsTransient)
-                        || !copySourceTextureImports.TryAdd(import.Version.ResourceId, import)))
+                        || !TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureCopySourceImportFlag)))
                 {
                     throw new NotSupportedException("Native graph color attachment copy sources require copy-source usage and a supported import.");
                 }
 
+                if (hasCopySourceImportAccess)
+                {
+                    copySourceTextureImportCount++;
+                }
+
                 if (hasCopyDestinationImportAccess
                     && (((usage & TextureUsage.CopyDestination) == 0)
-                        || !copyDestinationTextureImports.TryAdd(import.Version.ResourceId, import)))
+                        || !TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureCopyDestinationImportFlag)))
                 {
                     throw new NotSupportedException("Native graph color attachment copy destinations require copy-destination usage.");
+                }
+
+                if (hasCopyDestinationImportAccess)
+                {
+                    copyDestinationTextureImportCount++;
                 }
 
                 if (!hasColorAttachmentUsage
@@ -1716,10 +1736,16 @@ internal sealed class GraphicsGraphSubmission
                         or GraphResourceState.CopySource
                         or GraphResourceState.CopyDestination
                         or GraphResourceState.ColorAttachment))
-                    || !colorTextureImports.TryAdd(import.Version.ResourceId, import))
+                    || !TryAddTextureImportFlag(
+                        textureImportFlags,
+                        index,
+                        import.Version.ResourceId,
+                        TextureColorImportFlag))
                 {
                     throw new NotSupportedException("Native graph color attachments require valid 2D color imports in a supported state.");
                 }
+
+                colorTextureImportCount++;
 
                 if (hasSampledImportAccess)
                 {
@@ -1729,10 +1755,16 @@ internal sealed class GraphicsGraphSubmission
                         || !import.IsTransient
                         || import.InitialContentsValid
                         || (import.InitialState != GraphResourceState.Undefined)
-                        || !sampledTextureImports.TryAdd(import.Version.ResourceId, import))
+                        || !TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureSampledImportFlag))
                     {
                         throw new NotSupportedException("Native graph color attachments may be sampled later only as graph transients written before sampling.");
                     }
+
+                    sampledTextureImportCount++;
                 }
 
                 continue;
@@ -1758,10 +1790,16 @@ internal sealed class GraphicsGraphSubmission
                         or GraphResourceState.DepthRead
                         or GraphResourceState.DepthWrite
                         or GraphResourceState.ShaderSampledRead))
-                    || !depthTextureImports.TryAdd(import.Version.ResourceId, import))
+                    || !TryAddTextureImportFlag(
+                        textureImportFlags,
+                        index,
+                        import.Version.ResourceId,
+                        TextureDepthImportFlag))
                 {
                     throw new NotSupportedException("Native graph depth attachments require D32Float mip/layer selections in a supported state.");
                 }
+
+                depthTextureImportCount++;
 
                 if (hasSampledImportAccess)
                 {
@@ -1771,10 +1809,16 @@ internal sealed class GraphicsGraphSubmission
                         || !import.IsTransient
                         || import.InitialContentsValid
                         || (import.InitialState != GraphResourceState.Undefined)
-                        || !sampledTextureImports.TryAdd(import.Version.ResourceId, import))
+                        || !TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureSampledImportFlag))
                     {
                         throw new NotSupportedException("Native graph depth attachments may be sampled later only as graph transients written before sampling.");
                     }
+
+                    sampledTextureImportCount++;
                 }
 
                 continue;
@@ -1818,10 +1862,16 @@ internal sealed class GraphicsGraphSubmission
                         throw new NotSupportedException("Native graph submission requires initialized sampled images.");
                     }
 
-                    if (!sampledTextureImports.TryAdd(import.Version.ResourceId, import))
+                    if (!TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureSampledImportFlag))
                     {
                         throw new InvalidOperationException("The graph imported a duplicate sampled-image resource identity.");
                     }
+
+                    sampledTextureImportCount++;
                 }
                 else
                 {
@@ -1835,10 +1885,16 @@ internal sealed class GraphicsGraphSubmission
                         throw new NotSupportedException("Native graph submission supports storage images in an initialized or undefined state.");
                     }
 
-                    if (!storageTextureImports.TryAdd(import.Version.ResourceId, import))
+                    if (!TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureStorageImportFlag))
                     {
                         throw new InvalidOperationException("The graph imported a duplicate storage-image resource identity.");
                     }
+
+                    storageTextureImportCount++;
                 }
             }
             else
@@ -1864,10 +1920,16 @@ internal sealed class GraphicsGraphSubmission
                                     or GraphResourceState.StorageRead
                                     or GraphResourceState.StorageWrite
                                     or GraphResourceState.StorageReadWrite))))
-                        || !copySourceTextureImports.TryAdd(import.Version.ResourceId, import))
+                        || !TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureCopySourceImportFlag))
                     {
                         throw new NotSupportedException("Native graph texture copy sources require initialized imports or transient textures written earlier in the graph.");
                     }
+
+                    copySourceTextureImportCount++;
                 }
 
                 if (hasCopyDestinationImportAccess)
@@ -1886,10 +1948,16 @@ internal sealed class GraphicsGraphSubmission
                                     or GraphResourceState.StorageRead
                                     or GraphResourceState.StorageWrite
                                     or GraphResourceState.StorageReadWrite))))
-                        || !copyDestinationTextureImports.TryAdd(import.Version.ResourceId, import))
+                        || !TryAddTextureImportFlag(
+                            textureImportFlags,
+                            index,
+                            import.Version.ResourceId,
+                            TextureCopyDestinationImportFlag))
                     {
                         throw new NotSupportedException("Native graph texture copy destinations require CopyDestination resources in supported initial states.");
                     }
+
+                    copyDestinationTextureImportCount++;
                 }
             }
         }
@@ -2186,7 +2254,10 @@ internal sealed class GraphicsGraphSubmission
 
                         if ((depthAttachmentCount != 1)
                             || (attachment.Version.ResourceId == targetResourceId)
-                            || !depthTextureImports.ContainsKey(attachment.Version.ResourceId)
+                            || !HasTextureImportFlag(
+                                textureImportFlags,
+                                attachment.Version.ResourceId,
+                                TextureDepthImportFlag)
                             || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth))
                             || (description.Dimension != TextureDimension.Dimension2D)
                             || (description.Depth != 1)
@@ -2219,7 +2290,8 @@ internal sealed class GraphicsGraphSubmission
                                 OutputColorTarget.ResourceOwner.Device.Capabilities.Limits.MaximumColorAttachments,
                                 MaximumNativeColorAttachmentCount))
                             || isDuplicateColorAttachment
-                            || (!isOutputTarget && !colorTextureImports.ContainsKey(resourceId))
+                            || (!isOutputTarget
+                                && !HasTextureImportFlag(textureImportFlags, resourceId, TextureColorImportFlag))
                             || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
                             || (description.Dimension != TextureDimension.Dimension2D)
                             || (description.Depth != 1)
@@ -2755,8 +2827,10 @@ internal sealed class GraphicsGraphSubmission
                                         || !currentPipelineSampledImageArraying.TryGetValue(
                                             (binding.Group, binding.Binding),
                                             out var imageArrayed)
-                                        || !sampledTextureImports.TryGetValue(
+                                        || !TryGetTextureImport(
+                                            textureImportFlags,
                                             binding.Resource.ResourceId,
+                                            TextureSampledImportFlag,
                                             out var sampledTextureImport))
                                     {
                                         throw new NotSupportedException("The sampled-image binding must match its reflected 2D or 2D-array shape and fit its imported color or D32 depth range.");
@@ -2834,7 +2908,11 @@ internal sealed class GraphicsGraphSubmission
                                         _ => throw new InvalidOperationException("The storage-image pipeline omitted its reflected format."),
                                     };
 
-                                    if (!storageTextureImports.TryGetValue(binding.Resource.ResourceId, out var storageTextureImport)
+                                    if (!TryGetTextureImport(
+                                            textureImportFlags,
+                                            binding.Resource.ResourceId,
+                                            TextureStorageImportFlag,
+                                            out var storageTextureImport)
                                         || !binding.Range.IsWithin(storageTextureImport.Version.Range)
                                         || (binding.Range.MipCount != 1)
                                         || (binding.Range.LayerCount != 1)
@@ -2943,7 +3021,11 @@ internal sealed class GraphicsGraphSubmission
                         }
                         else if (command.StorageBarrierTexture is GraphTextureVersion barrierTexture)
                         {
-                            if (!storageTextureImports.TryGetValue(barrierTexture.ResourceId, out var storageTextureImport)
+                            if (!TryGetTextureImport(
+                                    textureImportFlags,
+                                    barrierTexture.ResourceId,
+                                    TextureStorageImportFlag,
+                                    out var storageTextureImport)
                                 || !command.StorageBarrierTextureRange.IsWithin(storageTextureImport.Version.Range)
                                 || !HasAccessValidationFlagForPair(
                                     accessValidationFlags,
@@ -3163,8 +3245,16 @@ internal sealed class GraphicsGraphSubmission
                         var destination = command.CopyDestinationTexture
                             ?? throw new InvalidOperationException("The graph copy command has no destination texture version.");
 
-                        if (!copySourceTextureImports.TryGetValue(source.ResourceId, out var copySourceTextureImport)
-                            || !copyDestinationTextureImports.TryGetValue(destination.ResourceId, out var copyDestinationTextureImport)
+                        if (!TryGetTextureImport(
+                                textureImportFlags,
+                                source.ResourceId,
+                                TextureCopySourceImportFlag,
+                                out var copySourceTextureImport)
+                            || !TryGetTextureImport(
+                                textureImportFlags,
+                                destination.ResourceId,
+                                TextureCopyDestinationImportFlag,
+                                out var copyDestinationTextureImport)
                             || (source.ResourceId == destination.ResourceId)
                             || (source.Description != copySourceTextureImport.Version.Description)
                             || (destination.Description != copyDestinationTextureImport.Version.Description)
@@ -3399,10 +3489,11 @@ internal sealed class GraphicsGraphSubmission
                     access.ResourceId,
                     isDepth: false))
             {
-                if (access.IsWrite && colorTextureImports.ContainsKey(access.ResourceId))
+                if (access.IsWrite
+                    && HasTextureImportFlag(textureImportFlags, access.ResourceId, TextureColorImportFlag))
                 {
                     RecordTextureResourceUsage(
-                        textureResourceUsageFlags,
+                        textureImportFlags,
                         access.ResourceId,
                         TextureColorResourceFlag,
                         ref colorTextureResourcesUsedCount);
@@ -3412,7 +3503,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
-                && depthTextureImports.ContainsKey(access.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, access.ResourceId, TextureDepthImportFlag)
                 && (access.RequiredState == GraphResourceState.DepthWrite))
             {
                 if (!HasPassAttachment(
@@ -3428,7 +3519,7 @@ internal sealed class GraphicsGraphSubmission
                 if (access.IsWrite)
                 {
                     RecordTextureResourceUsage(
-                        textureResourceUsageFlags,
+                        textureImportFlags,
                         access.ResourceId,
                         TextureDepthResourceFlag,
                         ref depthTextureResourcesUsedCount);
@@ -3438,7 +3529,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
-                && copySourceTextureImports.ContainsKey(access.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, access.ResourceId, TextureCopySourceImportFlag)
                 && (access.RequiredState == GraphResourceState.CopySource)
                 && !access.IsWrite)
             {
@@ -3453,7 +3544,7 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 RecordTextureResourceUsage(
-                    textureResourceUsageFlags,
+                    textureImportFlags,
                     access.ResourceId,
                     TextureCopySourceResourceFlag,
                     ref copySourceTextureResourcesUsedCount);
@@ -3461,7 +3552,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
-                && copyDestinationTextureImports.ContainsKey(access.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, access.ResourceId, TextureCopyDestinationImportFlag)
                 && (access.RequiredState == GraphResourceState.CopyDestination)
                 && access.IsWrite)
             {
@@ -3476,7 +3567,7 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 RecordTextureResourceUsage(
-                    textureResourceUsageFlags,
+                    textureImportFlags,
                     access.ResourceId,
                     TextureCopyDestinationResourceFlag,
                     ref copyDestinationTextureResourcesUsedCount);
@@ -3484,7 +3575,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
-                && sampledTextureImports.ContainsKey(access.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, access.ResourceId, TextureSampledImportFlag)
                 && (access.RequiredState == GraphResourceState.ShaderSampledRead)
                 && !access.IsWrite)
             {
@@ -3495,7 +3586,7 @@ internal sealed class GraphicsGraphSubmission
 
                 hasSampledImageAccess = true;
                 RecordTextureResourceUsage(
-                    textureResourceUsageFlags,
+                    textureImportFlags,
                     access.ResourceId,
                     TextureSampledResourceFlag,
                     ref sampledTextureResourcesUsedCount);
@@ -3503,7 +3594,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
-                && storageTextureImports.ContainsKey(access.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, access.ResourceId, TextureStorageImportFlag)
                 && (access.RequiredState == GraphResourceState.StorageReadWrite)
                 && access.IsStorageReadWritePair)
             {
@@ -3514,7 +3605,7 @@ internal sealed class GraphicsGraphSubmission
 
                 hasStorageImageAccess = true;
                 RecordTextureResourceUsage(
-                    textureResourceUsageFlags,
+                    textureImportFlags,
                     access.ResourceId,
                     TextureStorageResourceFlag,
                     ref storageTextureResourcesUsedCount);
@@ -3656,7 +3747,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && colorTextureImports.ContainsKey(transition.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureColorImportFlag)
                 && (transition.AfterState == GraphResourceState.ColorAttachment)
                 && (transition.BeforeState is
                     GraphResourceState.Undefined
@@ -3675,7 +3766,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && depthTextureImports.ContainsKey(transition.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureDepthImportFlag)
                 && (transition.AfterState == GraphResourceState.DepthWrite)
                 && (transition.BeforeState is
                     GraphResourceState.Undefined
@@ -3696,7 +3787,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && copySourceTextureImports.ContainsKey(transition.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureCopySourceImportFlag)
                 && (transition.AfterState == GraphResourceState.CopySource)
                 && (transition.BeforeState is
                     GraphResourceState.General
@@ -3718,7 +3809,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && copyDestinationTextureImports.ContainsKey(transition.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureCopyDestinationImportFlag)
                 && (transition.AfterState == GraphResourceState.CopyDestination)
                 && (transition.BeforeState is
                     GraphResourceState.Undefined
@@ -3741,7 +3832,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && sampledTextureImports.ContainsKey(transition.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureSampledImportFlag)
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState == GraphResourceState.General)
                 && HasAccessValidationFlagForPair(
@@ -3756,7 +3847,11 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && sampledTextureImports.TryGetValue(transition.ResourceId, out var sampledTextureImport)
+                && TryGetTextureImport(
+                    textureImportFlags,
+                    transition.ResourceId,
+                    TextureSampledImportFlag,
+                    out var sampledTextureImport)
                 && sampledTextureImport.IsTransient
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState == GraphResourceState.ColorAttachment)
@@ -3772,7 +3867,11 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && sampledTextureImports.TryGetValue(transition.ResourceId, out sampledTextureImport)
+                && TryGetTextureImport(
+                    textureImportFlags,
+                    transition.ResourceId,
+                    TextureSampledImportFlag,
+                    out sampledTextureImport)
                 && sampledTextureImport.IsTransient
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState is GraphResourceState.DepthRead or GraphResourceState.DepthWrite)
@@ -3788,7 +3887,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && storageTextureImports.ContainsKey(transition.ResourceId)
+                && HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureStorageImportFlag)
                 && (transition.AfterState == GraphResourceState.StorageReadWrite)
                 && (transition.BeforeState is
                     GraphResourceState.General
@@ -3810,11 +3909,11 @@ internal sealed class GraphicsGraphSubmission
                 && !HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferVertexImportFlag)
                 && !HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferIndexImportFlag)
                 && !HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferStorageImportFlag)
-                && !copySourceTextureImports.ContainsKey(transition.ResourceId)
-                && !copyDestinationTextureImports.ContainsKey(transition.ResourceId)
-                && !depthTextureImports.ContainsKey(transition.ResourceId)
-                && !sampledTextureImports.ContainsKey(transition.ResourceId)
-                && !storageTextureImports.ContainsKey(transition.ResourceId))
+                && !HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureCopySourceImportFlag)
+                && !HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureCopyDestinationImportFlag)
+                && !HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureDepthImportFlag)
+                && !HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureSampledImportFlag)
+                && !HasTextureImportFlag(textureImportFlags, transition.ResourceId, TextureStorageImportFlag))
             {
                 throw new NotSupportedException("Native graph submission does not support state transitions for other imported resources.");
             }
@@ -3856,34 +3955,34 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported copy-destination buffer must be written by a graph copy command.");
         }
 
-        if (copySourceTextureResourcesUsedCount != copySourceTextureImports.Count)
+        if (copySourceTextureResourcesUsedCount != copySourceTextureImportCount)
         {
             throw new NotSupportedException(
-                $"Every imported copy-source texture must be read by a graph copy command ({copySourceTextureResourcesUsedCount} of {copySourceTextureImports.Count} were used).");
+                $"Every imported copy-source texture must be read by a graph copy command ({copySourceTextureResourcesUsedCount} of {copySourceTextureImportCount} were used).");
         }
 
-        if (copyDestinationTextureResourcesUsedCount != copyDestinationTextureImports.Count)
+        if (copyDestinationTextureResourcesUsedCount != copyDestinationTextureImportCount)
         {
             throw new NotSupportedException("Every imported copy-destination texture must be written by a graph copy command.");
         }
 
-        if (depthTextureResourcesUsedCount != depthTextureImports.Count)
+        if (depthTextureResourcesUsedCount != depthTextureImportCount)
         {
             throw new NotSupportedException("Every imported depth attachment must be written by a graph pass.");
         }
 
-        if (colorTextureResourcesUsedCount != colorTextureImports.Count)
+        if (colorTextureResourcesUsedCount != colorTextureImportCount)
         {
             throw new NotSupportedException("Every imported color attachment must be written by a graph pass.");
         }
 
-        if ((sampledTextureImports.Count != 0)
+        if ((sampledTextureImportCount != 0)
             && (!hasSampledImagePipeline
                 || !hasSampledImageBinding
                 || !hasSampledImageAccess
                 || !hasSamplerPipeline
                 || !hasSamplerBinding
-                || (sampledTextureResourcesUsedCount != sampledTextureImports.Count)))
+                || (sampledTextureResourcesUsedCount != sampledTextureImportCount)))
         {
             throw new NotSupportedException("Every imported sampled image must be reflected, bound with its sampler, and declared by a graph pass.");
         }
@@ -3897,11 +3996,11 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported storage buffer must be reflected, bound, and declared by a graph pass.");
         }
 
-        if ((storageTextureImports.Count != 0)
+        if ((storageTextureImportCount != 0)
             && (!hasStorageImagePipeline
                 || !hasStorageImageBinding
                 || !hasStorageImageAccess
-                || (storageTextureResourcesUsedCount != storageTextureImports.Count)))
+                || (storageTextureResourcesUsedCount != storageTextureImportCount)))
         {
             throw new NotSupportedException("Every imported storage image must be reflected, bound, and declared by a graph pass.");
         }
@@ -4031,6 +4130,12 @@ internal sealed class GraphicsGraphSubmission
 
     private int FindFirstTextureImportIndex(ulong resourceId)
     {
+        var index = FindFirstTextureImportSortedIndex(resourceId);
+        return (index >= 0) ? _textureImportIndex[index] : -1;
+    }
+
+    private int FindFirstTextureImportSortedIndex(ulong resourceId)
+    {
         var first = 0;
         var last = _textureImportIndex.Length;
 
@@ -4049,17 +4154,17 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        if (first == _textureImportIndex.Length)
+        if (first < _textureImportIndex.Length)
         {
-            return -1;
+            var candidate = TextureImports[_textureImportIndex[first]];
+
+            if ((candidate is not null) && (candidate.Version.ResourceId == resourceId))
+            {
+                return first;
+            }
         }
 
-        var index = _textureImportIndex[first];
-        var candidate = TextureImports[index];
-        return (candidate is not null)
-            && (candidate.Version.ResourceId == resourceId)
-                ? index
-                : -1;
+        return -1;
     }
 
     private int FindFirstTransientTextureImportIndex(ulong resourceId)
@@ -4105,6 +4210,31 @@ internal sealed class GraphicsGraphSubmission
         return (index >= 0) && ((bufferImportFlags[index] & flag) != 0);
     }
 
+    private bool HasTextureImportFlag(ushort[] textureImportFlags, ulong resourceId, ushort flag)
+    {
+        var index = FindFirstTextureImportSortedIndex(resourceId);
+
+        while ((index >= 0) && (index < _textureImportIndex.Length))
+        {
+            var importIndex = _textureImportIndex[index];
+            var import = TextureImports[importIndex];
+
+            if ((import is null) || (import.Version.ResourceId != resourceId))
+            {
+                return false;
+            }
+
+            if ((textureImportFlags[importIndex] & flag) != 0)
+            {
+                return true;
+            }
+
+            index++;
+        }
+
+        return false;
+    }
+
     private void RecordBufferResourceUsage(
         ushort[] resourceUsageFlags,
         ulong resourceId,
@@ -4118,13 +4248,13 @@ internal sealed class GraphicsGraphSubmission
             throw new InvalidOperationException("The graph buffer usage index lost a declared import.");
         }
 
-        AddBufferResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
+        AddImportResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
     }
 
     private void RecordTextureResourceUsage(
-        byte[] resourceUsageFlags,
+        ushort[] resourceUsageFlags,
         ulong resourceId,
-        byte flag,
+        ushort flag,
         ref int usedCount)
     {
         var importIndex = FindFirstTextureImportIndex(resourceId);
@@ -4134,7 +4264,22 @@ internal sealed class GraphicsGraphSubmission
             throw new InvalidOperationException("The graph texture usage index lost a declared import.");
         }
 
-        AddResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
+        AddImportResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
+    }
+
+    private bool TryAddTextureImportFlag(
+        ushort[] textureImportFlags,
+        int importIndex,
+        ulong resourceId,
+        ushort flag)
+    {
+        if (HasTextureImportFlag(textureImportFlags, resourceId, flag))
+        {
+            return false;
+        }
+
+        textureImportFlags[importIndex] |= flag;
+        return true;
     }
 
     private bool TryGetBufferImport(
@@ -4153,5 +4298,36 @@ internal sealed class GraphicsGraphSubmission
 
         import = BufferImports[index];
         return true;
+    }
+
+    private bool TryGetTextureImport(
+        ushort[] textureImportFlags,
+        ulong resourceId,
+        ushort flag,
+        [NotNullWhen(true)] out GraphTextureImportRecord? import)
+    {
+        var index = FindFirstTextureImportSortedIndex(resourceId);
+
+        while ((index >= 0) && (index < _textureImportIndex.Length))
+        {
+            var importIndex = _textureImportIndex[index];
+            var candidate = TextureImports[importIndex];
+
+            if ((candidate is null) || (candidate.Version.ResourceId != resourceId))
+            {
+                break;
+            }
+
+            if ((textureImportFlags[importIndex] & flag) != 0)
+            {
+                import = candidate;
+                return true;
+            }
+
+            index++;
+        }
+
+        import = null;
+        return false;
     }
 }
