@@ -30,10 +30,24 @@ internal sealed class GraphicsBufferTransferTests
         GraphicsDevice device,
         GpuTexture target,
         ImmutableArray<GraphBufferImportRecord> imports,
-        long maximumIndexBytes)
+        long maximumIndexBytes,
+        ImmutableArray<RenderPassId> orderedPasses = default,
+        ImmutableArray<GraphTextureImportRecord> additionalTextureImports = default)
     {
         var version = new GraphTextureVersion(
             device.DeviceEpoch, 1, 0, target.Description, new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+        var textureImports = ImmutableArray.CreateBuilder<GraphTextureImportRecord>(
+            1 + (additionalTextureImports.IsDefault ? 0 : additionalTextureImports.Length));
+        textureImports.Add(new GraphTextureImportRecord(
+            target,
+            version,
+            new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle)));
+
+        if (!additionalTextureImports.IsDefault)
+        {
+            textureImports.AddRange(additionalTextureImports);
+        }
+
         return new GraphicsGraphSubmission(
             device.DeviceEpoch,
             target,
@@ -41,19 +55,16 @@ internal sealed class GraphicsBufferTransferTests
             version,
             surfaceEpoch: 0,
             swapchainEpoch: 0,
-            [],
+            orderedPasses.IsDefault ? [] : orderedPasses,
             [],
             [],
             [],
             [],
             [],
             imports,
-            [new GraphTextureImportRecord(
-                target,
-                version,
-                new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle))],
+            textureImports.MoveToImmutable(),
             [],
-            maximumBufferImportIndexBytes: maximumIndexBytes);
+            maximumImportIndexBytes: maximumIndexBytes);
     }
 
     private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true, bool includeUploadHeap = false)
@@ -916,10 +927,16 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             var frozenImports = imports.MoveToImmutable();
-            var expectedCharge = identities.Length == 0 ? 0 : 64 + (((identities.Length * sizeof(int)) + 15) & ~15);
+            var expectedBufferCharge = GraphicsGraphSubmission.CalculateBufferImportIndexBackingByteCharge(identities.Length);
+            var expectedCharge = GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(
+                identities.Length,
+                textureImportCapacity: 1,
+                orderedPassCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(device, target, frozenImports, expectedCharge);
             Assert.That(submission.BufferImportIndexStorageCapacity, Is.EqualTo(identities.Length));
-            Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(expectedCharge));
+            Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(expectedBufferCharge));
+            Assert.That(submission.TextureImportIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.TextureImportIndexBackingByteCharge, Is.EqualTo(80));
             var expectedIndices = new int[identities.Length];
 
             for (var index = 0; index < identities.Length; index++)
@@ -994,7 +1011,7 @@ internal sealed class GraphicsBufferTransferTests
                 new GraphBufferVersion(device.DeviceEpoch, 31, 0, supported.Description, new GraphBufferRange(0, supported.ByteLength)),
                 options);
             var submission = CreateBufferImportIndexSubmission(
-                device, target, unsupportedFirst ? [unsupportedImport, supportedImport] : [supportedImport, unsupportedImport], 80);
+                device, target, unsupportedFirst ? [unsupportedImport, supportedImport] : [supportedImport, unsupportedImport], 160);
             var field = typeof(GraphicsGraphSubmission).GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("The private index backing was not found.");
             var backing = field.GetValue(submission);
@@ -1034,7 +1051,7 @@ internal sealed class GraphicsBufferTransferTests
                 new GraphBufferVersion(device.DeviceEpoch, 7, 0, buffer.Description, new GraphBufferRange(0, buffer.ByteLength)),
                 new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle));
             var submission = CreateBufferImportIndexSubmission(
-                device, target, ImmutableCollectionsMarshal.AsImmutableArray(imports), 80);
+                device, target, ImmutableCollectionsMarshal.AsImmutableArray(imports), 160);
             var exception = Assert.Throws<NotSupportedException>(submission.ValidateNativeRasterSubmission);
             Assert.That(exception?.Message, Is.EqualTo("Native graph submission requires each imported buffer to have a supported declared usage."));
         }
@@ -1052,6 +1069,7 @@ internal sealed class GraphicsBufferTransferTests
     {
         var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
         using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        using var transientTexture = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
         using var buffer = await device.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
 
         try
@@ -1060,10 +1078,37 @@ internal sealed class GraphicsBufferTransferTests
                 buffer,
                 new GraphBufferVersion(device.DeviceEpoch, 7, 0, buffer.Description, new GraphBufferRange(0, buffer.ByteLength)),
                 new GraphImportOptions(GraphResourceState.Undefined, false, GraphImportCompletionPolicy.RequireIdle));
-            var submission = CreateBufferImportIndexSubmission(device, target, [import], 80);
-            var field = typeof(GraphicsGraphSubmission).GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
-                ?? throw new InvalidOperationException("The private index backing was not found.");
-            var backing = field.GetValue(submission);
+            var textureImport = new GraphTextureImportRecord(
+                transientTexture,
+                new GraphTextureVersion(
+                    device.DeviceEpoch,
+                    9,
+                    0,
+                    transientTexture.Description,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
+                new GraphImportOptions(
+                    GraphResourceState.Undefined,
+                    contentsValid: false,
+                    completionPolicy: GraphImportCompletionPolicy.RequireIdle),
+                isTransient: true);
+            var pass = new RenderPassId(1, 0);
+            var submission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [import],
+                240,
+                [pass],
+                [textureImport]);
+            var type = typeof(GraphicsGraphSubmission);
+            var bufferIndexField = type.GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The buffer import index backing was not found.");
+            var textureIndexField = type.GetField("_textureImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The texture import index backing was not found.");
+            var passIndexField = type.GetField("_orderedPassIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The ordered pass index backing was not found.");
+            var bufferIndex = bufferIndexField.GetValue(submission);
+            var textureIndex = textureIndexField.GetValue(submission);
+            var passIndex = passIndexField.GetValue(submission);
 
             if (quarantine)
             {
@@ -1071,15 +1116,26 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             submission.DisposeRecordedPassCommandLists();
-            Assert.That(field.GetValue(submission), Is.SameAs(backing));
+            Assert.That(bufferIndexField.GetValue(submission), Is.SameAs(bufferIndex));
+            Assert.That(textureIndexField.GetValue(submission), Is.SameAs(textureIndex));
+            Assert.That(passIndexField.GetValue(submission), Is.SameAs(passIndex));
             Assert.That(submission.BufferImportIndexStorageCapacity, Is.EqualTo(1));
             Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TextureImportIndexStorageCapacity, Is.EqualTo(2));
+            Assert.That(submission.TextureImportIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.OrderedPassIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.OrderedPassIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.TryGetIndexedBufferImport(7, out var observed), Is.True);
             Assert.That(observed, Is.SameAs(import));
+            Assert.That(submission.TryGetIndexedTextureImport(9, out var observedTexture), Is.True);
+            Assert.That(observedTexture, Is.SameAs(textureImport));
+            Assert.That(submission.TryGetOrderedPassIndex(pass, out var observedPassIndex), Is.True);
+            Assert.That(observedPassIndex, Is.Zero);
         }
         finally
         {
             buffer.Dispose();
+            transientTexture.Dispose();
             target.Dispose();
             await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
@@ -1135,6 +1191,72 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public void GraphImportIndexChargeCoversEachExplicitBacking()
+    {
+        Assert.That(GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 0, 0), Is.Zero);
+        Assert.That(GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 4, 3), Is.EqualTo(160));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(-1, 0, 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, -1, 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 0, -1));
+        _ = Assert.Throws<OverflowException>(
+            () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(long.MaxValue, 0, 0));
+    }
+
+    [Test]
+    public async Task GraphImportIndicesPreserveDuplicateRefusal()
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+
+        try
+        {
+            using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            using var transientTexture = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var options = new GraphImportOptions(
+                GraphResourceState.Undefined,
+                contentsValid: false,
+                completionPolicy: GraphImportCompletionPolicy.RequireIdle);
+            var duplicateTransientImports = ImmutableArray.Create(
+                new GraphTextureImportRecord(
+                    transientTexture,
+                    new GraphTextureVersion(device.DeviceEpoch, 90, 0, transientTexture.Description, range),
+                    options,
+                    isTransient: true),
+                new GraphTextureImportRecord(
+                    transientTexture,
+                    new GraphTextureVersion(device.DeviceEpoch, 90, 0, transientTexture.Description, range),
+                    options,
+                    isTransient: true));
+            var duplicatePass = new RenderPassId(7, 3);
+
+            var duplicateTextureSubmission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [],
+                256,
+                additionalTextureImports: duplicateTransientImports);
+            var textureException = Assert.Throws<NotSupportedException>(duplicateTextureSubmission.ValidateNativeRasterSubmission);
+            Assert.That(textureException?.Message, Is.EqualTo("Native graph submission requires one transient import per graph texture resource."));
+
+            var duplicatePassSubmission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [],
+                256,
+                [duplicatePass, duplicatePass]);
+            var passException = Assert.Throws<ArgumentException>(duplicatePassSubmission.ValidateNativeRasterSubmission);
+            Assert.That(passException?.ParamName, Is.Null);
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
 
@@ -1982,6 +2104,100 @@ internal sealed class GraphicsBufferTransferTests
         finally
         {
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphTextureAndPassIndicesUseExactOwnedCapacity()
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+
+        try
+        {
+            using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            using var transientTexture = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            using var nonTransientTexture = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            using var laterTransientTexture = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var options = new GraphImportOptions(
+                GraphResourceState.Undefined,
+                contentsValid: false,
+                completionPolicy: GraphImportCompletionPolicy.RequireIdle);
+            var additionalTextureImports = ImmutableArray.Create(
+                new GraphTextureImportRecord(
+                    transientTexture,
+                    new GraphTextureVersion(device.DeviceEpoch, 90, 0, transientTexture.Description, range),
+                    options,
+                    isTransient: true),
+                new GraphTextureImportRecord(
+                    nonTransientTexture,
+                    new GraphTextureVersion(device.DeviceEpoch, 90, 0, nonTransientTexture.Description, range),
+                    options),
+                new GraphTextureImportRecord(
+                    laterTransientTexture,
+                    new GraphTextureVersion(device.DeviceEpoch, 12, 0, laterTransientTexture.Description, range),
+                    options,
+                    isTransient: true));
+            var orderedPasses = ImmutableArray.Create(
+                new RenderPassId(9, 4),
+                new RenderPassId(2, 7),
+                new RenderPassId(9, 1));
+            var expectedCharge = GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(
+                bufferImportCapacity: 0,
+                textureImportCapacity: 4,
+                orderedPassCapacity: orderedPasses.Length);
+            var submission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [],
+                expectedCharge,
+                orderedPasses,
+                additionalTextureImports);
+
+            Assert.That(submission.TextureImportIndexStorageCapacity, Is.EqualTo(4));
+            Assert.That(submission.TextureImportIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.OrderedPassIndexStorageCapacity, Is.EqualTo(3));
+            Assert.That(submission.OrderedPassIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TryGetIndexedTextureImport(90, out var observedTransient), Is.True);
+            Assert.That(observedTransient, Is.SameAs(additionalTextureImports[0]));
+            Assert.That(submission.TryGetIndexedTextureImport(12, out var observedLaterTransient), Is.True);
+            Assert.That(observedLaterTransient, Is.SameAs(additionalTextureImports[2]));
+            Assert.That(submission.TryGetIndexedTextureImport(1, out _), Is.False);
+            Assert.That(submission.TryGetOrderedPassIndex(orderedPasses[0], out var firstPassIndex), Is.True);
+            Assert.That(firstPassIndex, Is.EqualTo(0));
+            Assert.That(submission.TryGetOrderedPassIndex(orderedPasses[1], out var secondPassIndex), Is.True);
+            Assert.That(secondPassIndex, Is.EqualTo(1));
+            Assert.That(submission.TryGetOrderedPassIndex(orderedPasses[2], out var thirdPassIndex), Is.True);
+            Assert.That(thirdPassIndex, Is.EqualTo(2));
+            Assert.That(submission.TryGetOrderedPassIndex(new RenderPassId(3, 5), out _), Is.False);
+
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var matches = true;
+
+            for (var index = 0; index < 32; index++)
+            {
+                matches &= submission.TryGetIndexedTextureImport(90, out var observedTexture)
+                    && ReferenceEquals(observedTexture, additionalTextureImports[0]);
+                matches &= submission.TryGetOrderedPassIndex(orderedPasses[2], out var observedPassIndex)
+                    && (observedPassIndex == 2);
+            }
+
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.That(matches, Is.True);
+            Assert.That(allocated, Is.Zero);
+
+            _ = Assert.Throws<OutOfMemoryException>(
+                () => CreateBufferImportIndexSubmission(
+                    device,
+                    target,
+                    [],
+                    expectedCharge - 1,
+                    orderedPasses,
+                    additionalTextureImports));
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
 

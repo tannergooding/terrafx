@@ -13,7 +13,9 @@ internal sealed class GraphicsGraphSubmission
     internal const int MaximumNativeColorAttachmentCount = 8;
 
     private readonly int[] _bufferImportIndex;
+    private readonly int[] _orderedPassIndex;
     private int _recordingOwnershipState;
+    private readonly int[] _textureImportIndex;
 
     internal GraphicsGraphSubmission(
         uint deviceEpoch,
@@ -31,7 +33,7 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
-        long maximumBufferImportIndexBytes = long.MaxValue)
+        long maximumImportIndexBytes = long.MaxValue)
     {
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
         ArgumentNullException.ThrowIfNull(outputColorTarget);
@@ -98,12 +100,16 @@ internal sealed class GraphicsGraphSubmission
         {
             if (pass.CommandList?.HasDiagnosticRecipe == true)
             {
-                maximumBufferImportIndexBytes = Math.Min(maximumBufferImportIndexBytes, 32L * 1024 * 1024);
+                maximumImportIndexBytes = Math.Min(maximumImportIndexBytes, 32L * 1024 * 1024);
                 break;
             }
         }
 
-        ValidateBufferImportIndexAllowance(bufferImports.Length, maximumBufferImportIndexBytes);
+        ValidateImportIndexAllowance(
+            bufferImports.Length,
+            textureImports.Length,
+            orderedPasses.Length,
+            maximumImportIndexBytes);
         DeviceEpoch = deviceEpoch;
         OutputColorTarget = outputColorTarget;
         SurfaceTarget = surfaceTarget;
@@ -119,6 +125,8 @@ internal sealed class GraphicsGraphSubmission
         BufferImports = [.. bufferImports];
         _bufferImportIndex = CreateBufferImportIndex(BufferImports);
         TextureImports = [.. textureImports];
+        _textureImportIndex = CreateTextureImportIndex(TextureImports);
+        _orderedPassIndex = CreateOrderedPassIndex(OrderedPasses);
         RecordedPassCommandLists = [.. recordedPassCommandLists];
     }
 
@@ -134,6 +142,11 @@ internal sealed class GraphicsGraphSubmission
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
 
     internal uint DeviceEpoch { get; }
+
+    internal long OrderedPassIndexBackingByteCharge
+        => CalculateOrderedPassIndexBackingByteCharge(_orderedPassIndex.LongLength);
+
+    internal int OrderedPassIndexStorageCapacity => _orderedPassIndex.Length;
 
     internal ImmutableArray<RenderPassId> OrderedPasses { get; }
 
@@ -173,13 +186,33 @@ internal sealed class GraphicsGraphSubmission
 
     internal ImmutableArray<GraphTextureAliasingBarrier> TextureAliasingBarriers { get; }
 
+    internal long TextureImportIndexBackingByteCharge
+        => CalculateTextureImportIndexBackingByteCharge(_textureImportIndex.LongLength);
+
+    internal int TextureImportIndexStorageCapacity => _textureImportIndex.Length;
+
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
 
     internal static long CalculateBufferImportIndexBackingByteCharge(long capacity)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
-        return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(int)) + 15) & ~15L));
+        return CalculateIndexBackingByteCharge(capacity);
     }
+
+    internal static long CalculateImportIndexBackingByteCharge(
+        long bufferImportCapacity,
+        long textureImportCapacity,
+        long orderedPassCapacity)
+        => checked(
+            CalculateBufferImportIndexBackingByteCharge(bufferImportCapacity)
+            + CalculateTextureImportIndexBackingByteCharge(textureImportCapacity)
+            + CalculateOrderedPassIndexBackingByteCharge(orderedPassCapacity));
+
+    internal static long CalculateOrderedPassIndexBackingByteCharge(long capacity)
+        => CalculateIndexBackingByteCharge(capacity);
+
+    internal static long CalculateTextureImportIndexBackingByteCharge(long capacity)
+        => CalculateIndexBackingByteCharge(capacity);
 
     internal static IGraphicsBackendPipeline GetPipeline(RecordedGraphicsCommand command)
     {
@@ -214,6 +247,12 @@ internal sealed class GraphicsGraphSubmission
         return colorIndex == formats.Length;
     }
 
+    private static long CalculateIndexBackingByteCharge(long capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(int)) + 15) & ~15L));
+    }
+
     private static int CompareBufferImportIndices(
         ImmutableArray<GraphBufferImportRecord> imports,
         int left,
@@ -235,6 +274,58 @@ internal sealed class GraphicsGraphSubmission
         }
 
         var comparison = leftImport.Version.ResourceId.CompareTo(rightImport.Version.ResourceId);
+        return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int CompareOrderedPassIndices(
+        ImmutableArray<RenderPassId> passes,
+        int left,
+        int right)
+    {
+        var leftPass = passes[left];
+        var rightPass = passes[right];
+        var comparison = CompareRenderPassIds(leftPass, rightPass);
+
+        return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int CompareRenderPassIds(RenderPassId left, RenderPassId right)
+    {
+        var comparison = left.GraphOwnerId.CompareTo(right.GraphOwnerId);
+
+        if (comparison == 0)
+        {
+            comparison = left.Value.CompareTo(right.Value);
+        }
+
+        return comparison;
+    }
+
+    private static int CompareTextureImportIndices(
+        ImmutableArray<GraphTextureImportRecord> imports,
+        int left,
+        int right)
+    {
+        var leftImport = imports[left];
+        var rightImport = imports[right];
+
+        if (leftImport is null)
+        {
+            return (rightImport is null) ? left.CompareTo(right) : -1;
+        }
+
+        if (rightImport is null)
+        {
+            return 1;
+        }
+
+        var comparison = leftImport.Version.ResourceId.CompareTo(rightImport.Version.ResourceId);
+
+        if (comparison == 0)
+        {
+            comparison = rightImport.IsTransient.CompareTo(leftImport.IsTransient);
+        }
+
         return (comparison != 0) ? comparison : left.CompareTo(right);
     }
 
@@ -266,6 +357,62 @@ internal sealed class GraphicsGraphSubmission
         return indices;
     }
 
+    private static int[] CreateOrderedPassIndex(ImmutableArray<RenderPassId> passes)
+    {
+        if (passes.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[passes.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftOrderedPassIndex(passes, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftOrderedPassIndex(passes, indices, 0, end);
+        }
+
+        return indices;
+    }
+
+    private static int[] CreateTextureImportIndex(ImmutableArray<GraphTextureImportRecord> imports)
+    {
+        if (imports.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[imports.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftTextureImportIndex(imports, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftTextureImportIndex(imports, indices, 0, end);
+        }
+
+        return indices;
+    }
+
     private static void SiftBufferImportIndex(
         ImmutableArray<GraphBufferImportRecord> imports,
         int[] indices,
@@ -292,17 +439,76 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    private static void SiftOrderedPassIndex(
+        ImmutableArray<RenderPassId> passes,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (CompareOrderedPassIndices(passes, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (CompareOrderedPassIndices(passes, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
+        }
+    }
+
+    private static void SiftTextureImportIndex(
+        ImmutableArray<GraphTextureImportRecord> imports,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (CompareTextureImportIndices(imports, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (CompareTextureImportIndices(imports, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
+        }
+    }
+
     [SuppressMessage(
         "Usage",
         "CA2201:Do not raise reserved exception types",
         Justification = "An index backing exceeding its component allowance is refused before allocation.")]
-    private static void ValidateBufferImportIndexAllowance(int capacity, long maximumBytes)
+    private static void ValidateImportIndexAllowance(
+        int bufferImportCapacity,
+        int textureImportCapacity,
+        int orderedPassCapacity,
+        long maximumBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maximumBytes);
 
-        if (CalculateBufferImportIndexBackingByteCharge(capacity) > maximumBytes)
+        if (CalculateImportIndexBackingByteCharge(
+                bufferImportCapacity,
+                textureImportCapacity,
+                orderedPassCapacity) > maximumBytes)
         {
-            throw new OutOfMemoryException("The graph buffer-import index backing exceeds its CPU component allowance.");
+            throw new OutOfMemoryException("The graph import and pass index backings exceed their CPU component allowance.");
         }
     }
 
@@ -497,6 +703,28 @@ internal sealed class GraphicsGraphSubmission
         return true;
     }
 
+    internal bool TryGetIndexedTextureImport(
+        ulong resourceId,
+        [NotNullWhen(true)] out GraphTextureImportRecord? import)
+    {
+        var index = FindFirstTransientTextureImportIndex(resourceId);
+
+        if (index < 0)
+        {
+            import = null;
+            return false;
+        }
+
+        import = TextureImports[index];
+        return true;
+    }
+
+    internal bool TryGetOrderedPassIndex(RenderPassId passId, out int index)
+    {
+        index = FindFirstOrderedPassIndex(passId);
+        return index >= 0;
+    }
+
     internal void ValidateNativeRasterSubmission()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
@@ -545,12 +773,13 @@ internal sealed class GraphicsGraphSubmission
         var copyDestinationBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var copySourceTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var copyDestinationTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
-        var textureImportsByResourceId = new Dictionary<ulong, GraphTextureImportRecord>(TextureImports.Length);
-        var orderedPassIndices = new Dictionary<RenderPassId, int>(OrderedPasses.Length);
 
         for (var index = 0; index < OrderedPasses.Length; index++)
         {
-            orderedPassIndices.Add(OrderedPasses[index], index);
+            if (FindFirstOrderedPassIndex(OrderedPasses[index]) < index)
+            {
+                throw new ArgumentException("An item with the same key has already been added.");
+            }
         }
 
         for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
@@ -658,9 +887,12 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in TextureImports)
+        for (var importIndex = 0; importIndex < TextureImports.Length; importIndex++)
         {
-            if (import.IsTransient && !textureImportsByResourceId.TryAdd(import.Version.ResourceId, import))
+            var import = TextureImports[importIndex];
+
+            if (import.IsTransient
+                && (FindFirstTransientTextureImportIndex(import.Version.ResourceId) < importIndex))
             {
                 throw new NotSupportedException("Native graph submission requires one transient import per graph texture resource.");
             }
@@ -703,7 +935,7 @@ internal sealed class GraphicsGraphSubmission
                 || !TryGetIndexedBufferImport(aliasingBarrier.AfterResourceId, out var afterImport)
                 || !beforeImport.IsTransient
                 || !afterImport.IsTransient
-                || !orderedPassIndices.TryGetValue(aliasingBarrier.PassId, out var aliasPassIndex)
+                || !TryGetOrderedPassIndex(aliasingBarrier.PassId, out var aliasPassIndex)
                 || !aliasedResources.Add(aliasingBarrier.AfterResourceId))
             {
                 throw new InvalidOperationException("A transient aliasing barrier does not match distinct materialized graph buffers and a scheduled pass.");
@@ -721,12 +953,12 @@ internal sealed class GraphicsGraphSubmission
 
                 if (access.ResourceId == aliasingBarrier.BeforeResourceId)
                 {
-                    beforeLastPassIndex = Math.Max(beforeLastPassIndex, orderedPassIndices[access.PassId]);
+                    beforeLastPassIndex = Math.Max(beforeLastPassIndex, GetOrderedPassIndex(access.PassId));
                 }
 
                 if (access.ResourceId == aliasingBarrier.AfterResourceId)
                 {
-                    afterFirstPassIndex = Math.Min(afterFirstPassIndex, orderedPassIndices[access.PassId]);
+                    afterFirstPassIndex = Math.Min(afterFirstPassIndex, GetOrderedPassIndex(access.PassId));
                 }
             }
 
@@ -1004,12 +1236,12 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var aliasingBarrier in TextureAliasingBarriers)
         {
-            if (!textureImportsByResourceId.TryGetValue(aliasingBarrier.BeforeResourceId, out var beforeImport)
-                || !textureImportsByResourceId.TryGetValue(aliasingBarrier.AfterResourceId, out var afterImport)
+            if (!TryGetIndexedTextureImport(aliasingBarrier.BeforeResourceId, out var beforeImport)
+                || !TryGetIndexedTextureImport(aliasingBarrier.AfterResourceId, out var afterImport)
                 || !beforeImport.IsTransient
                 || !afterImport.IsTransient
                 || (aliasingBarrier.DeviceEpoch != DeviceEpoch)
-                || !orderedPassIndices.TryGetValue(aliasingBarrier.PassId, out var aliasPassIndex)
+                || !TryGetOrderedPassIndex(aliasingBarrier.PassId, out var aliasPassIndex)
                 || !aliasedTextureResources.Add(aliasingBarrier.AfterResourceId))
             {
                 throw new InvalidOperationException("A transient texture aliasing barrier does not match distinct materialized graph textures and a scheduled pass.");
@@ -1027,12 +1259,12 @@ internal sealed class GraphicsGraphSubmission
 
                 if (access.ResourceId == aliasingBarrier.BeforeResourceId)
                 {
-                    beforeLastPassIndex = Math.Max(beforeLastPassIndex, orderedPassIndices[access.PassId]);
+                    beforeLastPassIndex = Math.Max(beforeLastPassIndex, GetOrderedPassIndex(access.PassId));
                 }
 
                 if (access.ResourceId == aliasingBarrier.AfterResourceId)
                 {
-                    afterFirstPassIndex = Math.Min(afterFirstPassIndex, orderedPassIndices[access.PassId]);
+                    afterFirstPassIndex = Math.Min(afterFirstPassIndex, GetOrderedPassIndex(access.PassId));
                 }
             }
 
@@ -2760,6 +2992,69 @@ internal sealed class GraphicsGraphSubmission
         return (candidate is not null) && (candidate.Version.ResourceId == resourceId) ? index : -1;
     }
 
+    private int FindFirstOrderedPassIndex(RenderPassId passId)
+    {
+        var first = 0;
+        var last = _orderedPassIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var pass = OrderedPasses[_orderedPassIndex[middle]];
+
+            if (CompareRenderPassIds(pass, passId) < 0)
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first == _orderedPassIndex.Length)
+        {
+            return -1;
+        }
+
+        var index = _orderedPassIndex[first];
+        return (OrderedPasses[index] == passId) ? index : -1;
+    }
+
+    private int FindFirstTransientTextureImportIndex(ulong resourceId)
+    {
+        var first = 0;
+        var last = _textureImportIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var import = TextureImports[_textureImportIndex[middle]];
+
+            if ((import is null) || (import.Version.ResourceId < resourceId))
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first == _textureImportIndex.Length)
+        {
+            return -1;
+        }
+
+        var index = _textureImportIndex[first];
+        var candidate = TextureImports[index];
+        return (candidate is not null)
+            && candidate.IsTransient
+            && (candidate.Version.ResourceId == resourceId)
+                ? index
+                : -1;
+    }
+
     private GraphBufferImportRecord GetBufferImport(ulong resourceId)
     {
         foreach (var import in BufferImports)
@@ -2772,6 +3067,11 @@ internal sealed class GraphicsGraphSubmission
 
         throw new NotSupportedException("Native graph submission does not yet materialize transient buffers.");
     }
+
+    private int GetOrderedPassIndex(RenderPassId passId)
+        => TryGetOrderedPassIndex(passId, out var index)
+            ? index
+            : throw new KeyNotFoundException("The graph pass is not in the ordered pass index.");
 
     private GraphTextureImportRecord GetTextureImport(ulong resourceId)
     {
