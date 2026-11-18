@@ -92,3 +92,9 @@ Whole-file SHA-256 values identify the narrow dirty-workspace inputs based on HE
 | `tests\TerraFX.Graphics.Tests\GraphicsPipelineRequestTests.cs` | `098FB1C79989C9356E8F1EAB175EDF6139D9BC95347E672E95411294EC20D3CC` |
 | `sources\TerraFX.Graphics\GraphicsPipelineDescription.cs` | `FBB9388C6E7C89CD4BE3FA0AB915DDFAA38DCA8659ADDC74A32CCE788C859A29` |
 | `sources\TerraFX.Graphics\ShaderBindingGroup.cs` | `248C8D253A68FC1765D5202F93172D562E19B6D601904F6651AA1EB5439B5060` |
+
+## 7. Implementation delta after the frozen assessment
+
+Commit `45cf8551` adds exact-capacity sorted indexes for `TextureImports` and `OrderedPasses` alongside the existing buffer-import index. Their combined checked array charge is refused before index allocation; the existing diagnostic-bearing submission cap applies to the combined index group. The implementation removes `textureImportsByResourceId` and `orderedPassIndices` without changing duplicate-refusal ordering, transient-only texture lookup, or the original pass ordinal mapping.
+
+The focused index selection passed 16/16 in Debug and Release, including exact-fit/one-byte-short charge, sparse and unsorted identities, zero-allocation lookup, duplicate refusal, and index retention after safe/uncertain recording release. This is still only component accounting, not an owner-backed whole-graph grant. Remaining validation maps/sets, backend capacity/retention, owner controls, payload aliases, quarantine publication, and completion storage remain NO-GO; the 32/16-MiB diagnostic gate is unchanged. Section 6 remains the historical freeze for the original owner decision, not a hash of this later implementation.
