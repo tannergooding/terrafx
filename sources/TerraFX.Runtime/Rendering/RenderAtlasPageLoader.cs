@@ -202,7 +202,9 @@ internal static class RenderAtlasPageLoader
         OwnedProgress progress)
     {
         Array.Sort(rectangles, CompareRectangles);
-        var maximumTree = progress.MaximumTree = new RangeMaximumTree();
+        var maximumTreeLazy = progress.MaximumTreeLazy = new int[RangeMaximumTree.NodeCount];
+        var maximumTreeValues = progress.MaximumTreeValues = new int[RangeMaximumTree.NodeCount];
+        var maximumTree = progress.MaximumTree = new RangeMaximumTree(maximumTreeLazy, maximumTreeValues);
         var active = progress.ActiveRectangles = new PriorityQueue<PaddedRectangle, (int Right, int Sequence)>();
         var rectangleIndex = 0;
 
@@ -288,6 +290,8 @@ internal static class RenderAtlasPageLoader
         internal PriorityQueue<PaddedRectangle, (int Right, int Sequence)>? ActiveRectangles;
         internal AssetLease<RenderAtlasAsset>? AtlasLease;
         internal RangeMaximumTree? MaximumTree;
+        internal int[]? MaximumTreeLazy;
+        internal int[]? MaximumTreeValues;
         internal ImmutableArray<AssetLease<RenderTextureAsset>> PageLeaseArray;
         internal ImmutableArray<AssetLease<RenderTextureAsset>>.Builder? PageLeases;
         internal AssetLease<RenderTextureAsset>? PendingPageLease;
@@ -368,6 +372,8 @@ internal static class RenderAtlasPageLoader
         {
             ActiveRectangles = null;
             MaximumTree = null;
+            MaximumTreeLazy = null;
+            MaximumTreeValues = null;
             Rectangles = null;
         }
 
@@ -400,6 +406,8 @@ internal static class RenderAtlasPageLoader
                 || (Result is not null)
                 || (ActiveRectangles is not null)
                 || (MaximumTree is not null)
+                || (MaximumTreeLazy is not null)
+                || (MaximumTreeValues is not null)
                 || (Rectangles is not null))
             {
                 throw new InvalidOperationException("The Atlas page operation still owns unfinished progress.");
@@ -411,13 +419,23 @@ internal static class RenderAtlasPageLoader
 
     internal sealed class RangeMaximumTree
     {
+        internal const int NodeCount = 16_384;
+
         private readonly int[] _lazy;
         private readonly int[] _maximum;
 
-        internal RangeMaximumTree()
+        internal RangeMaximumTree(int[] lazy, int[] maximum)
         {
-            _lazy = new int[16_384];
-            _maximum = new int[16_384];
+            ArgumentNullException.ThrowIfNull(lazy);
+            ArgumentNullException.ThrowIfNull(maximum);
+
+            if ((lazy.Length != NodeCount) || (maximum.Length != NodeCount))
+            {
+                throw new ArgumentException("The RangeMaximumTree backing arrays have the wrong size.");
+            }
+
+            _lazy = lazy;
+            _maximum = maximum;
         }
 
         internal void Add(int start, int end, int value)

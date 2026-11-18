@@ -233,8 +233,16 @@ internal sealed partial class SceneAssetStoreTests
                     borderProgress).ConfigureAwait(false));
 
             using var overlapAtlas = await store.LoadAsync<RenderAtlasAsset>(new AssetId(4)).ConfigureAwait(false);
+            using var overlapProgress = new RenderAtlasPageLoader.OwnedProgress();
             _ = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await RenderAtlasPageLoader.RetainAsync(overlapAtlas).ConfigureAwait(false));
+                async () => await RenderAtlasPageLoader.RetainOwnedAsync(
+                    overlapAtlas,
+                    overlapProgress).ConfigureAwait(false));
+            Assert.That(overlapProgress.Rectangles, Is.Not.Null);
+            Assert.That(overlapProgress.MaximumTreeLazy, Is.Not.Null);
+            Assert.That(overlapProgress.MaximumTreeValues, Is.Not.Null);
+            Assert.That(overlapProgress.MaximumTree, Is.Not.Null);
+            Assert.That(overlapProgress.ActiveRectangles, Is.Not.Null);
         }
         finally
         {
