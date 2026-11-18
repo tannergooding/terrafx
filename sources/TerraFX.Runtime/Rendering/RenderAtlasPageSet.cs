@@ -2,6 +2,8 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using TerraFX;
 using TerraFX.Assets;
@@ -10,9 +12,12 @@ namespace TerraFX.Rendering;
 
 internal sealed class RenderAtlasPageSet : IDisposable
 {
-    private readonly AssetLease<RenderAtlasAsset> _atlasLease;
-    private int _isDisposed;
-    private readonly ImmutableArray<AssetLease<RenderTextureAsset>> _pageLeases;
+    private AssetLease<RenderAtlasAsset>? _atlasLease;
+    private bool _atlasLeaseReleaseFailed;
+    private Exception? _disposeFailure;
+    private int _disposeState;
+    private uint _pageLeaseFailureMask;
+    private ImmutableArray<AssetLease<RenderTextureAsset>> _pageLeases;
 
     internal RenderAtlasPageSet(
         AssetLease<RenderAtlasAsset> atlasLease,
@@ -20,7 +25,9 @@ internal sealed class RenderAtlasPageSet : IDisposable
     {
         ArgumentNullException.ThrowIfNull(atlasLease);
 
-        if (pageLeases.IsDefaultOrEmpty || (pageLeases.Length != atlasLease.Value.Pages.Length))
+        if (pageLeases.IsDefaultOrEmpty
+            || (pageLeases.Length > 16)
+            || (pageLeases.Length != atlasLease.Value.Pages.Length))
         {
             throw new ArgumentException("The Atlas page leases must align with its ordered page map.", nameof(pageLeases));
         }
@@ -34,7 +41,7 @@ internal sealed class RenderAtlasPageSet : IDisposable
         get
         {
             ThrowIfDisposed();
-            return _atlasLease.Value;
+            return (_atlasLease ?? throw new ObjectDisposedException(nameof(RenderAtlasPageSet))).Value;
         }
     }
 
@@ -47,26 +54,75 @@ internal sealed class RenderAtlasPageSet : IDisposable
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Every independently owned page and the Atlas lease are attempted before failure is retained.")]
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        var state = Interlocked.CompareExchange(ref _disposeState, 1, 0);
+
+        if (state is 2)
         {
             return;
         }
 
-        foreach (var pageLease in _pageLeases)
+        if (state is 3)
         {
-            pageLease.Dispose();
+            RethrowDisposeFailure();
         }
 
-        _atlasLease.Dispose();
+        if (state is not 0)
+        {
+            throw new InvalidOperationException("Atlas page-set cleanup is already in progress.");
+        }
+
+        Exception? firstFailure = null;
+        uint pageLeaseFailureMask = 0;
+
+        for (var index = 0; index < _pageLeases.Length; index++)
+        {
+            try
+            {
+                _pageLeases[index].Dispose();
+            }
+            catch (Exception failure)
+            {
+                firstFailure ??= failure;
+                pageLeaseFailureMask |= 1U << index;
+            }
+        }
+
+        var atlasLease = _atlasLease;
+
+        try
+        {
+            atlasLease?.Dispose();
+        }
+        catch (Exception failure)
+        {
+            firstFailure ??= failure;
+            _atlasLeaseReleaseFailed = true;
+        }
+
+        if (firstFailure is not null)
+        {
+            _pageLeaseFailureMask = pageLeaseFailureMask;
+            Volatile.Write(ref _disposeFailure, firstFailure);
+            Volatile.Write(ref _disposeState, 3);
+            RethrowDisposeFailure();
+        }
+
+        _pageLeases = default;
+        _atlasLease = null;
+        Volatile.Write(ref _disposeState, 2);
     }
 
     internal RenderAtlasFrame GetFrame(Guid frameId)
     {
         ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfEqual(frameId, Guid.Empty);
-        var frames = _atlasLease.Value.Frames;
+        var frames = (_atlasLease ?? throw new ObjectDisposedException(nameof(RenderAtlasPageSet))).Value.Frames;
         var low = 0;
         var high = frames.Length - 1;
 
@@ -104,7 +160,7 @@ internal sealed class RenderAtlasPageSet : IDisposable
     internal RenderAtlasPageSet Retain()
     {
         ThrowIfDisposed();
-        var atlasLease = _atlasLease.Retain();
+        var atlasLease = (_atlasLease ?? throw new ObjectDisposedException(nameof(RenderAtlasPageSet))).Retain();
         var pageLeases = ImmutableArray.CreateBuilder<AssetLease<RenderTextureAsset>>(_pageLeases.Length);
 
         try
@@ -136,6 +192,18 @@ internal sealed class RenderAtlasPageSet : IDisposable
         return _pageLeases[pageIndex].Retain();
     }
 
+    private void RethrowDisposeFailure()
+    {
+        if ((_pageLeaseFailureMask == 0) && !_atlasLeaseReleaseFailed)
+        {
+            throw new InvalidOperationException("Atlas page-set cleanup has no recorded failed child release.");
+        }
+
+        var failure = Volatile.Read(ref _disposeFailure)
+            ?? new InvalidOperationException("Atlas page-set cleanup failed without a retained failure.");
+        ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
     private void ThrowIfDisposed()
-        => ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+        => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
 }
