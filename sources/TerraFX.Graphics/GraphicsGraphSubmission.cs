@@ -12,9 +12,11 @@ internal sealed class GraphicsGraphSubmission
 {
     internal const int MaximumNativeColorAttachmentCount = 8;
 
+    private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
     private readonly int[] _orderedPassIndex;
     private int _recordingOwnershipState;
+    private readonly int[] _textureAliasingAfterIndex;
     private readonly int[] _textureImportIndex;
 
     internal GraphicsGraphSubmission(
@@ -33,7 +35,7 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
-        long maximumImportIndexBytes = long.MaxValue)
+        long maximumPreflightIndexBytes = long.MaxValue)
     {
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
         ArgumentNullException.ThrowIfNull(outputColorTarget);
@@ -100,16 +102,18 @@ internal sealed class GraphicsGraphSubmission
         {
             if (pass.CommandList?.HasDiagnosticRecipe == true)
             {
-                maximumImportIndexBytes = Math.Min(maximumImportIndexBytes, 32L * 1024 * 1024);
+                maximumPreflightIndexBytes = Math.Min(maximumPreflightIndexBytes, 32L * 1024 * 1024);
                 break;
             }
         }
 
-        ValidateImportIndexAllowance(
+        ValidatePreflightIndexAllowance(
             bufferImports.Length,
             textureImports.Length,
             orderedPasses.Length,
-            maximumImportIndexBytes);
+            aliasingBarriers.Length,
+            textureAliasingBarriers.Length,
+            maximumPreflightIndexBytes);
         DeviceEpoch = deviceEpoch;
         OutputColorTarget = outputColorTarget;
         SurfaceTarget = surfaceTarget;
@@ -120,7 +124,9 @@ internal sealed class GraphicsGraphSubmission
         Passes = [.. passes];
         StateTransitions = [.. stateTransitions];
         AliasingBarriers = [.. aliasingBarriers];
+        _bufferAliasingAfterIndex = CreateBufferAliasingAfterIndex(AliasingBarriers);
         TextureAliasingBarriers = [.. textureAliasingBarriers];
+        _textureAliasingAfterIndex = CreateTextureAliasingAfterIndex(TextureAliasingBarriers);
         Accesses = [.. accesses];
         BufferImports = [.. bufferImports];
         _bufferImportIndex = CreateBufferImportIndex(BufferImports);
@@ -133,6 +139,11 @@ internal sealed class GraphicsGraphSubmission
     internal ImmutableArray<GraphResourceAccess> Accesses { get; }
 
     internal ImmutableArray<GraphResourceAliasingBarrier> AliasingBarriers { get; }
+
+    internal long BufferAliasingAfterIndexBackingByteCharge
+        => CalculateBufferAliasingAfterIndexBackingByteCharge(_bufferAliasingAfterIndex.LongLength);
+
+    internal int BufferAliasingAfterIndexStorageCapacity => _bufferAliasingAfterIndex.Length;
 
     internal long BufferImportIndexBackingByteCharge
         => CalculateBufferImportIndexBackingByteCharge(_bufferImportIndex.LongLength);
@@ -184,6 +195,11 @@ internal sealed class GraphicsGraphSubmission
 
     internal uint SwapchainEpoch { get; }
 
+    internal long TextureAliasingAfterIndexBackingByteCharge
+        => CalculateTextureAliasingAfterIndexBackingByteCharge(_textureAliasingAfterIndex.LongLength);
+
+    internal int TextureAliasingAfterIndexStorageCapacity => _textureAliasingAfterIndex.Length;
+
     internal ImmutableArray<GraphTextureAliasingBarrier> TextureAliasingBarriers { get; }
 
     internal long TextureImportIndexBackingByteCharge
@@ -192,6 +208,16 @@ internal sealed class GraphicsGraphSubmission
     internal int TextureImportIndexStorageCapacity => _textureImportIndex.Length;
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
+
+    internal static long CalculateAliasingIndexBackingByteCharge(
+        long bufferAliasingCapacity,
+        long textureAliasingCapacity)
+        => checked(
+            CalculateBufferAliasingAfterIndexBackingByteCharge(bufferAliasingCapacity)
+            + CalculateTextureAliasingAfterIndexBackingByteCharge(textureAliasingCapacity));
+
+    internal static long CalculateBufferAliasingAfterIndexBackingByteCharge(long capacity)
+        => CalculateIndexBackingByteCharge(capacity);
 
     internal static long CalculateBufferImportIndexBackingByteCharge(long capacity)
     {
@@ -209,6 +235,22 @@ internal sealed class GraphicsGraphSubmission
             + CalculateOrderedPassIndexBackingByteCharge(orderedPassCapacity));
 
     internal static long CalculateOrderedPassIndexBackingByteCharge(long capacity)
+        => CalculateIndexBackingByteCharge(capacity);
+
+    internal static long CalculatePreflightIndexBackingByteCharge(
+        long bufferImportCapacity,
+        long textureImportCapacity,
+        long orderedPassCapacity,
+        long bufferAliasingCapacity,
+        long textureAliasingCapacity)
+        => checked(
+            CalculateImportIndexBackingByteCharge(
+                bufferImportCapacity,
+                textureImportCapacity,
+                orderedPassCapacity)
+            + CalculateAliasingIndexBackingByteCharge(bufferAliasingCapacity, textureAliasingCapacity));
+
+    internal static long CalculateTextureAliasingAfterIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
 
     internal static long CalculateTextureImportIndexBackingByteCharge(long capacity)
@@ -251,6 +293,15 @@ internal sealed class GraphicsGraphSubmission
     {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
         return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(int)) + 15) & ~15L));
+    }
+
+    private static int CompareBufferAliasingAfterIndices(
+        ImmutableArray<GraphResourceAliasingBarrier> barriers,
+        int left,
+        int right)
+    {
+        var comparison = barriers[left].AfterResourceId.CompareTo(barriers[right].AfterResourceId);
+        return (comparison != 0) ? comparison : left.CompareTo(right);
     }
 
     private static int CompareBufferImportIndices(
@@ -301,6 +352,15 @@ internal sealed class GraphicsGraphSubmission
         return comparison;
     }
 
+    private static int CompareTextureAliasingAfterIndices(
+        ImmutableArray<GraphTextureAliasingBarrier> barriers,
+        int left,
+        int right)
+    {
+        var comparison = barriers[left].AfterResourceId.CompareTo(barriers[right].AfterResourceId);
+        return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
     private static int CompareTextureImportIndices(
         ImmutableArray<GraphTextureImportRecord> imports,
         int left,
@@ -327,6 +387,34 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int[] CreateBufferAliasingAfterIndex(ImmutableArray<GraphResourceAliasingBarrier> barriers)
+    {
+        if (barriers.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[barriers.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftBufferAliasingAfterIndex(barriers, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftBufferAliasingAfterIndex(barriers, indices, 0, end);
+        }
+
+        return indices;
     }
 
     private static int[] CreateBufferImportIndex(ImmutableArray<GraphBufferImportRecord> imports)
@@ -385,6 +473,34 @@ internal sealed class GraphicsGraphSubmission
         return indices;
     }
 
+    private static int[] CreateTextureAliasingAfterIndex(ImmutableArray<GraphTextureAliasingBarrier> barriers)
+    {
+        if (barriers.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[barriers.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftTextureAliasingAfterIndex(barriers, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftTextureAliasingAfterIndex(barriers, indices, 0, end);
+        }
+
+        return indices;
+    }
+
     private static int[] CreateTextureImportIndex(ImmutableArray<GraphTextureImportRecord> imports)
     {
         if (imports.IsEmpty)
@@ -411,6 +527,32 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return indices;
+    }
+
+    private static void SiftBufferAliasingAfterIndex(
+        ImmutableArray<GraphResourceAliasingBarrier> barriers,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (CompareBufferAliasingAfterIndices(barriers, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (CompareBufferAliasingAfterIndices(barriers, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
+        }
     }
 
     private static void SiftBufferImportIndex(
@@ -465,6 +607,32 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    private static void SiftTextureAliasingAfterIndex(
+        ImmutableArray<GraphTextureAliasingBarrier> barriers,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (CompareTextureAliasingAfterIndices(barriers, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (CompareTextureAliasingAfterIndices(barriers, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
+        }
+    }
+
     private static void SiftTextureImportIndex(
         ImmutableArray<GraphTextureImportRecord> imports,
         int[] indices,
@@ -495,20 +663,24 @@ internal sealed class GraphicsGraphSubmission
         "Usage",
         "CA2201:Do not raise reserved exception types",
         Justification = "An index backing exceeding its component allowance is refused before allocation.")]
-    private static void ValidateImportIndexAllowance(
+    private static void ValidatePreflightIndexAllowance(
         int bufferImportCapacity,
         int textureImportCapacity,
         int orderedPassCapacity,
+        int bufferAliasingCapacity,
+        int textureAliasingCapacity,
         long maximumBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maximumBytes);
 
-        if (CalculateImportIndexBackingByteCharge(
+        if (CalculatePreflightIndexBackingByteCharge(
                 bufferImportCapacity,
                 textureImportCapacity,
-                orderedPassCapacity) > maximumBytes)
+                orderedPassCapacity,
+                bufferAliasingCapacity,
+                textureAliasingCapacity) > maximumBytes)
         {
-            throw new OutOfMemoryException("The graph import and pass index backings exceed their CPU component allowance.");
+            throw new OutOfMemoryException("The graph preflight index backings exceed their CPU component allowance.");
         }
     }
 
@@ -687,6 +859,12 @@ internal sealed class GraphicsGraphSubmission
         PresentationSequence = presentationSequence;
     }
 
+    internal bool TryGetBufferAliasingAfterIndex(ulong resourceId, out int index)
+    {
+        index = FindFirstBufferAliasingAfterIndex(resourceId);
+        return index >= 0;
+    }
+
     internal bool TryGetIndexedBufferImport(
         ulong resourceId,
         [NotNullWhen(true)] out GraphBufferImportRecord? import)
@@ -722,6 +900,12 @@ internal sealed class GraphicsGraphSubmission
     internal bool TryGetOrderedPassIndex(RenderPassId passId, out int index)
     {
         index = FindFirstOrderedPassIndex(passId);
+        return index >= 0;
+    }
+
+    internal bool TryGetTextureAliasingAfterIndex(ulong resourceId, out int index)
+    {
+        index = FindFirstTextureAliasingAfterIndex(resourceId);
         return index >= 0;
     }
 
@@ -927,16 +1111,17 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var aliasedResources = new HashSet<ulong>();
-
-        foreach (var aliasingBarrier in AliasingBarriers)
+        for (var aliasingBarrierIndex = 0; aliasingBarrierIndex < AliasingBarriers.Length; aliasingBarrierIndex++)
         {
+            var aliasingBarrier = AliasingBarriers[aliasingBarrierIndex];
+
             if (!TryGetIndexedBufferImport(aliasingBarrier.BeforeResourceId, out var beforeImport)
                 || !TryGetIndexedBufferImport(aliasingBarrier.AfterResourceId, out var afterImport)
                 || !beforeImport.IsTransient
                 || !afterImport.IsTransient
                 || !TryGetOrderedPassIndex(aliasingBarrier.PassId, out var aliasPassIndex)
-                || !aliasedResources.Add(aliasingBarrier.AfterResourceId))
+                || !TryGetBufferAliasingAfterIndex(aliasingBarrier.AfterResourceId, out var originalAliasingBarrierIndex)
+                || (originalAliasingBarrierIndex < aliasingBarrierIndex))
             {
                 throw new InvalidOperationException("A transient aliasing barrier does not match distinct materialized graph buffers and a scheduled pass.");
             }
@@ -1232,17 +1417,18 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var aliasedTextureResources = new HashSet<ulong>();
-
-        foreach (var aliasingBarrier in TextureAliasingBarriers)
+        for (var aliasingBarrierIndex = 0; aliasingBarrierIndex < TextureAliasingBarriers.Length; aliasingBarrierIndex++)
         {
+            var aliasingBarrier = TextureAliasingBarriers[aliasingBarrierIndex];
+
             if (!TryGetIndexedTextureImport(aliasingBarrier.BeforeResourceId, out var beforeImport)
                 || !TryGetIndexedTextureImport(aliasingBarrier.AfterResourceId, out var afterImport)
                 || !beforeImport.IsTransient
                 || !afterImport.IsTransient
                 || (aliasingBarrier.DeviceEpoch != DeviceEpoch)
                 || !TryGetOrderedPassIndex(aliasingBarrier.PassId, out var aliasPassIndex)
-                || !aliasedTextureResources.Add(aliasingBarrier.AfterResourceId))
+                || !TryGetTextureAliasingAfterIndex(aliasingBarrier.AfterResourceId, out var originalAliasingBarrierIndex)
+                || (originalAliasingBarrierIndex < aliasingBarrierIndex))
             {
                 throw new InvalidOperationException("A transient texture aliasing barrier does not match distinct materialized graph textures and a scheduled pass.");
             }
@@ -2962,6 +3148,35 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    private int FindFirstBufferAliasingAfterIndex(ulong resourceId)
+    {
+        var first = 0;
+        var last = _bufferAliasingAfterIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var barrier = AliasingBarriers[_bufferAliasingAfterIndex[middle]];
+
+            if (barrier.AfterResourceId < resourceId)
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first == _bufferAliasingAfterIndex.Length)
+        {
+            return -1;
+        }
+
+        var index = _bufferAliasingAfterIndex[first];
+        return (AliasingBarriers[index].AfterResourceId == resourceId) ? index : -1;
+    }
+
     private int FindFirstBufferImportIndex(ulong resourceId)
     {
         var first = 0;
@@ -3019,6 +3234,35 @@ internal sealed class GraphicsGraphSubmission
 
         var index = _orderedPassIndex[first];
         return (OrderedPasses[index] == passId) ? index : -1;
+    }
+
+    private int FindFirstTextureAliasingAfterIndex(ulong resourceId)
+    {
+        var first = 0;
+        var last = _textureAliasingAfterIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var barrier = TextureAliasingBarriers[_textureAliasingAfterIndex[middle]];
+
+            if (barrier.AfterResourceId < resourceId)
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first == _textureAliasingAfterIndex.Length)
+        {
+            return -1;
+        }
+
+        var index = _textureAliasingAfterIndex[first];
+        return (TextureAliasingBarriers[index].AfterResourceId == resourceId) ? index : -1;
     }
 
     private int FindFirstTransientTextureImportIndex(ulong resourceId)

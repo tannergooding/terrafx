@@ -30,9 +30,12 @@ internal sealed class GraphicsBufferTransferTests
         GraphicsDevice device,
         GpuTexture target,
         ImmutableArray<GraphBufferImportRecord> imports,
-        long maximumIndexBytes,
+        long maximumPreflightIndexBytes,
         ImmutableArray<RenderPassId> orderedPasses = default,
-        ImmutableArray<GraphTextureImportRecord> additionalTextureImports = default)
+        ImmutableArray<GraphTextureImportRecord> additionalTextureImports = default,
+        ImmutableArray<GraphResourceAliasingBarrier> aliasingBarriers = default,
+        ImmutableArray<GraphTextureAliasingBarrier> textureAliasingBarriers = default,
+        ImmutableArray<GraphResourceAccess> accesses = default)
     {
         var version = new GraphTextureVersion(
             device.DeviceEpoch, 1, 0, target.Description, new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
@@ -58,13 +61,13 @@ internal sealed class GraphicsBufferTransferTests
             orderedPasses.IsDefault ? [] : orderedPasses,
             [],
             [],
-            [],
-            [],
-            [],
+            aliasingBarriers.IsDefault ? [] : aliasingBarriers,
+            textureAliasingBarriers.IsDefault ? [] : textureAliasingBarriers,
+            accesses.IsDefault ? [] : accesses,
             imports,
             textureImports.MoveToImmutable(),
             [],
-            maximumImportIndexBytes: maximumIndexBytes);
+            maximumPreflightIndexBytes: maximumPreflightIndexBytes);
     }
 
     private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true, bool includeUploadHeap = false)
@@ -877,6 +880,105 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphAliasingAfterIndexesUseExactOwnedCapacity()
+    {
+        var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
+
+        try
+        {
+            using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            var pass = new RenderPassId(9, 3);
+            var bufferDescription = CreateBufferDescription();
+            var beforeBufferVersion = new GraphBufferVersion(
+                device.DeviceEpoch,
+                20,
+                0,
+                bufferDescription,
+                new GraphBufferRange(0, bufferDescription.ByteLength));
+            var duplicateBeforeBufferVersion = new GraphBufferVersion(
+                device.DeviceEpoch,
+                21,
+                0,
+                bufferDescription,
+                new GraphBufferRange(0, bufferDescription.ByteLength));
+            var afterBufferVersion = new GraphBufferVersion(
+                device.DeviceEpoch,
+                30,
+                0,
+                bufferDescription,
+                new GraphBufferRange(0, bufferDescription.ByteLength));
+            var bufferAliasingBarriers = ImmutableArray.Create(
+                new GraphResourceAliasingBarrier(pass, beforeBufferVersion, afterBufferVersion),
+                new GraphResourceAliasingBarrier(pass, duplicateBeforeBufferVersion, afterBufferVersion));
+            var textureDescription = target.Description;
+            var textureRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var beforeTextureVersion = new GraphTextureVersion(
+                device.DeviceEpoch, 40, 0, textureDescription, textureRange);
+            var duplicateBeforeTextureVersion = new GraphTextureVersion(
+                device.DeviceEpoch, 41, 0, textureDescription, textureRange);
+            var afterTextureVersion = new GraphTextureVersion(
+                device.DeviceEpoch, 50, 0, textureDescription, textureRange);
+            var textureAliasingBarriers = ImmutableArray.Create(
+                new GraphTextureAliasingBarrier(pass, beforeTextureVersion, afterTextureVersion),
+                new GraphTextureAliasingBarrier(pass, duplicateBeforeTextureVersion, afterTextureVersion));
+            var preflightIndexCharge = GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(
+                bufferImportCapacity: 0,
+                textureImportCapacity: 1,
+                orderedPassCapacity: 1,
+                bufferAliasingCapacity: 2,
+                textureAliasingCapacity: 2);
+            var submission = CreateBufferImportIndexSubmission(
+                device,
+                target,
+                [],
+                preflightIndexCharge,
+                [pass],
+                aliasingBarriers: bufferAliasingBarriers,
+                textureAliasingBarriers: textureAliasingBarriers);
+
+            Assert.That(submission.BufferAliasingAfterIndexStorageCapacity, Is.EqualTo(2));
+            Assert.That(submission.BufferAliasingAfterIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TextureAliasingAfterIndexStorageCapacity, Is.EqualTo(2));
+            Assert.That(submission.TextureAliasingAfterIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TryGetBufferAliasingAfterIndex(30, out var firstBufferBarrier), Is.True);
+            Assert.That(firstBufferBarrier, Is.Zero);
+            Assert.That(submission.TryGetTextureAliasingAfterIndex(50, out var firstTextureBarrier), Is.True);
+            Assert.That(firstTextureBarrier, Is.Zero);
+            Assert.That(submission.TryGetBufferAliasingAfterIndex(99, out _), Is.False);
+            Assert.That(submission.TryGetTextureAliasingAfterIndex(99, out _), Is.False);
+
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var matches = true;
+
+            for (var index = 0; index < 32; index++)
+            {
+                matches &= submission.TryGetBufferAliasingAfterIndex(30, out firstBufferBarrier)
+                    && (firstBufferBarrier == 0);
+                matches &= submission.TryGetTextureAliasingAfterIndex(50, out firstTextureBarrier)
+                    && (firstTextureBarrier == 0);
+            }
+
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.That(matches, Is.True);
+            Assert.That(allocated, Is.Zero);
+
+            _ = Assert.Throws<OutOfMemoryException>(
+                () => CreateBufferImportIndexSubmission(
+                    device,
+                    target,
+                    [],
+                    preflightIndexCharge - 1,
+                    [pass],
+                    aliasingBarriers: bufferAliasingBarriers,
+                    textureAliasingBarriers: textureAliasingBarriers));
+        }
+        finally
+        {
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public void GraphBufferImportIndexChargeRejectsInvalidOrOverflowingCapacity()
     {
         Assert.That(GraphicsGraphSubmission.CalculateBufferImportIndexBackingByteCharge(0), Is.Zero);
@@ -1199,6 +1301,7 @@ internal sealed class GraphicsBufferTransferTests
     {
         Assert.That(GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 0, 0), Is.Zero);
         Assert.That(GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 4, 3), Is.EqualTo(160));
+        Assert.That(GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 4, 3, 2, 2), Is.EqualTo(320));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(-1, 0, 0));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
@@ -1207,6 +1310,10 @@ internal sealed class GraphicsBufferTransferTests
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 0, -1));
         _ = Assert.Throws<OverflowException>(
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(long.MaxValue, 0, 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 0, 0, -1, 0));
+        _ = Assert.Throws<OverflowException>(
+            () => GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 0, 0, long.MaxValue, 0));
     }
 
     [Test]
