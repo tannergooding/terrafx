@@ -291,6 +291,27 @@ internal sealed class DiagnosticsServiceTests
                 context);
         }
 
+        static long MeasureStringAllocation(int length)
+        {
+            var measuredString = new string('x', length);
+            GC.KeepAlive(measuredString);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            var start = GC.GetAllocatedBytesForCurrentThread();
+            const int count = 1024;
+
+            for (var index = 0; index < count; index++)
+            {
+                measuredString = new string('x', length);
+            }
+
+            var bytes = checked(GC.GetAllocatedBytesForCurrentThread() - start);
+            GC.KeepAlive(measuredString);
+            return bytes / count;
+        }
+
         _ = CreateDiagnostic(code, operation, message, emptyContext);
         _ = CreateDiagnostic(code, operation, message, context);
 
@@ -323,6 +344,9 @@ internal sealed class DiagnosticsServiceTests
         TestContext.WriteLine($"Diagnostic with empty context: {noContextBytes / iterationCount} bytes per record");
         TestContext.WriteLine($"Diagnostic with seven-entry context: {contextBytes / iterationCount} bytes per record");
         TestContext.WriteLine($"Seven-entry context copy delta: {(contextBytes - noContextBytes) / iterationCount} bytes per record");
+        TestContext.WriteLine($"String object length 19: {MeasureStringAllocation(19)} bytes");
+        TestContext.WriteLine($"String object length 32: {MeasureStringAllocation(32)} bytes");
+        TestContext.WriteLine($"String object length 110: {MeasureStringAllocation(110)} bytes");
     }
 
     [Test]
