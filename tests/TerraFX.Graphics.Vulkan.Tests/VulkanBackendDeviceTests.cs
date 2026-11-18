@@ -445,6 +445,23 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void GraphDescriptorSetCapacityCountsDistinctNonemptyGroups()
+    {
+        var frameGroup = VulkanBackendDevice.GetGraphDescriptorGroupBit(ShaderBindingGroup.Frame);
+        var materialGroup = VulkanBackendDevice.GetGraphDescriptorGroupBit(ShaderBindingGroup.Material);
+        var objectGroup = VulkanBackendDevice.GetGraphDescriptorGroupBit(ShaderBindingGroup.ObjectData);
+        var passGroup = VulkanBackendDevice.GetGraphDescriptorGroupBit(ShaderBindingGroup.Pass);
+
+        Assert.That(VulkanBackendDevice.CountGraphDescriptorGroups(0), Is.Zero);
+        Assert.That(
+            VulkanBackendDevice.CountGraphDescriptorGroups(frameGroup | frameGroup | materialGroup),
+            Is.EqualTo(2));
+        Assert.That(
+            VulkanBackendDevice.CountGraphDescriptorGroups(frameGroup | materialGroup | objectGroup | passGroup),
+            Is.EqualTo(4));
+    }
+
+    [Test]
     public void OffscreenNativeCreationReportsAndReleasesARealDevice()
     {
         try

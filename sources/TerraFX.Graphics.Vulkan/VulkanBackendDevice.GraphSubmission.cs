@@ -13,6 +13,51 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
+    internal static int CountGraphDescriptorGroups(uint groupMask)
+    {
+        var count = 0;
+
+        while (groupMask != 0)
+        {
+            count++;
+            groupMask &= groupMask - 1;
+        }
+
+        return count;
+    }
+
+    internal static int CountGraphDescriptorSets(BindingSet bindings)
+    {
+        ArgumentNullException.ThrowIfNull(bindings);
+        uint groupMask = 0;
+
+        foreach (var binding in bindings.Buffers)
+        {
+            groupMask |= GetGraphDescriptorGroupBit(binding.Group);
+        }
+
+        foreach (var binding in bindings.Textures)
+        {
+            groupMask |= GetGraphDescriptorGroupBit(binding.Group);
+        }
+
+        foreach (var binding in bindings.Samplers)
+        {
+            groupMask |= GetGraphDescriptorGroupBit(binding.Group);
+        }
+
+        return CountGraphDescriptorGroups(groupMask);
+    }
+
+    internal static uint GetGraphDescriptorGroupBit(ShaderBindingGroup group)
+        => group switch {
+            ShaderBindingGroup.Frame => 1u << 0,
+            ShaderBindingGroup.Material => 1u << 1,
+            ShaderBindingGroup.ObjectData => 1u << 2,
+            ShaderBindingGroup.Pass => 1u << 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(group)),
+        };
+
     private static VkImageView CreateGraphColorImageView(VkDevice device, VulkanBackendTexture texture)
     {
         var createInfo = default(VkImageViewCreateInfo);
@@ -206,7 +251,10 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (command.Kind == GraphicsCommandKind.SetBindings)
                 {
-                    descriptorSetCapacity = checked(descriptorSetCapacity + 1);
+                    var bindings = command.Bindings
+                        ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                    descriptorSetCapacity = checked(
+                        descriptorSetCapacity + CountGraphDescriptorSets(bindings));
                 }
             }
         }
