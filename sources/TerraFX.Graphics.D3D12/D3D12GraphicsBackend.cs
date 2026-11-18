@@ -1928,29 +1928,17 @@ public static unsafe class D3D12GraphicsBackend
                     checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
                 _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
                     checked(_uncertainGraphRenderTargetHeaps.Count + 1));
-                var renderTargetResourceIds = new List<ulong>();
-                var renderTargetResourceIdSet = new HashSet<ulong>();
-
-                foreach (var pass in submission.Passes)
-                {
-                    foreach (var attachment in pass.Attachments)
-                    {
-                        if (!attachment.IsDepth && renderTargetResourceIdSet.Add(attachment.Version.ResourceId))
-                        {
-                            renderTargetResourceIds.Add(attachment.Version.ResourceId);
-                        }
-                    }
-                }
+                var renderTargetResourceCount = submission.ColorAttachmentResourceCount;
 
                 var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
                     Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                    NumDescriptors = checked((uint)renderTargetResourceIds.Count),
+                    NumDescriptors = checked((uint)renderTargetResourceCount),
                     Flags = D3D12_DESCRIPTOR_HEAP_FLAGS.D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
                     NodeMask = 0,
                 };
                 var heapId = typeof(ID3D12DescriptorHeap).GUID;
                 ID3D12DescriptorHeap* renderTargetHeap = null;
-                var renderTargetViews = new Dictionary<ulong, D3D12_CPU_DESCRIPTOR_HANDLE>(renderTargetResourceIds.Count);
+                var renderTargetViews = new Dictionary<ulong, D3D12_CPU_DESCRIPTOR_HANDLE>(renderTargetResourceCount);
                 var graphSubmissionAccepted = false;
                 var graphFrameSlotIndex = -1;
 
@@ -1967,8 +1955,9 @@ public static unsafe class D3D12GraphicsBackend
                     var renderTargetViewIncrementSize = _device->GetDescriptorHandleIncrementSize(
                         D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-                    foreach (var resourceId in renderTargetResourceIds)
+                    for (var index = 0; index < renderTargetResourceCount; index++)
                     {
+                        var resourceId = submission.GetColorAttachmentResourceId(index);
                         var colorTexture = submission.GetTexture(resourceId) as D3D12BackendTexture
                             ?? throw new InvalidOperationException("A graph color attachment is not a D3D12 texture.");
                         var renderTargetViewDescription = new D3D12_RENDER_TARGET_VIEW_DESC {
