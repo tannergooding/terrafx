@@ -81,6 +81,16 @@ public sealed class AssetPackageLease : IDisposable
         return state.ContainsAssetId(assetId, this);
     }
 
+    internal Task<AssetLease<T>> LoadDescribedFromPackageAsync<T>(
+        AssetOwnedReadDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        var (store, backing) = state.AcquireBackingReference(this);
+        return store.LoadDescribedFromPackageAsync<T>(descriptor, backing, cancellationToken);
+    }
+
     internal Task<AssetLease<T>> LoadFromPackageAsync<T>(
         AssetId assetId,
         CancellationToken cancellationToken)
@@ -108,6 +118,22 @@ public sealed class AssetPackageLease : IDisposable
     {
         ArgumentOutOfRangeException.ThrowIfNegative(requiredMinor);
         return MatchesAssetReferenceCoreAsync(reference, requiredMinor, cancellationToken);
+    }
+
+    internal bool TryDescribeOwnedRead<T>(
+        AssetId assetId,
+        object profileOrigin,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        return state.TryDescribeOwnedRead<T>(assetId, profileOrigin, this, out descriptor);
     }
 
     private async Task<bool> MatchesAssetReferenceCoreAsync(
@@ -251,6 +277,28 @@ public sealed class AssetPackageLease : IDisposable
             {
                 _releaseState = 2;
                 Monitor.PulseAll(_gate);
+                return true;
+            }
+        }
+
+        internal bool TryDescribeOwnedRead<T>(
+            AssetId assetId,
+            object profileOrigin,
+            object instance,
+            out AssetOwnedReadDescriptor descriptor)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+
+                if (!_backing.TryGetEntry(assetId, out var entry)
+                    || !_backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt))
+                {
+                    descriptor = default;
+                    return false;
+                }
+
+                descriptor = new AssetOwnedReadDescriptor(_store, _backing, entry, codecReceipt);
                 return true;
             }
         }

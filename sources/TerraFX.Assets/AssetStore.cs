@@ -210,6 +210,7 @@ public sealed partial class AssetStore : IAsyncDisposable
             assetId,
             packageBacking: null,
             backingReferenceAlreadyHeld: false,
+            expectedDescriptor: null,
             out var backing,
             out var entry,
             out var codec,
@@ -369,6 +370,7 @@ public sealed partial class AssetStore : IAsyncDisposable
         AssetId assetId,
         AssetPackageBacking? packageBacking,
         bool backingReferenceAlreadyHeld,
+        AssetOwnedReadDescriptor? expectedDescriptor,
         out AssetPackageBacking backing,
         out AssetPackageEntry entry,
         out AssetStoreRegistration.IAssetCodec<T> codec,
@@ -396,6 +398,13 @@ public sealed partial class AssetStore : IAsyncDisposable
             }
 
             codec = registeredCodec;
+
+            if (expectedDescriptor is AssetOwnedReadDescriptor descriptor
+                && !descriptor.Matches(this, backing, entry, registeredCodec))
+            {
+                throw new InvalidOperationException("The asset read descriptor no longer matches the selected package.");
+            }
+
             decodedBytes = checked((long)entry.DecodedLength);
             var options = backing.Options;
 

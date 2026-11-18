@@ -214,6 +214,31 @@ internal sealed class AssetLeaseLifetime
         }
     }
 
+    internal bool TryDescribeOwnedRead<T>(
+        AssetId assetId,
+        object profileOrigin,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf((_releaseState != 0) || (_referenceCount <= 0), this);
+            var store = _store
+                ?? throw new InvalidOperationException("The asset lease lifetime lost its owning store.");
+            var backing = _backing
+                ?? throw new InvalidOperationException("The asset lease lifetime lost its package backing.");
+
+            if (!backing.TryGetEntry(assetId, out var entry)
+                || !backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt))
+            {
+                descriptor = default;
+                return false;
+            }
+
+            descriptor = new AssetOwnedReadDescriptor(store, backing, entry, codecReceipt);
+            return true;
+        }
+    }
+
     private void RethrowReleaseFailure()
     {
         var failure = _releaseFailure

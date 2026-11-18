@@ -15,6 +15,49 @@ namespace TerraFX.Runtime.Tests.Scenes;
 internal sealed partial class SceneAssetStoreTests
 {
     [Test]
+    public async Task ScenePackageLeaseDescribesOnlyFactoryRegisteredSceneAndPrefabReads()
+    {
+        const int prefabAssetId = 1;
+        const int sceneAssetId = 2;
+        var schemas = new CompiledContentSchemaRegistry([
+            .. SceneAssetReaderTests.Fixtures.CreateRegistry().Schemas,
+        ]);
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetId));
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(prefabAssetId),
+            entityId: new Guid("10000000-0000-4000-8000-000000000001"));
+        var package = Package.CreatePackage(
+            new Package.Entry(prefabAssetId, Package.CreateEnvelope(prefabAssetId, prefab)),
+            new Package.Entry(sceneAssetId, Package.CreateEnvelope(sceneAssetId, scene)));
+        var path = Package.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            new AssetStoreOptions(path, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+        try
+        {
+            using var packageLease = store.AcquirePackageLease();
+
+            Assert.Multiple(() => {
+                Assert.That(
+                    SceneSupport.TryDescribePrefabAssetRead(packageLease, new AssetId(prefabAssetId), out _),
+                    Is.True);
+                Assert.That(
+                    SceneSupport.TryDescribeSceneAssetRead(packageLease, new AssetId(sceneAssetId), out _),
+                    Is.True);
+                Assert.That(
+                    SceneSupport.TryDescribeSceneAssetRead(packageLease, new AssetId(99), out _),
+                    Is.False);
+            });
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task ScenePrefabExpansionUsesRootSceneLeaseBackingAfterStoreReplacement()
     {
         var rootEntityId = new Guid("10000000-0000-4000-8000-000000000001");

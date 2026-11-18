@@ -12,6 +12,9 @@ internal sealed class SceneAssetCodec : IContextualBinarySchemaCodec<SceneAsset>
 {
     private static readonly Guid s_schemaId = new ContentSchemaIdentityAssignment("native/scene").SchemaId;
 
+    internal static ContentSchemaReference Schema
+        => new(s_schemaId, 2, 0, ContentSchemaScope.Content);
+
     public Guid SchemaId => s_schemaId;
 
     public int SchemaMajor => 2;

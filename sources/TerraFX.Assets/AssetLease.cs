@@ -121,6 +121,32 @@ public sealed class AssetLease<T> : IDisposable
         return state.Retain(_assetId, this);
     }
 
+    internal Task<AssetLease<TAsset>> LoadDescribedFromPackageAsync<TAsset>(
+        AssetOwnedReadDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        var (store, backing) = state.AcquirePackageBackingReference(this);
+        return store.LoadDescribedFromPackageAsync<TAsset>(descriptor, backing, cancellationToken);
+    }
+
+    internal bool TryDescribeOwnedRead<TAsset>(
+        AssetId assetId,
+        object profileOrigin,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        return state.TryDescribeOwnedRead<TAsset>(assetId, profileOrigin, this, out descriptor);
+    }
+
     private sealed class LeaseState
     {
         private readonly object _gate = new();
@@ -243,6 +269,19 @@ public sealed class AssetLease<T> : IDisposable
                     _lifetime.ReleaseReference();
                     throw;
                 }
+            }
+        }
+
+        internal bool TryDescribeOwnedRead<TAsset>(
+            AssetId assetId,
+            object profileOrigin,
+            object instance,
+            out AssetOwnedReadDescriptor descriptor)
+        {
+            lock (_gate)
+            {
+                ThrowIfNotActive(instance);
+                return _lifetime.TryDescribeOwnedRead<TAsset>(assetId, profileOrigin, out descriptor);
             }
         }
 

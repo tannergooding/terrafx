@@ -93,8 +93,26 @@ public sealed class AssetStoreRegistration
         return false;
     }
 
+    internal bool TryGetProfiledCodecReceipt<T>(object profileOrigin, out AssetCodecRegistrationReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+
+        if (_codecsByType.TryGetValue(typeof(T), out var registeredCodec)
+            && (registeredCodec is IAssetCodec<T> typedCodec)
+            && ReferenceEquals(typedCodec.ProfileOrigin, profileOrigin))
+        {
+            receipt = new AssetCodecRegistrationReceipt(typedCodec, profileOrigin);
+            return true;
+        }
+
+        receipt = default;
+        return false;
+    }
+
     internal interface IAssetCodec
     {
+        object? ProfileOrigin { get; }
+
         ContentSchemaReference Schema { get; }
 
         Type ValueType { get; }

@@ -31,6 +31,7 @@ public sealed partial class AssetStore
                 assetId,
                 backing,
                 backingReferenceAlreadyHeld: true,
+                expectedDescriptor: null,
                 out var loadBacking,
                 out entry,
                 out codec,

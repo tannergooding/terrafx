@@ -22,8 +22,60 @@ public static class SceneSupport
     public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        _ = builder.RegisterCodec(new SceneAssetCodec());
-        return builder.RegisterCodec(new ScenePrefabAssetCodec());
+        _ = builder.RegisterProfiledCodec(new SceneAssetCodec(), typeof(SceneCodecV2Origin));
+        return builder.RegisterProfiledCodec(new ScenePrefabAssetCodec(), typeof(ScenePrefabCodecV2Origin));
+    }
+
+    internal static bool HasBuiltInAssetCodecReceipts(AssetStoreRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+
+        return registration.TryGetProfiledCodecReceipt<SceneAsset>(typeof(SceneCodecV2Origin), out var sceneReceipt)
+                && (sceneReceipt.Schema == SceneAssetCodec.Schema)
+                && registration.TryGetProfiledCodecReceipt<ScenePrefabAsset>(
+                    typeof(ScenePrefabCodecV2Origin),
+                    out var prefabReceipt)
+                && (prefabReceipt.Schema == ScenePrefabAssetCodec.Schema);
+    }
+
+    internal static bool TryDescribePrefabAssetRead(
+        AssetPackageLease packageLease,
+        AssetId assetId,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+
+        if (packageLease.TryDescribeOwnedRead<ScenePrefabAsset>(
+                assetId,
+                typeof(ScenePrefabCodecV2Origin),
+                out descriptor)
+            && (descriptor.CodecReceipt.Schema == ScenePrefabAssetCodec.Schema))
+        {
+            return true;
+        }
+
+        descriptor = default;
+        return false;
+    }
+
+    internal static bool TryDescribeSceneAssetRead(
+        AssetPackageLease packageLease,
+        AssetId assetId,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+
+        if (packageLease.TryDescribeOwnedRead<SceneAsset>(
+                assetId,
+                typeof(SceneCodecV2Origin),
+                out descriptor)
+            && (descriptor.CodecReceipt.Schema == SceneAssetCodec.Schema))
+        {
+            return true;
+        }
+
+        descriptor = default;
+        return false;
     }
 
     private sealed class BuiltInSceneComponentRegistration : IWorldSceneSupportRegistration
@@ -40,5 +92,13 @@ public static class SceneSupport
             _ = SceneComponentDefinitions.RegisterRootPosition(builder, schemas);
             _ = SceneComponentDefinitions.RegisterCamera(builder, schemas);
         }
+    }
+
+    private sealed class SceneCodecV2Origin
+    {
+    }
+
+    private sealed class ScenePrefabCodecV2Origin
+    {
     }
 }

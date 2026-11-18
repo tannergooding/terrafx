@@ -223,6 +223,22 @@ internal sealed class SceneSupportRegistrationTests
     }
 
     [Test]
+    public void SceneAssetCodecReceiptsRequireTheBuiltInRegistrationPath()
+    {
+        var schemas = CreateSchemaRegistry();
+        var profiledBuilder = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas));
+        var profiledRegistration = profiledBuilder.Build();
+
+        Assert.That(SceneSupport.HasBuiltInAssetCodecReceipts(profiledRegistration), Is.True);
+
+        var ordinaryBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = ordinaryBuilder.RegisterCodec(new SceneAssetCodec());
+        _ = ordinaryBuilder.RegisterCodec(new ScenePrefabAssetCodec());
+
+        Assert.That(SceneSupport.HasBuiltInAssetCodecReceipts(ordinaryBuilder.Build()), Is.False);
+    }
+
+    [Test]
     public void SceneStorageReservationsAreThreadSafeAndRespectTheWorldBudget()
     {
         var schemas = CreateSchemaRegistry();

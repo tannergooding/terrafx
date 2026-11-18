@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -249,6 +250,75 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetPackageLeaseDescribesProfiledReadWithoutAcquiringPackageLease()
+    {
+        var profileOrigin = typeof(ProfiledTestAssetOrigin);
+        var registration = new AssetStoreRegistrationBuilder(s_schemas)
+            .RegisterProfiledCodec(new ContextualTestAssetCodec(), profileOrigin)
+            .Build();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 17)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var options = CreateOptions(
+            path,
+            package,
+            registration,
+            maximumLiveAssetLeases: 1);
+        var store = await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false);
+        AssetPackageLease? packageLease = null;
+
+        try
+        {
+            packageLease = store.AcquirePackageLease();
+            Assert.That(
+                packageLease.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out var descriptor),
+                Is.True);
+            Assert.That(
+                registration.TryGetProfiledCodecReceipt<TestAssetValue>(profileOrigin, out var registeredReceipt),
+                Is.True);
+
+            Assert.Multiple(() => {
+                Assert.That(descriptor.AssetId, Is.EqualTo(new AssetId(1)));
+                Assert.That(descriptor.BackingToken, Is.Not.Null);
+                Assert.That(descriptor.CodecReceipt.IsInitialized, Is.True);
+                Assert.That(descriptor.CodecReceipt.IsSameCodec(registeredReceipt), Is.True);
+                Assert.That(descriptor.CodecReceipt.ProfileOrigin, Is.SameAs(profileOrigin));
+                Assert.That(descriptor.CodecReceipt.Schema, Is.EqualTo(s_assetSchema));
+                Assert.That(descriptor.CodecReceipt.ValueType, Is.EqualTo(typeof(TestAssetValue)));
+                Assert.That(descriptor.CpuAssetBudgetBytes, Is.EqualTo(options.CpuAssetBudgetBytes));
+                Assert.That(descriptor.DecodedLength, Is.GreaterThan(0));
+                Assert.That(descriptor.EntryCodec, Is.Zero);
+                Assert.That(descriptor.MaximumConcurrentDecodeBytes, Is.EqualTo(options.MaximumConcurrentDecodeBytes));
+                Assert.That(descriptor.MaximumDecodedAssetBytes, Is.EqualTo(options.MaximumDecodedAssetBytes));
+                Assert.That(descriptor.MaximumLiveAssetLeases, Is.EqualTo(options.MaximumLiveAssetLeases));
+                Assert.That(descriptor.PackageByteLength, Is.EqualTo(new FileInfo(path).Length));
+                Assert.That(descriptor.Registration, Is.SameAs(registration));
+                Assert.That(descriptor.Schemas, Is.SameAs(s_schemas));
+                Assert.That(descriptor.Store, Is.SameAs(store));
+                Assert.That(descriptor.StoredLength, Is.GreaterThan(0));
+            });
+
+            Assert.That(
+                packageLease.TryDescribeOwnedRead<TestAssetValue>(new AssetId(2), profileOrigin, out _),
+                Is.False);
+            Assert.That(
+                packageLease.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), new object(), out _),
+                Is.False);
+            _ = Assert.Throws<InvalidOperationException>(() => store.AcquirePackageLease());
+
+            packageLease.Dispose();
+            packageLease = null;
+            using var replacementLease = store.AcquirePackageLease();
+        }
+        finally
+        {
+            packageLease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task AssetPackageLeaseLoadsFromItsPinnedPackageAfterReplacement()
     {
         var registration = CreateRegistration();
@@ -491,6 +561,92 @@ internal sealed class AssetStoreTests
             {
                 File.Delete(path);
             }
+        }
+    }
+
+    [Test]
+    public async Task AssetStoreDescribedReadsRejectReplacementAndRetainPinnedSource()
+    {
+        var profileOrigin = typeof(ProfiledTestAssetOrigin);
+        var registration = new AssetStoreRegistrationBuilder(s_schemas)
+            .RegisterProfiledCodec(new ContextualTestAssetCodec(), profileOrigin)
+            .Build();
+        var originalPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 17)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 18)));
+        var replacementPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 23)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 24)));
+        var originalPath = AssetPackageReaderTests.WritePackage(originalPackage);
+        var replacementPath = AssetPackageReaderTests.WritePackage(replacementPackage);
+        var originalOptions = CreateOptions(
+            originalPath,
+            originalPackage,
+            registration,
+            maximumLiveAssetLeases: 2);
+        var replacementOptions = CreateOptions(
+            replacementPath,
+            replacementPackage,
+            registration,
+            maximumLiveAssetLeases: 2);
+        var store = await AssetStore.CreateAsync(originalOptions, CancellationToken.None).ConfigureAwait(false);
+        AssetPackageLease? packageLease = null;
+
+        try
+        {
+            packageLease = store.AcquirePackageLease();
+            Assert.That(
+                store.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out var originalDescriptor),
+                Is.True);
+
+            await store.ReplacePackageAsync(replacementOptions, CancellationToken.None).ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await store.LoadDescribedAsync<TestAssetValue>(
+                    originalDescriptor,
+                    CancellationToken.None).ConfigureAwait(false));
+
+            using (var currentAsset = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false))
+            {
+                Assert.That(currentAsset.Value.Marker, Is.EqualTo(23));
+            }
+
+            Assert.That(
+                store.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out var replacementDescriptor),
+                Is.True);
+            using (var currentDescribedAsset = await store.LoadDescribedAsync<TestAssetValue>(
+                replacementDescriptor,
+                CancellationToken.None).ConfigureAwait(false))
+            {
+                Assert.That(currentDescribedAsset.Value.Marker, Is.EqualTo(23));
+            }
+
+            using var originalAsset = await packageLease.LoadDescribedFromPackageAsync<TestAssetValue>(
+                originalDescriptor,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(originalAsset.Value.Marker, Is.EqualTo(17));
+            Assert.That(
+                originalAsset.TryDescribeOwnedRead<TestAssetValue>(
+                    new AssetId(2),
+                    profileOrigin,
+                    out var originalChildDescriptor),
+                Is.True);
+
+            packageLease.Dispose();
+            packageLease = null;
+
+            using var originalChild = await originalAsset.LoadDescribedFromPackageAsync<TestAssetValue>(
+                originalChildDescriptor,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(originalChild.Value.Marker, Is.EqualTo(18));
+        }
+        finally
+        {
+            packageLease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(originalPath);
+            File.Delete(replacementPath);
         }
     }
 
@@ -1131,6 +1287,41 @@ internal sealed class AssetStoreTests
         }
     }
 
+    private sealed class ContextualTestAssetCodec : IContextualBinarySchemaCodec<TestAssetValue>
+    {
+        private readonly TestAssetCodec _codec = new TestAssetCodec();
+
+        public Guid SchemaId => _codec.SchemaId;
+
+        public int SchemaMajor => _codec.SchemaMajor;
+
+        public int SchemaMinor => _codec.SchemaMinor;
+
+        public BinaryRecordStatus Read(
+            scoped ReadOnlySpan<byte> source,
+            AssetCodecContext context,
+            [MaybeNull] out TestAssetValue value,
+            out int bytesConsumed,
+            out BinarySchemaDiagnostic? diagnostic)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            diagnostic = null;
+            return _codec.Read(source, out value, out bytesConsumed);
+        }
+
+        public BinaryRecordStatus Write(
+            in TestAssetValue value,
+            AssetCodecContext context,
+            scoped Span<byte> destination,
+            out int bytesWritten,
+            out BinarySchemaDiagnostic? diagnostic)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            diagnostic = null;
+            return _codec.Write(value, destination, out bytesWritten);
+        }
+    }
+
     private sealed class IncompleteAssetCodec : IBinarySchemaCodec<TestAssetValue>
     {
         private readonly TestAssetCodec _codec = new TestAssetCodec();
@@ -1155,6 +1346,10 @@ internal sealed class AssetStoreTests
 
         public BinaryRecordStatus Write(in TestAssetValue value, scoped Span<byte> destination, out int bytesWritten)
             => _codec.Write(value, destination, out bytesWritten);
+    }
+
+    private sealed class ProfiledTestAssetOrigin
+    {
     }
 
     private sealed class TestAssetCodec : IBinarySchemaCodec<TestAssetValue>

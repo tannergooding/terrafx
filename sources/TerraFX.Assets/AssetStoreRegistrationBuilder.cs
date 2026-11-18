@@ -50,7 +50,17 @@ public sealed class AssetStoreRegistrationBuilder
     public AssetStoreRegistrationBuilder RegisterCodec<T>(IContextualBinarySchemaCodec<T> codec)
     {
         ArgumentNullException.ThrowIfNull(codec);
-        AddCodec(new ContextualSchemaCodecAdapter<T>(codec));
+        AddCodec(new ContextualSchemaCodecAdapter<T>(codec, profileOrigin: null));
+        return this;
+    }
+
+    internal AssetStoreRegistrationBuilder RegisterProfiledCodec<T>(
+        IContextualBinarySchemaCodec<T> codec,
+        object profileOrigin)
+    {
+        ArgumentNullException.ThrowIfNull(codec);
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+        AddCodec(new ContextualSchemaCodecAdapter<T>(codec, profileOrigin));
         return this;
     }
 
@@ -84,6 +94,8 @@ public sealed class AssetStoreRegistrationBuilder
                 codec.SchemaMinor,
                 ContentSchemaScope.Content);
         }
+
+        public object? ProfileOrigin => null;
 
         public ContentSchemaReference Schema { get; }
 
@@ -119,15 +131,18 @@ public sealed class AssetStoreRegistrationBuilder
     {
         private readonly IContextualBinarySchemaCodec<T> _codec;
 
-        internal ContextualSchemaCodecAdapter(IContextualBinarySchemaCodec<T> codec)
+        internal ContextualSchemaCodecAdapter(IContextualBinarySchemaCodec<T> codec, object? profileOrigin)
         {
             _codec = codec;
+            ProfileOrigin = profileOrigin;
             Schema = new ContentSchemaReference(
                 codec.SchemaId,
                 codec.SchemaMajor,
                 codec.SchemaMinor,
                 ContentSchemaScope.Content);
         }
+
+        public object? ProfileOrigin { get; }
 
         public ContentSchemaReference Schema { get; }
 
