@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using NUnit.Framework;
 
@@ -312,6 +313,21 @@ internal sealed class DiagnosticsServiceTests
             return bytes / count;
         }
 
+        static long MeasureServiceAllocation(int maximumRecords)
+        {
+            var warmService = new DiagnosticsService(maximumRecords);
+            GC.KeepAlive(warmService);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            var start = GC.GetAllocatedBytesForCurrentThread();
+            var measuredService = new DiagnosticsService(maximumRecords);
+            var bytes = checked(GC.GetAllocatedBytesForCurrentThread() - start);
+            GC.KeepAlive(measuredService);
+            return bytes;
+        }
+
         _ = CreateDiagnostic(code, operation, message, emptyContext);
         _ = CreateDiagnostic(code, operation, message, context);
 
@@ -340,13 +356,26 @@ internal sealed class DiagnosticsServiceTests
         var contextBytes = checked(GC.GetAllocatedBytesForCurrentThread() - contextStart);
         GC.KeepAlive(lastDiagnostic);
 
+        const int diagnosticCapacity = 8192;
+        var singleRecordServiceBytes = MeasureServiceAllocation(1);
+        var fullRingServiceBytes = MeasureServiceAllocation(diagnosticCapacity);
+        var ringAllocationDelta = checked(fullRingServiceBytes - singleRecordServiceBytes);
+        var measuredEntryStride = ringAllocationDelta / (diagnosticCapacity - 1);
+        var ringStrideRemainder = ringAllocationDelta % (diagnosticCapacity - 1);
+        int[] stringLengths = [6, 10, 14, 15, 17, 18, 19, 20, 21, 23, 32, 65, 110];
+
         TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
         TestContext.WriteLine($"Diagnostic with empty context: {noContextBytes / iterationCount} bytes per record");
         TestContext.WriteLine($"Diagnostic with seven-entry context: {contextBytes / iterationCount} bytes per record");
         TestContext.WriteLine($"Seven-entry context copy delta: {(contextBytes - noContextBytes) / iterationCount} bytes per record");
-        TestContext.WriteLine($"String object length 19: {MeasureStringAllocation(19)} bytes");
-        TestContext.WriteLine($"String object length 32: {MeasureStringAllocation(32)} bytes");
-        TestContext.WriteLine($"String object length 110: {MeasureStringAllocation(110)} bytes");
+        TestContext.WriteLine($"DiagnosticContextEntry stride: {Unsafe.SizeOf<DiagnosticContextEntry>()} bytes");
+        TestContext.WriteLine(
+            $"DiagnosticsService construction: capacity=1, {singleRecordServiceBytes} bytes; capacity={diagnosticCapacity}, {fullRingServiceBytes} bytes; ring allocation delta={ringAllocationDelta} bytes, inferred entry-stride={measuredEntryStride}, remainder={ringStrideRemainder}");
+
+        foreach (var stringLength in stringLengths)
+        {
+            TestContext.WriteLine($"String object length {stringLength}: {MeasureStringAllocation(stringLength)} bytes");
+        }
     }
 
     [Test]
