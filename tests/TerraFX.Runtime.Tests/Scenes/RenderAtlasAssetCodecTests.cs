@@ -158,6 +158,7 @@ internal sealed partial class SceneAssetStoreTests
             new AssetStoreOptions(originalPath, SHA256.HashData(originalPackage), registration)).ConfigureAwait(false);
         AssetLease<RenderAtlasAsset>? atlasLease = null;
         RenderAtlasPageSet? pageSet = null;
+        using var progress = new RenderAtlasPageLoader.OwnedProgress();
 
         try
         {
@@ -165,7 +166,11 @@ internal sealed partial class SceneAssetStoreTests
             await store.ReplacePackageAsync(
                 new AssetStoreOptions(replacementPath, SHA256.HashData(replacementPackage), registration),
                 CancellationToken.None).ConfigureAwait(false);
-            pageSet = await RenderAtlasPageLoader.RetainAsync(atlasLease).ConfigureAwait(false);
+            var pendingPageSet = await RenderAtlasPageLoader.RetainOwnedAsync(
+                atlasLease,
+                progress).ConfigureAwait(false);
+            pageSet = progress.TakeResult();
+            Assert.That(pageSet, Is.SameAs(pendingPageSet));
             Assert.That(pageSet.Atlas.Frames, Has.Length.EqualTo(1));
             Assert.That(pageSet.GetPage(0).Mips[0].Pixels[0], Is.EqualTo(17));
 
@@ -221,8 +226,11 @@ internal sealed partial class SceneAssetStoreTests
         try
         {
             using var borderAtlas = await store.LoadAsync<RenderAtlasAsset>(new AssetId(2)).ConfigureAwait(false);
+            using var borderProgress = new RenderAtlasPageLoader.OwnedProgress();
             _ = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await RenderAtlasPageLoader.RetainAsync(borderAtlas).ConfigureAwait(false));
+                async () => await RenderAtlasPageLoader.RetainOwnedAsync(
+                    borderAtlas,
+                    borderProgress).ConfigureAwait(false));
 
             using var overlapAtlas = await store.LoadAsync<RenderAtlasAsset>(new AssetId(4)).ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidDataException>(

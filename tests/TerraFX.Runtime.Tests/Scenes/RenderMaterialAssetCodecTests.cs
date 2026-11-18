@@ -438,8 +438,11 @@ internal sealed partial class SceneAssetStoreTests
             }
 
             pbrLease = await store.LoadAsync<RenderMaterialAsset>(new AssetId(14)).ConfigureAwait(false);
+            using var progress = new RenderMaterialTextureLoader.OwnedProgress();
             _ = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await RenderMaterialTextureLoader.RetainAsync(pbrLease).ConfigureAwait(false));
+                async () => await RenderMaterialTextureLoader.RetainOwnedAsync(
+                    pbrLease,
+                    progress).ConfigureAwait(false));
         }
         finally
         {
@@ -505,6 +508,7 @@ internal sealed partial class SceneAssetStoreTests
             new AssetStoreOptions(originalPath, SHA256.HashData(originalPackage), registration)).ConfigureAwait(false);
         AssetLease<RenderMaterialAsset>? materialLease = null;
         RenderMaterialTextureSet? textureSet = null;
+        using var progress = new RenderMaterialTextureLoader.OwnedProgress();
 
         try
         {
@@ -512,7 +516,11 @@ internal sealed partial class SceneAssetStoreTests
             await store.ReplacePackageAsync(
                 new AssetStoreOptions(replacementPath, SHA256.HashData(replacementPackage), registration),
                 default).ConfigureAwait(false);
-            textureSet = await RenderMaterialTextureLoader.RetainAsync(materialLease).ConfigureAwait(false);
+            var pendingTextureSet = await RenderMaterialTextureLoader.RetainOwnedAsync(
+                materialLease,
+                progress).ConfigureAwait(false);
+            textureSet = progress.TakeResult();
+            Assert.That(textureSet, Is.SameAs(pendingTextureSet));
             Assert.That(textureSet.GetTexture(new AssetId(1)).Mips[0].Pixels[0], Is.EqualTo(71));
 
             using var currentTexture = await store.LoadAsync<RenderTextureAsset>(new AssetId(1)).ConfigureAwait(false);

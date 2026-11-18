@@ -27,8 +27,22 @@ internal static class RenderAtlasPageLoader
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(atlasLease);
-        var retainedAtlasLease = atlasLease.Retain();
-        return await CreateOwnedAsync(retainedAtlasLease, cancellationToken).ConfigureAwait(false);
+        using var progress = new OwnedProgress();
+        progress.RetainAtlasLease(atlasLease);
+        var result = await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        _ = progress.TakeResult();
+        return result;
+    }
+
+    internal static async Task<RenderAtlasPageSet> RetainOwnedAsync(
+        AssetLease<RenderAtlasAsset> atlasLease,
+        OwnedProgress progress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(atlasLease);
+        ArgumentNullException.ThrowIfNull(progress);
+        progress.RetainAtlasLease(atlasLease);
+        return await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
     }
 
     private static int CompareRectangles(PaddedRectangle left, PaddedRectangle right)
@@ -62,32 +76,45 @@ internal static class RenderAtlasPageLoader
         AssetLease<RenderAtlasAsset> atlasLease,
         CancellationToken cancellationToken)
     {
-        var pageLeases = ImmutableArray.CreateBuilder<AssetLease<RenderTextureAsset>>(atlasLease.Value.Pages.Length);
+        using var progress = new OwnedProgress();
+        progress.SetAtlasLease(atlasLease);
+        var result = await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        _ = progress.TakeResult();
+        return result;
+    }
 
-        try
+    private static async Task<RenderAtlasPageSet> CreateOwnedCoreAsync(
+        OwnedProgress progress,
+        CancellationToken cancellationToken)
+    {
+        var atlasLease = progress.AtlasLease
+            ?? throw new InvalidOperationException("The Atlas page operation has no retained Atlas lease.");
+        var pageLeaseBuilder = ImmutableArray.CreateBuilder<AssetLease<RenderTextureAsset>>(
+            atlasLease.Value.Pages.Length);
+        progress.PageLeases = pageLeaseBuilder;
+
+        foreach (var pageId in atlasLease.Value.Pages)
         {
-            foreach (var pageId in atlasLease.Value.Pages)
-            {
-                var pageLease = await atlasLease.LoadFromPackageAsync<RenderTextureAsset>(
-                    pageId,
-                    cancellationToken).ConfigureAwait(false);
-                pageLeases.Add(pageLease);
-            }
-
-            var pages = pageLeases.ToImmutable();
-            ValidatePageAssets(atlasLease.Value, pages);
-            return new RenderAtlasPageSet(atlasLease, pages);
+            cancellationToken.ThrowIfCancellationRequested();
+            progress.PendingPageLease = await atlasLease.LoadFromPackageAsync<RenderTextureAsset>(
+                pageId,
+                cancellationToken).ConfigureAwait(false);
+            var pendingPageLease = progress.PendingPageLease
+                ?? throw new InvalidOperationException("The Atlas page load returned no owned lease.");
+            pageLeaseBuilder.Add(pendingPageLease);
+            progress.PendingPageLease = null;
         }
-        catch
-        {
-            foreach (var pageLease in pageLeases)
-            {
-                pageLease.Dispose();
-            }
 
-            atlasLease.Dispose();
-            throw;
-        }
+        var pageLeases = pageLeaseBuilder.ToImmutable();
+        progress.PageLeaseArray = pageLeases;
+        progress.PageLeases = null;
+        ValidatePageAssets(atlasLease.Value, pageLeases, progress);
+        var result = new RenderAtlasPageSet(atlasLease, pageLeases);
+        progress.Result = result;
+        progress.AtlasLease = null;
+        progress.PageLeaseArray = default;
+        progress.ClearValidationScratch();
+        return result;
     }
 
     private static void EnsureClampedPixel(
@@ -169,16 +196,20 @@ internal static class RenderAtlasPageLoader
         }
     }
 
-    private static void ValidatePaddedFrameOverlap(PaddedRectangle[] rectangles, int pageCount)
+    private static void ValidatePaddedFrameOverlap(
+        PaddedRectangle[] rectangles,
+        int pageCount,
+        OwnedProgress progress)
     {
         Array.Sort(rectangles, CompareRectangles);
-        var maximumTree = new RangeMaximumTree();
+        var maximumTree = progress.MaximumTree = new RangeMaximumTree();
+        var active = progress.ActiveRectangles = new PriorityQueue<PaddedRectangle, (int Right, int Sequence)>();
         var rectangleIndex = 0;
 
         for (var pageIndex = 0; pageIndex < pageCount; pageIndex++)
         {
             maximumTree.Reset();
-            var active = new PriorityQueue<PaddedRectangle, (int Right, int Sequence)>();
+            active.Clear();
             var sequence = 0;
 
             while ((rectangleIndex < rectangles.Length) && (rectangles[rectangleIndex].Page == pageIndex))
@@ -212,7 +243,8 @@ internal static class RenderAtlasPageLoader
 
     private static void ValidatePageAssets(
         RenderAtlasAsset atlas,
-        ImmutableArray<AssetLease<RenderTextureAsset>> pageLeases)
+        ImmutableArray<AssetLease<RenderTextureAsset>> pageLeases,
+        OwnedProgress progress)
     {
         for (var pageIndex = 0; pageIndex < pageLeases.Length; pageIndex++)
         {
@@ -228,7 +260,7 @@ internal static class RenderAtlasPageLoader
             }
         }
 
-        var rectangles = new PaddedRectangle[atlas.Frames.Length];
+        var rectangles = progress.Rectangles = new PaddedRectangle[atlas.Frames.Length];
 
         for (var index = 0; index < atlas.Frames.Length; index++)
         {
@@ -248,12 +280,136 @@ internal static class RenderAtlasPageLoader
             rectangles[index] = new PaddedRectangle(frame.Page, left, top, right, bottom);
         }
 
-        ValidatePaddedFrameOverlap(rectangles, pageLeases.Length);
+        ValidatePaddedFrameOverlap(rectangles, pageLeases.Length, progress);
     }
 
-    private readonly record struct PaddedRectangle(int Page, int Left, int Top, int Right, int Bottom);
+    internal sealed class OwnedProgress : IDisposable
+    {
+        internal PriorityQueue<PaddedRectangle, (int Right, int Sequence)>? ActiveRectangles;
+        internal AssetLease<RenderAtlasAsset>? AtlasLease;
+        internal RangeMaximumTree? MaximumTree;
+        internal ImmutableArray<AssetLease<RenderTextureAsset>> PageLeaseArray;
+        internal ImmutableArray<AssetLease<RenderTextureAsset>>.Builder? PageLeases;
+        internal AssetLease<RenderTextureAsset>? PendingPageLease;
+        internal PaddedRectangle[]? Rectangles;
+        internal RenderAtlasPageSet? Result;
 
-    private sealed class RangeMaximumTree
+        private static void DisposePending<T>(ref T? value)
+            where T : class, IDisposable
+        {
+            var pending = value;
+
+            if (pending is null)
+            {
+                return;
+            }
+
+            pending.Dispose();
+            value = null;
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                DisposePending(ref Result);
+            }
+            finally
+            {
+                try
+                {
+                    DisposePending(ref PendingPageLease);
+                }
+                finally
+                {
+                    try
+                    {
+                        if (PageLeases is { } pageLeases)
+                        {
+                            foreach (var pageLease in pageLeases)
+                            {
+                                pageLease.Dispose();
+                            }
+
+                            PageLeases = null;
+                        }
+                        else if (!PageLeaseArray.IsDefault)
+                        {
+                            foreach (var pageLease in PageLeaseArray)
+                            {
+                                pageLease.Dispose();
+                            }
+
+                            PageLeaseArray = default;
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            var atlasLease = AtlasLease;
+                            atlasLease?.Dispose();
+
+                            if (atlasLease is not null)
+                            {
+                                AtlasLease = null;
+                            }
+                        }
+                        finally
+                        {
+                            ClearValidationScratch();
+                        }
+                    }
+                }
+            }
+        }
+
+        internal void ClearValidationScratch()
+        {
+            ActiveRectangles = null;
+            MaximumTree = null;
+            Rectangles = null;
+        }
+
+        internal void RetainAtlasLease(AssetLease<RenderAtlasAsset> atlasLease)
+        {
+            EnsureEmpty();
+            AtlasLease = atlasLease.Retain();
+        }
+
+        internal void SetAtlasLease(AssetLease<RenderAtlasAsset> atlasLease)
+        {
+            EnsureEmpty();
+            AtlasLease = atlasLease;
+        }
+
+        internal RenderAtlasPageSet TakeResult()
+        {
+            var result = Result
+                ?? throw new InvalidOperationException("The Atlas page operation has no completed page set.");
+            Result = null;
+            return result;
+        }
+
+        private void EnsureEmpty()
+        {
+            if ((AtlasLease is not null)
+                || (PageLeases is not null)
+                || !PageLeaseArray.IsDefault
+                || (PendingPageLease is not null)
+                || (Result is not null)
+                || (ActiveRectangles is not null)
+                || (MaximumTree is not null)
+                || (Rectangles is not null))
+            {
+                throw new InvalidOperationException("The Atlas page operation still owns unfinished progress.");
+            }
+        }
+    }
+
+    internal readonly record struct PaddedRectangle(int Page, int Left, int Top, int Right, int Bottom);
+
+    internal sealed class RangeMaximumTree
     {
         private readonly int[] _lazy;
         private readonly int[] _maximum;
