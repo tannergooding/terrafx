@@ -529,6 +529,17 @@ internal sealed class GraphResourceRegistry
             stateTransitions);
     }
 
+    internal void ValidateTransientBufferVersion(GraphBufferVersion version)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(version);
+
+        if (GetBufferResource(version).ImportRecord is not null)
+        {
+            throw new ArgumentException("The buffer version is not a transient resource owned by this graph.", nameof(version));
+        }
+    }
+
     internal GraphTextureVersion WriteAttachment(
         RenderPassId passId,
         GraphTextureVersion previousVersion,

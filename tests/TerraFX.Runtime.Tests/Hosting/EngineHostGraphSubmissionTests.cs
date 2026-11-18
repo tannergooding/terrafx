@@ -244,6 +244,125 @@ internal sealed partial class EngineHostOptionsTests
     }
 
     [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The graph only performs synchronous metadata validation before native owners are retired.")]
+    public void D3D12GraphBufferReadbackExportRejectsForeignVersionsAndRequiresUniqueContainedRange()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 readback-export witness requires Windows 11.");
+            return;
+        }
+
+        var registration = D3D12GraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions()) {
+            CpuWorkerCount = 0,
+            GraphicsFrameSlotCount = 2,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? graphicsDevice = null;
+
+        try
+        {
+            try
+            {
+                graphicsDevice = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    options.GraphicsFrameSlotCount,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var targetExtent = new PixelSize(4, 4);
+            using var target = graphicsDevice.CreateTextureAsync(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    format: TextureFormat.Rgba8Unorm,
+                    usage: TextureUsage.ColorAttachment,
+                    debugName: "d3d12-readback-export-target"))
+                .GetAwaiter()
+                .GetResult();
+            var graph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var buffer = graph.CreateTransientBuffer(new BufferDescription(
+                16,
+                BufferUsage.Storage | BufferUsage.CopySource,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: sizeof(uint),
+                debugName: "d3d12-readback-export-buffer"));
+            var foreignGraph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var foreignBuffer = foreignGraph.CreateTransientBuffer(new BufferDescription(
+                16,
+                BufferUsage.Storage | BufferUsage.CopySource,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: sizeof(uint),
+                debugName: "d3d12-foreign-readback-export-buffer"));
+
+            Assert.That(
+                () => graph.ExportBufferForReadback(buffer, new GraphBufferRange(8, 16)),
+                Throws.TypeOf<ArgumentException>());
+            Assert.That(
+                () => graph.ExportBufferForReadback(foreignBuffer, new GraphBufferRange(0, 16)),
+                Throws.TypeOf<ArgumentException>());
+
+            var range = new GraphBufferRange(0, 16);
+            graph.ExportBufferForReadback(buffer, range);
+            Assert.That(graph.NonAliasableTransientBufferIds, Does.Contain(buffer.ResourceId));
+            Assert.That(
+                () => graph.ExportBufferForReadback(buffer, range),
+                Throws.TypeOf<InvalidOperationException>());
+        }
+        finally
+        {
+            try
+            {
+                graphicsDevice?.ShutdownAsync().GetAwaiter().GetResult();
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
     [Category("ProcessIsolatedGraphQuarantine")]
     public Task D3D12GraphFenceTimeoutQuarantinesGraphResources()
     {

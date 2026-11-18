@@ -39,6 +39,7 @@ public sealed class RenderGraph
     private readonly Dictionary<RenderPassId, RenderArea?> _passRenderAreas = [];
     private readonly HashSet<ulong> _nonAliasableTransientBufferIds = [];
     private readonly HashSet<ulong> _nonAliasableTransientTextureIds = [];
+    private GraphBufferReadbackExport? _bufferReadbackExport;
     private GraphTextureVersion? _builtInSurfaceColorTargetVersion;
     private GraphTextureVersion? _defaultPresentationSource;
     private RenderPassId? _presentationPassId;
@@ -79,6 +80,8 @@ public sealed class RenderGraph
 
     /// <summary>Gets the selected presentation source version.</summary>
     public GraphTextureVersion? PresentationSource => _presentationSource;
+
+    internal GraphBufferReadbackExport? BufferReadbackExport => _bufferReadbackExport;
 
     internal ImmutableArray<ulong> NonAliasableTransientBufferIds
         => [.. _nonAliasableTransientBufferIds];
@@ -267,7 +270,8 @@ public sealed class RenderGraph
             [.. _attachmentWrites],
             NonAliasableTransientBufferIds,
             NonAliasableTransientTextureIds,
-            CreateBuiltInSpriteState());
+            CreateBuiltInSpriteState(),
+            _bufferReadbackExport);
         _compiledResponse = new RenderGraphCompileResponse(
             RenderGraphCompileStatus.Compiled,
             plan,
@@ -665,6 +669,27 @@ public sealed class RenderGraph
         // Built-in uploads complete before graph execution, so these buffers cannot safely share transient backing.
         _ = _nonAliasableTransientBufferIds.Add(version.ResourceId);
         return version;
+    }
+
+    internal void ExportBufferForReadback(GraphBufferVersion version, GraphBufferRange range)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(version);
+        _resources.ValidateTransientBufferVersion(version);
+
+        if (version.DeviceEpoch != _resources.DeviceEpoch
+            || !range.IsWithin(new GraphBufferRange(0, version.Description.ByteLength)))
+        {
+            throw new ArgumentException("A readback export must name a valid range on this graph's device.", nameof(version));
+        }
+
+        if (_bufferReadbackExport.HasValue)
+        {
+            throw new InvalidOperationException("The graph already has a buffer readback export.");
+        }
+
+        _bufferReadbackExport = new GraphBufferReadbackExport(version, range);
+        _ = _nonAliasableTransientBufferIds.Add(version.ResourceId);
     }
 
     internal GraphTextureVersion GetBuiltInOutputColorVersion()

@@ -26,7 +26,8 @@ public sealed partial class RenderGraphPlan
         ImmutableArray<RenderGraphAttachmentWrite> attachmentWrites,
         ImmutableArray<ulong> nonAliasableTransientBufferIds,
         ImmutableArray<ulong> nonAliasableTransientTextureIds,
-        RenderSpriteGraphState? builtInSpriteState)
+        RenderSpriteGraphState? builtInSpriteState,
+        GraphBufferReadbackExport? bufferReadbackExport)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(presentationSource);
@@ -176,6 +177,17 @@ public sealed partial class RenderGraphPlan
             _ = transientBuffers.TryAdd(version.ResourceId, version);
         }
 
+        if (bufferReadbackExport is GraphBufferReadbackExport readbackExport)
+        {
+            if ((readbackExport.Version.DeviceEpoch != deviceEpoch)
+                || !readbackExport.Range.IsWithin(new GraphBufferRange(0, readbackExport.Version.Description.ByteLength))
+                || !transientBuffers.ContainsKey(readbackExport.Version.ResourceId)
+                || !nonAliasableTransientBufferIds.Contains(readbackExport.Version.ResourceId))
+            {
+                throw new ArgumentException("A buffer readback export must retain a non-aliasable transient buffer version.", nameof(bufferReadbackExport));
+            }
+        }
+
         var transientBufferGroups = ImmutableArray.CreateBuilder<ImmutableArray<GraphBufferVersion>>(aliasGroups.Count);
         var aliasingBarriers = ImmutableArray.CreateBuilder<GraphResourceAliasingBarrier>();
 
@@ -300,6 +312,7 @@ public sealed partial class RenderGraphPlan
         TransientBuffers = [.. transientBuffers.Values];
         TransientTextures = [.. transientTextures.Values];
         BuiltInSpriteState = builtInSpriteState;
+        BufferReadbackExport = bufferReadbackExport;
         WorldGuid = options.WorldGuid;
     }
 
@@ -344,6 +357,8 @@ public sealed partial class RenderGraphPlan
     internal ImmutableArray<RenderGraphAttachmentWrite> AttachmentWrites { get; }
 
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
+
+    internal GraphBufferReadbackExport? BufferReadbackExport { get; }
 
     internal RenderSpriteGraphState? BuiltInSpriteState { get; }
 
