@@ -928,7 +928,7 @@ internal sealed class GraphicsBufferTransferTests
                 orderedPassCapacity: 1,
                 bufferAliasingCapacity: 2,
                 textureAliasingCapacity: 2,
-                bufferResourceUsageCapacity: 0,
+                bufferImportFlagCapacity: 0,
                 textureResourceUsageCapacity: 1,
                 passValidationCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(
@@ -1040,7 +1040,7 @@ internal sealed class GraphicsBufferTransferTests
                 orderedPassCapacity: 0,
                 bufferAliasingCapacity: 0,
                 textureAliasingCapacity: 0,
-                bufferResourceUsageCapacity: identities.Length,
+                bufferImportFlagCapacity: identities.Length,
                 textureResourceUsageCapacity: 1,
                 passValidationCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(device, target, frozenImports, expectedCharge);
@@ -1131,7 +1131,7 @@ internal sealed class GraphicsBufferTransferTests
                     orderedPassCapacity: 0,
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
-                    bufferResourceUsageCapacity: 2,
+                    bufferImportFlagCapacity: 2,
                     textureResourceUsageCapacity: 1,
                     passValidationCapacity: 0));
             var field = typeof(GraphicsGraphSubmission).GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -1182,7 +1182,7 @@ internal sealed class GraphicsBufferTransferTests
                     orderedPassCapacity: 0,
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
-                    bufferResourceUsageCapacity: imports.Length,
+                    bufferImportFlagCapacity: imports.Length,
                     textureResourceUsageCapacity: 1,
                     passValidationCapacity: 0));
             var exception = Assert.Throws<NotSupportedException>(submission.ValidateNativeRasterSubmission);
@@ -1254,7 +1254,7 @@ internal sealed class GraphicsBufferTransferTests
                         orderedPassCapacity: 1,
                         bufferAliasingCapacity: 1,
                         textureAliasingCapacity: 1,
-                        bufferResourceUsageCapacity: 1,
+                        bufferImportFlagCapacity: 1,
                         textureResourceUsageCapacity: 2,
                         passValidationCapacity: 0),
                 [pass],
@@ -1385,7 +1385,7 @@ internal sealed class GraphicsBufferTransferTests
                     orderedPassCapacity: 1,
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
-                    bufferResourceUsageCapacity: 2,
+                    bufferImportFlagCapacity: 2,
                     textureResourceUsageCapacity: 1,
                     passValidationCapacity: 1,
                     accessPairCapacity: accesses.Length);
@@ -1501,6 +1501,8 @@ internal sealed class GraphicsBufferTransferTests
         Assert.That(GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 0, 0), Is.Zero);
         Assert.That(GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 4, 3), Is.EqualTo(160));
         Assert.That(GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 4, 3, 2, 2), Is.EqualTo(320));
+        Assert.That(GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(0), Is.Zero);
+        Assert.That(GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(17), Is.EqualTo(112));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(-1, 0, 0));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
@@ -1509,6 +1511,10 @@ internal sealed class GraphicsBufferTransferTests
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(0, 0, -1));
         _ = Assert.Throws<OverflowException>(
             () => GraphicsGraphSubmission.CalculateImportIndexBackingByteCharge(long.MaxValue, 0, 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(-1));
+        _ = Assert.Throws<OverflowException>(
+            () => GraphicsGraphSubmission.CalculateBufferImportFlagsBackingByteCharge(long.MaxValue));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => GraphicsGraphSubmission.CalculatePreflightIndexBackingByteCharge(0, 0, 0, -1, 0));
         _ = Assert.Throws<OverflowException>(
@@ -1552,7 +1558,7 @@ internal sealed class GraphicsBufferTransferTests
                     orderedPassCapacity: 0,
                     bufferAliasingCapacity: 0,
                     textureAliasingCapacity: 0,
-                    bufferResourceUsageCapacity: 0,
+                    bufferImportFlagCapacity: 0,
                     textureResourceUsageCapacity: 3,
                     passValidationCapacity: 0),
                 additionalTextureImports: duplicateTransientImports);
@@ -1660,7 +1666,7 @@ internal sealed class GraphicsBufferTransferTests
                 orderedPassCapacity: 0,
                 bufferAliasingCapacity: 0,
                 textureAliasingCapacity: 0,
-                bufferResourceUsageCapacity: 0,
+                bufferImportFlagCapacity: 0,
                 textureResourceUsageCapacity: 1,
                 passValidationCapacity: 1,
                 accessPairCapacity: 1);
@@ -2543,7 +2549,7 @@ internal sealed class GraphicsBufferTransferTests
                 orderedPassCapacity: orderedPasses.Length,
                 bufferAliasingCapacity: 0,
                 textureAliasingCapacity: 0,
-                bufferResourceUsageCapacity: 0,
+                bufferImportFlagCapacity: 0,
                 textureResourceUsageCapacity: 4,
                 passValidationCapacity: 0);
             var submission = CreateBufferImportIndexSubmission(

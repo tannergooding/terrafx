@@ -12,18 +12,24 @@ internal sealed class GraphicsGraphSubmission
 {
     internal const int MaximumNativeColorAttachmentCount = 8;
 
+    private const ushort BufferCopyDestinationImportFlag = 1 << 11;
     private const byte BufferCopyDestinationPassFlag = 1 << 0;
-    private const byte BufferCopyDestinationResourceFlag = 1 << 0;
+    private const ushort BufferCopyDestinationResourceFlag = 1 << 0;
+    private const ushort BufferCopySourceImportFlag = 1 << 10;
     private const byte BufferCopySourcePassFlag = 1 << 1;
-    private const byte BufferCopySourceResourceFlag = 1 << 1;
+    private const ushort BufferCopySourceResourceFlag = 1 << 1;
     private const byte BufferIndexBindingFlag = 1 << 3;
-    private const byte BufferIndexResourceFlag = 1 << 3;
+    private const ushort BufferIndexImportFlag = 1 << 7;
+    private const ushort BufferIndexResourceFlag = 1 << 3;
     private const byte BufferStorageBindingFlag = 1 << 5;
-    private const byte BufferStorageResourceFlag = 1 << 5;
+    private const ushort BufferStorageImportFlag = 1 << 9;
+    private const ushort BufferStorageResourceFlag = 1 << 5;
     private const byte BufferUniformBindingFlag = 1 << 4;
-    private const byte BufferUniformResourceFlag = 1 << 4;
+    private const ushort BufferUniformImportFlag = 1 << 8;
+    private const ushort BufferUniformResourceFlag = 1 << 4;
     private const byte BufferVertexBindingFlag = 1 << 2;
-    private const byte BufferVertexResourceFlag = 1 << 2;
+    private const ushort BufferVertexImportFlag = 1 << 6;
+    private const ushort BufferVertexResourceFlag = 1 << 2;
     private const byte TextureColorResourceFlag = 1 << 0;
     private const byte TextureCopyDestinationPassFlag = 1 << 2;
     private const byte TextureCopyDestinationResourceFlag = 1 << 2;
@@ -266,6 +272,12 @@ internal sealed class GraphicsGraphSubmission
     internal static long CalculateBufferAliasingAfterIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
 
+    internal static long CalculateBufferImportFlagsBackingByteCharge(long capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(ushort)) + 15) & ~15L));
+    }
+
     internal static long CalculateBufferImportIndexBackingByteCharge(long capacity)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
@@ -312,7 +324,7 @@ internal sealed class GraphicsGraphSubmission
         long orderedPassCapacity,
         long bufferAliasingCapacity,
         long textureAliasingCapacity,
-        long bufferResourceUsageCapacity,
+        long bufferImportFlagCapacity,
         long textureResourceUsageCapacity,
         long passValidationCapacity,
         long accessPairCapacity = 0)
@@ -325,7 +337,7 @@ internal sealed class GraphicsGraphSubmission
                 textureAliasingCapacity)
             + CalculateAccessPairIndexBackingByteCharge(accessPairCapacity)
             + CalculateAccessValidationFlagsBackingByteCharge(accessPairCapacity)
-            + CalculateResourceUsageFlagsBackingByteCharge(bufferResourceUsageCapacity)
+            + CalculateBufferImportFlagsBackingByteCharge(bufferImportFlagCapacity)
             + CalculateResourceUsageFlagsBackingByteCharge(textureResourceUsageCapacity)
             + CalculatePassValidationIndexBackingByteCharge(passValidationCapacity)
             + CalculatePassValidationFlagsBackingByteCharge(passValidationCapacity));
@@ -370,6 +382,15 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return colorIndex == formats.Length;
+    }
+
+    private static void AddBufferResourceUsageFlag(ushort[] flags, int importIndex, ushort flag, ref int usedCount)
+    {
+        if ((flags[importIndex] & flag) == 0)
+        {
+            flags[importIndex] |= flag;
+            usedCount++;
+        }
     }
 
     private static void AddResourceUsageFlag(byte[] flags, int importIndex, byte flag, ref int usedCount)
@@ -1103,7 +1124,7 @@ internal sealed class GraphicsGraphSubmission
         int bufferAliasingCapacity,
         int textureAliasingCapacity,
         int accessPairCapacity,
-        int bufferResourceUsageCapacity,
+        int bufferImportFlagCapacity,
         int textureResourceUsageCapacity,
         int passValidationCapacity,
         long maximumBytes)
@@ -1116,7 +1137,7 @@ internal sealed class GraphicsGraphSubmission
                 orderedPassCapacity,
                 bufferAliasingCapacity,
                 textureAliasingCapacity,
-                bufferResourceUsageCapacity,
+                bufferImportFlagCapacity,
                 textureResourceUsageCapacity,
                 passValidationCapacity,
                 accessPairCapacity) > maximumBytes)
@@ -1353,7 +1374,7 @@ internal sealed class GraphicsGraphSubmission
     internal void ValidateNativeRasterSubmission()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _recordingOwnershipState) != 0, this);
-        var bufferResourceUsageFlags = new byte[BufferImports.Length];
+        var bufferImportFlags = new ushort[BufferImports.Length];
         var textureResourceUsageFlags = new byte[TextureImports.Length];
         var passValidationFlags = new byte[Passes.Length];
         var accessValidationFlags = new byte[Accesses.Length];
@@ -1394,12 +1415,12 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var uniformBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
-        var vertexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
-        var indexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
-        var storageBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
-        var copySourceBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
-        var copyDestinationBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
+        var uniformBufferImportCount = 0;
+        var vertexBufferImportCount = 0;
+        var indexBufferImportCount = 0;
+        var storageBufferImportCount = 0;
+        var copySourceBufferImportCount = 0;
+        var copyDestinationBufferImportCount = 0;
         var copySourceTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var copyDestinationTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
 
@@ -1443,20 +1464,24 @@ internal sealed class GraphicsGraphSubmission
 
             if (hasVertexReadImportAccess)
             {
-                if (((usage & BufferUsage.Vertex) == 0)
-                    || !vertexBufferImports.TryAdd(import.Version.ResourceId, import))
+                if ((usage & BufferUsage.Vertex) == 0)
                 {
                     throw new NotSupportedException("Native graph vertex reads require each imported vertex resource to have vertex usage and one import.");
                 }
+
+                bufferImportFlags[importIndex] |= BufferVertexImportFlag;
+                vertexBufferImportCount++;
             }
 
             if (hasIndexReadImportAccess)
             {
-                if (((usage & BufferUsage.Index) == 0)
-                    || !indexBufferImports.TryAdd(import.Version.ResourceId, import))
+                if ((usage & BufferUsage.Index) == 0)
                 {
                     throw new NotSupportedException("Native graph index reads require each imported index resource to have index usage and one import.");
                 }
+
+                bufferImportFlags[importIndex] |= BufferIndexImportFlag;
+                indexBufferImportCount++;
             }
 
             if (hasUniformUsage || hasStorageUsage)
@@ -1468,17 +1493,13 @@ internal sealed class GraphicsGraphSubmission
 
                 if (hasUniformUsage)
                 {
-                    if (!uniformBufferImports.TryAdd(import.Version.ResourceId, import))
-                    {
-                        throw new InvalidOperationException("The graph imported a duplicate uniform-buffer resource identity.");
-                    }
+                    bufferImportFlags[importIndex] |= BufferUniformImportFlag;
+                    uniformBufferImportCount++;
                 }
                 else
                 {
-                    if (!storageBufferImports.TryAdd(import.Version.ResourceId, import))
-                    {
-                        throw new NotSupportedException("Native graph submission requires one import per storage-buffer resource.");
-                    }
+                    bufferImportFlags[importIndex] |= BufferStorageImportFlag;
+                    storageBufferImportCount++;
                 }
 
                 if ((hasCopySourceImportAccess || hasCopyDestinationImportAccess) && !hasStorageUsage)
@@ -1489,20 +1510,24 @@ internal sealed class GraphicsGraphSubmission
 
             if (hasCopySourceImportAccess)
             {
-                if (((usage & BufferUsage.CopySource) == 0)
-                    || !copySourceBufferImports.TryAdd(import.Version.ResourceId, import))
+                if ((usage & BufferUsage.CopySource) == 0)
                 {
                     throw new NotSupportedException("Native graph submission requires each copy-source resource to have copy-source usage and one import.");
                 }
+
+                bufferImportFlags[importIndex] |= BufferCopySourceImportFlag;
+                copySourceBufferImportCount++;
             }
 
             if (hasCopyDestinationImportAccess)
             {
-                if (((usage & BufferUsage.CopyDestination) == 0)
-                    || !copyDestinationBufferImports.TryAdd(import.Version.ResourceId, import))
+                if ((usage & BufferUsage.CopyDestination) == 0)
                 {
                     throw new NotSupportedException("Native graph submission requires each copy-destination resource to have copy-destination usage and one import.");
                 }
+
+                bufferImportFlags[importIndex] |= BufferCopyDestinationImportFlag;
+                copyDestinationBufferImportCount++;
             }
 
             if (!hasUniformUsage
@@ -1599,8 +1624,15 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in uniformBufferImports.Values)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
+            if ((bufferImportFlags[importIndex] & BufferUniformImportFlag) == 0)
+            {
+                continue;
+            }
+
+            var import = BufferImports[importIndex];
+
             if (!import.InitialContentsValid
                 || (import.InitialState is not (GraphResourceState.General or GraphResourceState.UniformRead)))
             {
@@ -1906,8 +1938,15 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in storageBufferImports.Values)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
+            if ((bufferImportFlags[importIndex] & BufferStorageImportFlag) == 0)
+            {
+                continue;
+            }
+
+            var import = BufferImports[importIndex];
+
             if ((import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
                 || (import.InitialState is not (
                     GraphResourceState.Undefined
@@ -1921,8 +1960,15 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in vertexBufferImports.Values)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
+            if ((bufferImportFlags[importIndex] & BufferVertexImportFlag) == 0)
+            {
+                continue;
+            }
+
+            var import = BufferImports[importIndex];
+
             if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
                 || !import.InitialContentsValid
                 || (import.InitialState is not (
@@ -1935,8 +1981,15 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in indexBufferImports.Values)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
+            if ((bufferImportFlags[importIndex] & BufferIndexImportFlag) == 0)
+            {
+                continue;
+            }
+
+            var import = BufferImports[importIndex];
+
             if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
                 || !import.InitialContentsValid
                 || (import.InitialState is not (
@@ -1949,8 +2002,15 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in copySourceBufferImports.Values)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
+            if ((bufferImportFlags[importIndex] & BufferCopySourceImportFlag) == 0)
+            {
+                continue;
+            }
+
+            var import = BufferImports[importIndex];
+
             if (import.IsTransient
                     ? (import.InitialContentsValid || (import.InitialState != GraphResourceState.Undefined))
                     : (!import.InitialContentsValid
@@ -1966,8 +2026,15 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var import in copyDestinationBufferImports.Values)
+        for (var importIndex = 0; importIndex < BufferImports.Length; importIndex++)
         {
+            if ((bufferImportFlags[importIndex] & BufferCopyDestinationImportFlag) == 0)
+            {
+                continue;
+            }
+
+            var import = BufferImports[importIndex];
+
             if ((import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
                 || (import.InitialState is not (
                     GraphResourceState.Undefined
@@ -2399,7 +2466,11 @@ internal sealed class GraphicsGraphSubmission
 
                         if ((binding.Slot != 0)
                             || (binding.Stride != currentPipeline.BindingLayout.VertexStride)
-                            || !vertexBufferImports.TryGetValue(binding.Buffer.ResourceId, out var vertexBufferImport)
+                            || !TryGetBufferImport(
+                                bufferImportFlags,
+                                binding.Buffer.ResourceId,
+                                BufferVertexImportFlag,
+                                out var vertexBufferImport)
                             || (binding.Buffer.DeviceEpoch != vertexBufferImport.Version.DeviceEpoch)
                             || !ReferenceEquals(binding.Buffer.Description, vertexBufferImport.Version.Description)
                             || !binding.Range.IsWithin(vertexBufferImport.Version.Range))
@@ -2457,7 +2528,11 @@ internal sealed class GraphicsGraphSubmission
                             _ => throw new ArgumentOutOfRangeException(nameof(command)),
                         };
 
-                        if (!indexBufferImports.TryGetValue(binding.Buffer.ResourceId, out var indexBufferImport)
+                        if (!TryGetBufferImport(
+                                bufferImportFlags,
+                                binding.Buffer.ResourceId,
+                                BufferIndexImportFlag,
+                                out var indexBufferImport)
                             || !ReferenceEquals(binding.Buffer, indexBufferImport.Version)
                             || !binding.Range.IsWithin(indexBufferImport.Version.Range)
                             || ((binding.Range.ByteOffset % elementSize) != 0)
@@ -2536,7 +2611,11 @@ internal sealed class GraphicsGraphSubmission
                                 case ShaderResourceKind.UniformBuffer:
                                 {
                                     if (!currentPipelineUniformBufferBindings.Contains((binding.Group, binding.Binding))
-                                        || !uniformBufferImports.TryGetValue(binding.Resource.ResourceId, out var uniformBufferImport)
+                                        || !TryGetBufferImport(
+                                            bufferImportFlags,
+                                            binding.Resource.ResourceId,
+                                            BufferUniformImportFlag,
+                                            out var uniformBufferImport)
                                         || !binding.Range.IsWithin(uniformBufferImport.Version.Range))
                                     {
                                         throw new NotSupportedException("The uniform-buffer binding must fit the imported graph buffer range.");
@@ -2576,7 +2655,11 @@ internal sealed class GraphicsGraphSubmission
 
                                 case ShaderResourceKind.StorageBuffer:
                                 {
-                                    if (!storageBufferImports.TryGetValue(binding.Resource.ResourceId, out var storageBufferImport)
+                                    if (!TryGetBufferImport(
+                                            bufferImportFlags,
+                                            binding.Resource.ResourceId,
+                                            BufferStorageImportFlag,
+                                            out var storageBufferImport)
                                         || !binding.Range.IsWithin(storageBufferImport.Version.Range))
                                     {
                                         throw new NotSupportedException("The storage-buffer binding must fit the imported graph buffer range.");
@@ -2841,7 +2924,11 @@ internal sealed class GraphicsGraphSubmission
 
                         if (command.StorageBarrierBuffer is GraphBufferVersion barrierBuffer)
                         {
-                            if (!storageBufferImports.TryGetValue(barrierBuffer.ResourceId, out var storageBufferImport)
+                            if (!TryGetBufferImport(
+                                    bufferImportFlags,
+                                    barrierBuffer.ResourceId,
+                                    BufferStorageImportFlag,
+                                    out var storageBufferImport)
                                 || (command.StorageBarrierBufferRange != storageBufferImport.Version.Range)
                                 || !HasAccessValidationFlagForPair(
                                     accessValidationFlags,
@@ -2907,7 +2994,7 @@ internal sealed class GraphicsGraphSubmission
                         if (currentVertexBufferImport is not null)
                         {
                             RecordBufferResourceUsage(
-                                bufferResourceUsageFlags,
+                                bufferImportFlags,
                                 currentVertexBufferImport.Version.ResourceId,
                                 BufferVertexResourceFlag,
                                 ref vertexBufferResourcesUsedCount);
@@ -2948,7 +3035,7 @@ internal sealed class GraphicsGraphSubmission
                             }
 
                             RecordBufferResourceUsage(
-                                bufferResourceUsageFlags,
+                                bufferImportFlags,
                                 currentIndexBufferImport.Version.ResourceId,
                                 BufferIndexResourceFlag,
                                 ref indexBufferResourcesUsedCount);
@@ -2956,7 +3043,7 @@ internal sealed class GraphicsGraphSubmission
                             if (currentVertexBufferImport is not null)
                             {
                                 RecordBufferResourceUsage(
-                                    bufferResourceUsageFlags,
+                                    bufferImportFlags,
                                     currentVertexBufferImport.Version.ResourceId,
                                     BufferVertexResourceFlag,
                                     ref vertexBufferResourcesUsedCount);
@@ -3002,8 +3089,16 @@ internal sealed class GraphicsGraphSubmission
                         var destination = command.CopyDestination
                             ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
 
-                        if (!copySourceBufferImports.TryGetValue(source.ResourceId, out var copySourceBufferImport)
-                            || !copyDestinationBufferImports.TryGetValue(destination.ResourceId, out var copyDestinationBufferImport)
+                        if (!TryGetBufferImport(
+                                bufferImportFlags,
+                                source.ResourceId,
+                                BufferCopySourceImportFlag,
+                                out var copySourceBufferImport)
+                            || !TryGetBufferImport(
+                                bufferImportFlags,
+                                destination.ResourceId,
+                                BufferCopyDestinationImportFlag,
+                                out var copyDestinationBufferImport)
                             || (source.ResourceId == destination.ResourceId))
                         {
                             throw new NotSupportedException("Native graph buffer copies require distinct imported copy-source and copy-destination buffers.");
@@ -3167,7 +3262,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && copySourceBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferCopySourceImportFlag)
                 && (access.RequiredState == GraphResourceState.CopySource)
                 && !access.IsWrite)
             {
@@ -3182,7 +3277,7 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 RecordBufferResourceUsage(
-                    bufferResourceUsageFlags,
+                    bufferImportFlags,
                     access.ResourceId,
                     BufferCopySourceResourceFlag,
                     ref copySourceResourcesUsedCount);
@@ -3190,7 +3285,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && copyDestinationBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferCopyDestinationImportFlag)
                 && (access.RequiredState == GraphResourceState.CopyDestination)
                 && access.IsWrite)
             {
@@ -3205,7 +3300,7 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 RecordBufferResourceUsage(
-                    bufferResourceUsageFlags,
+                    bufferImportFlags,
                     access.ResourceId,
                     BufferCopyDestinationResourceFlag,
                     ref copyDestinationResourcesUsedCount);
@@ -3213,7 +3308,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && vertexBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferVertexImportFlag)
                 && (access.RequiredState == GraphResourceState.VertexRead)
                 && !access.IsWrite)
             {
@@ -3226,7 +3321,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && indexBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferIndexImportFlag)
                 && (access.RequiredState == GraphResourceState.IndexRead)
                 && !access.IsWrite)
             {
@@ -3239,7 +3334,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && uniformBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferUniformImportFlag)
                 && (access.RequiredState == GraphResourceState.UniformRead)
                 && !access.IsWrite)
             {
@@ -3250,7 +3345,7 @@ internal sealed class GraphicsGraphSubmission
 
                 hasUniformBufferAccess = true;
                 RecordBufferResourceUsage(
-                    bufferResourceUsageFlags,
+                    bufferImportFlags,
                     access.ResourceId,
                     BufferUniformResourceFlag,
                     ref uniformBufferResourcesUsedCount);
@@ -3258,7 +3353,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && storageBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferStorageImportFlag)
                 && (access.RequiredState == GraphResourceState.StorageWrite)
                 && access.IsWrite)
             {
@@ -3269,7 +3364,7 @@ internal sealed class GraphicsGraphSubmission
 
                 hasStorageBufferAccess = true;
                 RecordBufferResourceUsage(
-                    bufferResourceUsageFlags,
+                    bufferImportFlags,
                     access.ResourceId,
                     BufferStorageResourceFlag,
                     ref storageBufferResourcesUsedCount);
@@ -3277,7 +3372,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && storageBufferImports.ContainsKey(access.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferStorageImportFlag)
                 && (access.RequiredState == GraphResourceState.StorageReadWrite)
                 && access.IsStorageReadWritePair)
             {
@@ -3288,7 +3383,7 @@ internal sealed class GraphicsGraphSubmission
 
                 hasStorageBufferAccess = true;
                 RecordBufferResourceUsage(
-                    bufferResourceUsageFlags,
+                    bufferImportFlags,
                     access.ResourceId,
                     BufferStorageResourceFlag,
                     ref storageBufferResourcesUsedCount);
@@ -3426,7 +3521,8 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
-            if (access.IsTexture || !uniformBufferImports.ContainsKey(access.ResourceId))
+            if (access.IsTexture
+                || !HasBufferImportFlag(bufferImportFlags, access.ResourceId, BufferUniformImportFlag))
             {
                 throw new NotSupportedException("Native graph submission does not support undeclared imported resources.");
             }
@@ -3442,7 +3538,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && uniformBufferImports.ContainsKey(transition.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferUniformImportFlag)
                 && (transition.AfterState == GraphResourceState.UniformRead)
                 && (transition.BeforeState == GraphResourceState.General)
                 && HasAccessValidationFlagForPair(
@@ -3457,7 +3553,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && vertexBufferImports.ContainsKey(transition.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferVertexImportFlag)
                 && (transition.AfterState == GraphResourceState.VertexRead)
                 && (transition.BeforeState is
                     GraphResourceState.General
@@ -3477,7 +3573,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && indexBufferImports.ContainsKey(transition.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferIndexImportFlag)
                 && (transition.AfterState == GraphResourceState.IndexRead)
                 && (transition.BeforeState is
                     GraphResourceState.General
@@ -3497,7 +3593,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && copySourceBufferImports.ContainsKey(transition.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferCopySourceImportFlag)
                 && (transition.AfterState == GraphResourceState.CopySource)
                 && (transition.BeforeState is
                     GraphResourceState.General
@@ -3517,7 +3613,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && copyDestinationBufferImports.ContainsKey(transition.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferCopyDestinationImportFlag)
                 && (transition.AfterState == GraphResourceState.CopyDestination)
                 && (transition.BeforeState is
                     GraphResourceState.Undefined
@@ -3538,7 +3634,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && storageBufferImports.ContainsKey(transition.ResourceId)
+                && HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferStorageImportFlag)
                 && (transition.AfterState is GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite)
                 && (transition.BeforeState is
                     GraphResourceState.Undefined
@@ -3710,10 +3806,10 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
-            if (!uniformBufferImports.ContainsKey(transition.ResourceId)
-                && !vertexBufferImports.ContainsKey(transition.ResourceId)
-                && !indexBufferImports.ContainsKey(transition.ResourceId)
-                && !storageBufferImports.ContainsKey(transition.ResourceId)
+            if (!HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferUniformImportFlag)
+                && !HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferVertexImportFlag)
+                && !HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferIndexImportFlag)
+                && !HasBufferImportFlag(bufferImportFlags, transition.ResourceId, BufferStorageImportFlag)
                 && !copySourceTextureImports.ContainsKey(transition.ResourceId)
                 && !copyDestinationTextureImports.ContainsKey(transition.ResourceId)
                 && !depthTextureImports.ContainsKey(transition.ResourceId)
@@ -3726,36 +3822,36 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Native graph submission supports only declared resource transitions.");
         }
 
-        if ((uniformBufferImports.Count != 0)
+        if ((uniformBufferImportCount != 0)
             && (!hasUniformBufferPipeline
                 || !hasUniformBufferBinding
                 || !hasUniformBufferAccess
-                || (uniformBufferResourcesUsedCount != uniformBufferImports.Count)))
+                || (uniformBufferResourcesUsedCount != uniformBufferImportCount)))
         {
             throw new NotSupportedException("Every imported uniform buffer must be reflected, bound, and declared by a graph pass.");
         }
 
-        if ((vertexBufferImports.Count != 0)
+        if ((vertexBufferImportCount != 0)
             && (!hasVertexBufferPipeline
                 || !hasVertexBufferBinding
-                || (vertexBufferResourcesUsedCount != vertexBufferImports.Count)))
+                || (vertexBufferResourcesUsedCount != vertexBufferImportCount)))
         {
             throw new NotSupportedException("Every imported vertex buffer must be bound by a vertex-input graphics pipeline and used by a draw.");
         }
 
-        if ((indexBufferImports.Count != 0)
+        if ((indexBufferImportCount != 0)
             && (!hasIndexBufferBinding
-                || (indexBufferResourcesUsedCount != indexBufferImports.Count)))
+                || (indexBufferResourcesUsedCount != indexBufferImportCount)))
         {
             throw new NotSupportedException("Every imported index buffer must be bound and used by an indexed draw.");
         }
 
-        if (copySourceResourcesUsedCount != copySourceBufferImports.Count)
+        if (copySourceResourcesUsedCount != copySourceBufferImportCount)
         {
             throw new NotSupportedException("Every imported copy-source buffer must be read by a graph copy command.");
         }
 
-        if (copyDestinationResourcesUsedCount != copyDestinationBufferImports.Count)
+        if (copyDestinationResourcesUsedCount != copyDestinationBufferImportCount)
         {
             throw new NotSupportedException("Every imported copy-destination buffer must be written by a graph copy command.");
         }
@@ -3792,11 +3888,11 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported sampled image must be reflected, bound with its sampler, and declared by a graph pass.");
         }
 
-        if ((storageBufferImports.Count != 0)
+        if ((storageBufferImportCount != 0)
             && (!hasStorageBufferPipeline
                 || !hasStorageBufferBinding
                 || !hasStorageBufferAccess
-                || (storageBufferResourcesUsedCount != storageBufferImports.Count)))
+                || (storageBufferResourcesUsedCount != storageBufferImportCount)))
         {
             throw new NotSupportedException("Every imported storage buffer must be reflected, bound, and declared by a graph pass.");
         }
@@ -4003,10 +4099,16 @@ internal sealed class GraphicsGraphSubmission
         throw new NotSupportedException("Native graph submission does not yet materialize transient textures.");
     }
 
+    private bool HasBufferImportFlag(ushort[] bufferImportFlags, ulong resourceId, ushort flag)
+    {
+        var index = FindFirstBufferImportIndex(resourceId);
+        return (index >= 0) && ((bufferImportFlags[index] & flag) != 0);
+    }
+
     private void RecordBufferResourceUsage(
-        byte[] resourceUsageFlags,
+        ushort[] resourceUsageFlags,
         ulong resourceId,
-        byte flag,
+        ushort flag,
         ref int usedCount)
     {
         var importIndex = FindFirstBufferImportIndex(resourceId);
@@ -4016,7 +4118,7 @@ internal sealed class GraphicsGraphSubmission
             throw new InvalidOperationException("The graph buffer usage index lost a declared import.");
         }
 
-        AddResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
+        AddBufferResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
     }
 
     private void RecordTextureResourceUsage(
@@ -4033,5 +4135,23 @@ internal sealed class GraphicsGraphSubmission
         }
 
         AddResourceUsageFlag(resourceUsageFlags, importIndex, flag, ref usedCount);
+    }
+
+    private bool TryGetBufferImport(
+        ushort[] bufferImportFlags,
+        ulong resourceId,
+        ushort flag,
+        [NotNullWhen(true)] out GraphBufferImportRecord? import)
+    {
+        var index = FindFirstBufferImportIndex(resourceId);
+
+        if ((index < 0) || ((bufferImportFlags[index] & flag) == 0))
+        {
+            import = null;
+            return false;
+        }
+
+        import = BufferImports[index];
+        return true;
     }
 }
