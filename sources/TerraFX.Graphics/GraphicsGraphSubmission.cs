@@ -1857,7 +1857,6 @@ internal sealed class GraphicsGraphSubmission
             {
                 var colorAttachmentCount = 0;
                 var depthAttachmentCount = 0;
-                var passColorAttachmentResources = new HashSet<ulong>();
                 var passRenderArea = pass.RenderArea
                     ?? new RenderArea(
                         0,
@@ -1865,8 +1864,9 @@ internal sealed class GraphicsGraphSubmission
                         OutputColorTarget.Description.Width,
                         OutputColorTarget.Description.Height);
 
-                foreach (var attachment in pass.Attachments)
+                for (var attachmentIndex = 0; attachmentIndex < pass.Attachments.Length; attachmentIndex++)
                 {
+                    var attachment = pass.Attachments[attachmentIndex];
                     var attachmentDescription = attachment.Version.Description;
 
                     if ((passRenderArea.Width > attachmentDescription.Width)
@@ -1903,11 +1903,21 @@ internal sealed class GraphicsGraphSubmission
                         var description = attachment.Version.Description;
                         var resourceId = attachment.Version.ResourceId;
                         var isOutputTarget = resourceId == targetResourceId;
+                        var isDuplicateColorAttachment = false;
+
+                        for (var previousAttachmentIndex = 0;
+                            previousAttachmentIndex < attachmentIndex;
+                            previousAttachmentIndex++)
+                        {
+                            var previousAttachment = pass.Attachments[previousAttachmentIndex];
+                            isDuplicateColorAttachment |= !previousAttachment.IsDepth
+                                && (previousAttachment.Version.ResourceId == resourceId);
+                        }
 
                         if ((colorAttachmentCount > Math.Min(
                                 OutputColorTarget.ResourceOwner.Device.Capabilities.Limits.MaximumColorAttachments,
                                 MaximumNativeColorAttachmentCount))
-                            || !passColorAttachmentResources.Add(resourceId)
+                            || isDuplicateColorAttachment
                             || (!isOutputTarget && !colorTextureImports.ContainsKey(resourceId))
                             || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
                             || (description.Dimension != TextureDimension.Dimension2D)
