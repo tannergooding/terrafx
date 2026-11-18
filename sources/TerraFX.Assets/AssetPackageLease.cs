@@ -292,7 +292,9 @@ public sealed class AssetPackageLease : IDisposable
                 ThrowIfNotActive(instance);
 
                 if (!_backing.TryGetEntry(assetId, out var entry)
-                    || !_backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt))
+                    || !_backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt)
+                    || (codecReceipt.RequiredPackageCodec is AssetPackagePayloadCodec requiredCodec
+                        && (entry.Codec != (byte)requiredCodec)))
                 {
                     descriptor = default;
                     return false;

@@ -22,8 +22,14 @@ public static class SceneSupport
     public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        _ = builder.RegisterProfiledCodec(new SceneAssetCodec(), typeof(SceneCodecV2Origin));
-        return builder.RegisterProfiledCodec(new ScenePrefabAssetCodec(), typeof(ScenePrefabCodecV2Origin));
+        _ = builder.RegisterProfiledCodec(
+            new SceneAssetCodec(),
+            typeof(SceneCodecV2Origin),
+            AssetPackagePayloadCodec.None);
+        return builder.RegisterProfiledCodec(
+            new ScenePrefabAssetCodec(),
+            typeof(ScenePrefabCodecV2Origin),
+            AssetPackagePayloadCodec.None);
     }
 
     internal static bool HasBuiltInAssetCodecReceipts(AssetStoreRegistration registration)
@@ -32,10 +38,32 @@ public static class SceneSupport
 
         return registration.TryGetProfiledCodecReceipt<SceneAsset>(typeof(SceneCodecV2Origin), out var sceneReceipt)
                 && (sceneReceipt.Schema == SceneAssetCodec.Schema)
+                && (sceneReceipt.RequiredPackageCodec == AssetPackagePayloadCodec.None)
                 && registration.TryGetProfiledCodecReceipt<ScenePrefabAsset>(
                     typeof(ScenePrefabCodecV2Origin),
                     out var prefabReceipt)
-                && (prefabReceipt.Schema == ScenePrefabAssetCodec.Schema);
+                && (prefabReceipt.Schema == ScenePrefabAssetCodec.Schema)
+                && (prefabReceipt.RequiredPackageCodec == AssetPackagePayloadCodec.None);
+    }
+
+    internal static bool TryDescribePrefabAssetRead(
+        AssetLease<SceneAsset> sceneLease,
+        AssetId assetId,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(sceneLease);
+
+        if (sceneLease.TryDescribeOwnedRead<ScenePrefabAsset>(
+                assetId,
+                typeof(ScenePrefabCodecV2Origin),
+                out descriptor)
+            && (descriptor.CodecReceipt.Schema == ScenePrefabAssetCodec.Schema))
+        {
+            return true;
+        }
+
+        descriptor = default;
+        return false;
     }
 
     internal static bool TryDescribePrefabAssetRead(
@@ -69,6 +97,23 @@ public static class SceneSupport
                 assetId,
                 typeof(SceneCodecV2Origin),
                 out descriptor)
+            && (descriptor.CodecReceipt.Schema == SceneAssetCodec.Schema))
+        {
+            return true;
+        }
+
+        descriptor = default;
+        return false;
+    }
+
+    internal static bool TryDescribeSceneAssetRead(
+        AssetStore assets,
+        AssetId assetId,
+        out AssetOwnedReadDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(assets);
+
+        if (assets.TryDescribeOwnedRead<SceneAsset>(assetId, typeof(SceneCodecV2Origin), out descriptor)
             && (descriptor.CodecReceipt.Schema == SceneAssetCodec.Schema))
         {
             return true;

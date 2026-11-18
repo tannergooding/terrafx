@@ -23,6 +23,7 @@ internal readonly struct AssetOwnedReadDescriptor
         ProfileId = backing.ProfileId;
         ReadLimits = backing.ReadLimits;
         Registration = backing.Registration;
+        RequiredPackageCodec = codecReceipt.RequiredPackageCodec;
         Schemas = backing.Registration.Schemas;
         SpatialSettings = backing.SpatialSettings;
         Store = store;
@@ -55,6 +56,8 @@ internal readonly struct AssetOwnedReadDescriptor
 
     internal AssetStoreRegistration Registration { get; }
 
+    internal AssetPackagePayloadCodec? RequiredPackageCodec { get; }
+
     internal CompiledContentSchemaRegistry Schemas { get; }
 
     internal SpatialSettings SpatialSettings { get; }
@@ -75,6 +78,9 @@ internal readonly struct AssetOwnedReadDescriptor
             && (StoredLength == entry.StoredLength)
             && (DecodedLength == entry.DecodedLength)
             && CodecReceipt.IsFor(codec)
+            && (RequiredPackageCodec == codec.RequiredPackageCodec)
+            && (RequiredPackageCodec is not AssetPackagePayloadCodec requiredCodec
+                || EntryCodec == (byte)requiredCodec)
             && (CpuAssetBudgetBytes == backing.Options.CpuAssetBudgetBytes)
             && (MaximumConcurrentDecodeBytes == backing.Options.MaximumConcurrentDecodeBytes)
             && (MaximumDecodedAssetBytes == backing.Options.MaximumDecodedAssetBytes)

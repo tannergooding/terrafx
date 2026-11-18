@@ -50,17 +50,27 @@ public sealed class AssetStoreRegistrationBuilder
     public AssetStoreRegistrationBuilder RegisterCodec<T>(IContextualBinarySchemaCodec<T> codec)
     {
         ArgumentNullException.ThrowIfNull(codec);
-        AddCodec(new ContextualSchemaCodecAdapter<T>(codec, profileOrigin: null));
+        AddCodec(new ContextualSchemaCodecAdapter<T>(
+            codec,
+            profileOrigin: null,
+            requiredPackageCodec: null));
         return this;
     }
 
     internal AssetStoreRegistrationBuilder RegisterProfiledCodec<T>(
         IContextualBinarySchemaCodec<T> codec,
-        object profileOrigin)
+        object profileOrigin,
+        AssetPackagePayloadCodec requiredPackageCodec)
     {
         ArgumentNullException.ThrowIfNull(codec);
         ArgumentNullException.ThrowIfNull(profileOrigin);
-        AddCodec(new ContextualSchemaCodecAdapter<T>(codec, profileOrigin));
+
+        if (requiredPackageCodec is not AssetPackagePayloadCodec.None and not AssetPackagePayloadCodec.Brotli)
+        {
+            throw new ArgumentOutOfRangeException(nameof(requiredPackageCodec));
+        }
+
+        AddCodec(new ContextualSchemaCodecAdapter<T>(codec, profileOrigin, requiredPackageCodec));
         return this;
     }
 
@@ -97,6 +107,8 @@ public sealed class AssetStoreRegistrationBuilder
 
         public object? ProfileOrigin => null;
 
+        public AssetPackagePayloadCodec? RequiredPackageCodec => null;
+
         public ContentSchemaReference Schema { get; }
 
         public Type ValueType => typeof(T);
@@ -131,10 +143,14 @@ public sealed class AssetStoreRegistrationBuilder
     {
         private readonly IContextualBinarySchemaCodec<T> _codec;
 
-        internal ContextualSchemaCodecAdapter(IContextualBinarySchemaCodec<T> codec, object? profileOrigin)
+        internal ContextualSchemaCodecAdapter(
+            IContextualBinarySchemaCodec<T> codec,
+            object? profileOrigin,
+            AssetPackagePayloadCodec? requiredPackageCodec)
         {
             _codec = codec;
             ProfileOrigin = profileOrigin;
+            RequiredPackageCodec = requiredPackageCodec;
             Schema = new ContentSchemaReference(
                 codec.SchemaId,
                 codec.SchemaMajor,
@@ -143,6 +159,8 @@ public sealed class AssetStoreRegistrationBuilder
         }
 
         public object? ProfileOrigin { get; }
+
+        public AssetPackagePayloadCodec? RequiredPackageCodec { get; }
 
         public ContentSchemaReference Schema { get; }
 

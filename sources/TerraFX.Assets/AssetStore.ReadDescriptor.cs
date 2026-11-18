@@ -26,12 +26,14 @@ public sealed partial class AssetStore
             out var backing,
             out var entry,
             out var codec,
+            out var requiredPackageCodec,
             out var decodedBytes);
         return await LoadAssetAsync(
             descriptor.AssetId,
             backing,
             entry,
             codec,
+            requiredPackageCodec,
             decodedBytes,
             cancellationToken).ConfigureAwait(false);
     }
@@ -44,6 +46,7 @@ public sealed partial class AssetStore
         ArgumentNullException.ThrowIfNull(backing);
         AssetPackageEntry entry;
         AssetStoreRegistration.IAssetCodec<T> codec;
+        AssetPackagePayloadCodec? requiredPackageCodec;
         long decodedBytes;
 
         try
@@ -62,6 +65,7 @@ public sealed partial class AssetStore
                 out var loadBacking,
                 out entry,
                 out codec,
+                out requiredPackageCodec,
                 out decodedBytes);
             backing = loadBacking;
         }
@@ -76,6 +80,7 @@ public sealed partial class AssetStore
             backing,
             entry,
             codec,
+            requiredPackageCodec,
             decodedBytes,
             cancellationToken).ConfigureAwait(false);
     }
@@ -99,7 +104,9 @@ public sealed partial class AssetStore
                 ?? throw new InvalidOperationException("The asset store has no selected package.");
 
             if (!backing.TryGetEntry(assetId, out var entry)
-                || !backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt))
+                || !backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt)
+                || (codecReceipt.RequiredPackageCodec is AssetPackagePayloadCodec requiredCodec
+                    && (entry.Codec != (byte)requiredCodec)))
             {
                 descriptor = default;
                 return false;

@@ -214,8 +214,16 @@ public sealed partial class AssetStore : IAsyncDisposable
             out var backing,
             out var entry,
             out var codec,
+            out var requiredPackageCodec,
             out var decodedBytes);
-        return await LoadAssetAsync(assetId, backing, entry, codec, decodedBytes, cancellationToken).ConfigureAwait(false);
+        return await LoadAssetAsync(
+            assetId,
+            backing,
+            entry,
+            codec,
+            requiredPackageCodec,
+            decodedBytes,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Validates and atomically selects a replacement content-set package.</summary>
@@ -374,6 +382,7 @@ public sealed partial class AssetStore : IAsyncDisposable
         out AssetPackageBacking backing,
         out AssetPackageEntry entry,
         out AssetStoreRegistration.IAssetCodec<T> codec,
+        out AssetPackagePayloadCodec? requiredPackageCodec,
         out long decodedBytes)
     {
         if (backingReferenceAlreadyHeld && (packageBacking is null))
@@ -399,10 +408,18 @@ public sealed partial class AssetStore : IAsyncDisposable
 
             codec = registeredCodec;
 
-            if (expectedDescriptor is AssetOwnedReadDescriptor descriptor
-                && !descriptor.Matches(this, backing, entry, registeredCodec))
+            if (expectedDescriptor is AssetOwnedReadDescriptor descriptor)
             {
-                throw new InvalidOperationException("The asset read descriptor no longer matches the selected package.");
+                if (!descriptor.Matches(this, backing, entry, registeredCodec))
+                {
+                    throw new InvalidOperationException("The asset read descriptor no longer matches the selected package.");
+                }
+
+                requiredPackageCodec = descriptor.RequiredPackageCodec;
+            }
+            else
+            {
+                requiredPackageCodec = null;
             }
 
             decodedBytes = checked((long)entry.DecodedLength);
@@ -481,6 +498,7 @@ public sealed partial class AssetStore : IAsyncDisposable
     private async Task ValidateAssetReferencesAsync(
         AssetPackageBacking backing,
         ImmutableArray<AssetReference> assetReferences,
+        AssetPackagePayloadCodec? requiredPackageCodec,
         CancellationToken cancellationToken)
     {
         foreach (var reference in assetReferences)
@@ -491,6 +509,13 @@ public sealed partial class AssetStore : IAsyncDisposable
             {
                 throw new InvalidDataException(
                     $"Asset {reference.AssetId} referenced by the loaded record is absent from the content set.");
+            }
+
+            if (requiredPackageCodec is AssetPackagePayloadCodec requiredCodec
+                && (targetEntry.Codec != (byte)requiredCodec))
+            {
+                throw new NotSupportedException(
+                    "A referenced asset uses a package codec outside the selected read profile.");
             }
 
             var targetDecodedBytes = checked((long)targetEntry.DecodedLength);

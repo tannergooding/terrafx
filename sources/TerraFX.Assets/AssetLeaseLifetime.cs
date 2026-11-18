@@ -228,7 +228,9 @@ internal sealed class AssetLeaseLifetime
                 ?? throw new InvalidOperationException("The asset lease lifetime lost its package backing.");
 
             if (!backing.TryGetEntry(assetId, out var entry)
-                || !backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt))
+                || !backing.Registration.TryGetProfiledCodecReceipt<T>(profileOrigin, out var codecReceipt)
+                || (codecReceipt.RequiredPackageCodec is AssetPackagePayloadCodec requiredCodec
+                    && (entry.Codec != (byte)requiredCodec)))
             {
                 descriptor = default;
                 return false;

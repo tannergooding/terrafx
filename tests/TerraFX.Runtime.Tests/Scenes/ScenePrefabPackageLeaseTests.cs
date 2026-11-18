@@ -40,6 +40,9 @@ internal sealed partial class SceneAssetStoreTests
 
             Assert.Multiple(() => {
                 Assert.That(
+                    SceneSupport.TryDescribeSceneAssetRead(store, new AssetId(sceneAssetId), out _),
+                    Is.True);
+                Assert.That(
                     SceneSupport.TryDescribePrefabAssetRead(packageLease, new AssetId(prefabAssetId), out _),
                     Is.True);
                 Assert.That(
@@ -49,6 +52,11 @@ internal sealed partial class SceneAssetStoreTests
                     SceneSupport.TryDescribeSceneAssetRead(packageLease, new AssetId(99), out _),
                     Is.False);
             });
+
+            using var sceneLease = await store.LoadAsync<SceneAsset>(new AssetId(sceneAssetId)).ConfigureAwait(false);
+            Assert.That(
+                SceneSupport.TryDescribePrefabAssetRead(sceneLease, new AssetId(prefabAssetId), out _),
+                Is.True);
         }
         finally
         {

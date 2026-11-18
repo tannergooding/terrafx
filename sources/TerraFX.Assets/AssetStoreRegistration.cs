@@ -113,6 +113,8 @@ public sealed class AssetStoreRegistration
     {
         object? ProfileOrigin { get; }
 
+        AssetPackagePayloadCodec? RequiredPackageCodec { get; }
+
         ContentSchemaReference Schema { get; }
 
         Type ValueType { get; }

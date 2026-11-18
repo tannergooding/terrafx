@@ -254,7 +254,10 @@ internal sealed class AssetStoreTests
     {
         var profileOrigin = typeof(ProfiledTestAssetOrigin);
         var registration = new AssetStoreRegistrationBuilder(s_schemas)
-            .RegisterProfiledCodec(new ContextualTestAssetCodec(), profileOrigin)
+            .RegisterProfiledCodec(
+                new ContextualTestAssetCodec(),
+                profileOrigin,
+                AssetPackagePayloadCodec.None)
             .Build();
         var package = AssetPackageReaderTests.CreatePackage(
             new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 17)));
@@ -283,7 +286,11 @@ internal sealed class AssetStoreTests
                 Assert.That(descriptor.CodecReceipt.IsInitialized, Is.True);
                 Assert.That(descriptor.CodecReceipt.IsSameCodec(registeredReceipt), Is.True);
                 Assert.That(descriptor.CodecReceipt.ProfileOrigin, Is.SameAs(profileOrigin));
+                Assert.That(
+                    descriptor.CodecReceipt.RequiredPackageCodec,
+                    Is.EqualTo(AssetPackagePayloadCodec.None));
                 Assert.That(descriptor.CodecReceipt.Schema, Is.EqualTo(s_assetSchema));
+                Assert.That(descriptor.RequiredPackageCodec, Is.EqualTo(AssetPackagePayloadCodec.None));
                 Assert.That(descriptor.CodecReceipt.ValueType, Is.EqualTo(typeof(TestAssetValue)));
                 Assert.That(descriptor.CpuAssetBudgetBytes, Is.EqualTo(options.CpuAssetBudgetBytes));
                 Assert.That(descriptor.DecodedLength, Is.GreaterThan(0));
@@ -565,11 +572,56 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStoreDescribedReadRejectsBrotliReferenceBeforePayloadRead()
+    {
+        var profileOrigin = typeof(ProfiledTestAssetOrigin);
+        var registration = new AssetStoreRegistrationBuilder(s_schemas)
+            .RegisterProfiledCodec(
+                new ContextualTestAssetCodec(),
+                profileOrigin,
+                AssetPackagePayloadCodec.None)
+            .Build();
+        var rootPayload = CreateAssetEnvelope(
+            1,
+            CreateAssetRecordWithReference(17, 2, s_assetSchema.SchemaId, checked((uint)s_assetSchema.Major)));
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, rootPayload),
+            new AssetPackageReaderTests.TestEntry(
+                2,
+                [0xFF],
+                Codec: (byte)AssetPackagePayloadCodec.Brotli,
+                DecodedLength: 1));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            Assert.That(
+                store.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out var descriptor),
+                Is.True);
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => await store.LoadDescribedAsync<TestAssetValue>(
+                    descriptor,
+                    CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreDescribedReadsRejectReplacementAndRetainPinnedSource()
     {
         var profileOrigin = typeof(ProfiledTestAssetOrigin);
         var registration = new AssetStoreRegistrationBuilder(s_schemas)
-            .RegisterProfiledCodec(new ContextualTestAssetCodec(), profileOrigin)
+            .RegisterProfiledCodec(
+                new ContextualTestAssetCodec(),
+                profileOrigin,
+                AssetPackagePayloadCodec.None)
             .Build();
         var originalPackage = AssetPackageReaderTests.CreatePackage(
             new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 17)),
@@ -846,6 +898,57 @@ internal sealed class AssetStoreTests
             {
                 Assert.That(lease.Value.Marker, Is.EqualTo(75));
             }
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task AssetStoreLoadsProfiledRegistrationBrotliPayloadsWithoutChangingOrdinaryLoad()
+    {
+        var profileOrigin = typeof(ProfiledTestAssetOrigin);
+        var registration = new AssetStoreRegistrationBuilder(s_schemas)
+            .RegisterProfiledCodec(
+                new ContextualTestAssetCodec(),
+                profileOrigin,
+                AssetPackagePayloadCodec.None)
+            .Build();
+        var encoded = CreateAssetEnvelope(1, 23);
+        byte[] compressed;
+
+        using (var output = new MemoryStream())
+        {
+            using (var compressor = new BrotliStream(output, CompressionLevel.Optimal, leaveOpen: true))
+            {
+                compressor.Write(encoded);
+            }
+
+            compressed = output.ToArray();
+        }
+
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(
+                1,
+                compressed,
+                Codec: (byte)AssetPackagePayloadCodec.Brotli,
+                DecodedLength: encoded.Length));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            Assert.That(
+                store.TryDescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin, out _),
+                Is.False);
+            using var lease = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(lease.Value.Marker, Is.EqualTo(23));
         }
         finally
         {

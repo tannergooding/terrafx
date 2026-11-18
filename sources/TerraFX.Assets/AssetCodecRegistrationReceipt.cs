@@ -23,6 +23,8 @@ internal readonly struct AssetCodecRegistrationReceipt
 
     internal object? ProfileOrigin => _profileOrigin;
 
+    internal AssetPackagePayloadCodec? RequiredPackageCodec => _codec?.RequiredPackageCodec;
+
     internal ContentSchemaReference Schema => _codec?.Schema ?? default;
 
     internal Type? ValueType => _codec?.ValueType;

@@ -17,6 +17,7 @@ public sealed partial class AssetStore
         ArgumentNullException.ThrowIfNull(backing);
         AssetPackageEntry entry;
         AssetStoreRegistration.IAssetCodec<T> codec;
+        AssetPackagePayloadCodec? requiredPackageCodec;
         long decodedBytes;
 
         try
@@ -35,6 +36,7 @@ public sealed partial class AssetStore
                 out var loadBacking,
                 out entry,
                 out codec,
+                out requiredPackageCodec,
                 out decodedBytes);
             backing = loadBacking;
         }
@@ -44,7 +46,14 @@ public sealed partial class AssetStore
             throw;
         }
 
-        return await LoadAssetAsync(assetId, backing, entry, codec, decodedBytes, cancellationToken).ConfigureAwait(false);
+        return await LoadAssetAsync(
+            assetId,
+            backing,
+            entry,
+            codec,
+            requiredPackageCodec,
+            decodedBytes,
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal Task<bool> MatchesAssetReferenceAsync(
@@ -123,6 +132,7 @@ public sealed partial class AssetStore
         AssetPackageBacking backing,
         AssetPackageEntry entry,
         AssetStoreRegistration.IAssetCodec<T> codec,
+        AssetPackagePayloadCodec? requiredPackageCodec,
         long decodedBytes,
         CancellationToken cancellationToken)
     {
@@ -171,7 +181,11 @@ public sealed partial class AssetStore
             encodedEnvelope = [];
             ReleaseDecodeBudget(decodedBytes);
             decodeBudgetReserved = false;
-            await ValidateAssetReferencesAsync(backing, assetReferences, cancellationToken).ConfigureAwait(false);
+            await ValidateAssetReferencesAsync(
+                backing,
+                assetReferences,
+                requiredPackageCodec,
+                cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             var lease = CreateLease(this, assetId, value, backing, decodedBytes, out leaseCreated);
