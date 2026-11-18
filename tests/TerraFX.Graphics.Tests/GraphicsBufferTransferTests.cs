@@ -1194,21 +1194,48 @@ internal sealed class GraphicsBufferTransferTests
                     completionPolicy: GraphImportCompletionPolicy.RequireIdle),
                 isTransient: true);
             var pass = new RenderPassId(1, 0);
+            var beforeBufferVersion = new GraphBufferVersion(
+                    device.DeviceEpoch,
+                    20,
+                    0,
+                    buffer.Description,
+                    new GraphBufferRange(0, buffer.ByteLength));
+            var afterBufferVersion = new GraphBufferVersion(
+                    device.DeviceEpoch,
+                    30,
+                    0,
+                    buffer.Description,
+                    new GraphBufferRange(0, buffer.ByteLength));
+            var bufferAliasingBarriers = ImmutableArray.Create(
+                    new GraphResourceAliasingBarrier(pass, beforeBufferVersion, afterBufferVersion));
+            var textureRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var beforeTextureVersion = new GraphTextureVersion(device.DeviceEpoch, 40, 0, target.Description, textureRange);
+            var afterTextureVersion = new GraphTextureVersion(device.DeviceEpoch, 50, 0, target.Description, textureRange);
+            var textureAliasingBarriers = ImmutableArray.Create(
+                    new GraphTextureAliasingBarrier(pass, beforeTextureVersion, afterTextureVersion));
             var submission = CreateBufferImportIndexSubmission(
                 device,
                 target,
                 [import],
-                240,
+                    400,
                 [pass],
-                [textureImport]);
+                    [textureImport],
+                    bufferAliasingBarriers,
+                    textureAliasingBarriers);
             var type = typeof(GraphicsGraphSubmission);
+            var bufferAliasingIndexField = type.GetField("_bufferAliasingAfterIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("The buffer aliasing index backing was not found.");
             var bufferIndexField = type.GetField("_bufferImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("The buffer import index backing was not found.");
+            var textureAliasingIndexField = type.GetField("_textureAliasingAfterIndex", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("The texture aliasing index backing was not found.");
             var textureIndexField = type.GetField("_textureImportIndex", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("The texture import index backing was not found.");
             var passIndexField = type.GetField("_orderedPassIndex", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("The ordered pass index backing was not found.");
+            var bufferAliasingIndex = bufferAliasingIndexField.GetValue(submission);
             var bufferIndex = bufferIndexField.GetValue(submission);
+            var textureAliasingIndex = textureAliasingIndexField.GetValue(submission);
             var textureIndex = textureIndexField.GetValue(submission);
             var passIndex = passIndexField.GetValue(submission);
 
@@ -1218,17 +1245,27 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             submission.DisposeRecordedPassCommandLists();
+            Assert.That(bufferAliasingIndexField.GetValue(submission), Is.SameAs(bufferAliasingIndex));
             Assert.That(bufferIndexField.GetValue(submission), Is.SameAs(bufferIndex));
+            Assert.That(textureAliasingIndexField.GetValue(submission), Is.SameAs(textureAliasingIndex));
             Assert.That(textureIndexField.GetValue(submission), Is.SameAs(textureIndex));
             Assert.That(passIndexField.GetValue(submission), Is.SameAs(passIndex));
+            Assert.That(submission.BufferAliasingAfterIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.BufferAliasingAfterIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.BufferImportIndexStorageCapacity, Is.EqualTo(1));
             Assert.That(submission.BufferImportIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TextureAliasingAfterIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.TextureAliasingAfterIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.TextureImportIndexStorageCapacity, Is.EqualTo(2));
             Assert.That(submission.TextureImportIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.OrderedPassIndexStorageCapacity, Is.EqualTo(1));
             Assert.That(submission.OrderedPassIndexBackingByteCharge, Is.EqualTo(80));
+            Assert.That(submission.TryGetBufferAliasingAfterIndex(30, out var observedBufferAlias), Is.True);
+            Assert.That(observedBufferAlias, Is.Zero);
             Assert.That(submission.TryGetIndexedBufferImport(7, out var observed), Is.True);
             Assert.That(observed, Is.SameAs(import));
+            Assert.That(submission.TryGetTextureAliasingAfterIndex(50, out var observedTextureAlias), Is.True);
+            Assert.That(observedTextureAlias, Is.Zero);
             Assert.That(submission.TryGetIndexedTextureImport(9, out var observedTexture), Is.True);
             Assert.That(observedTexture, Is.SameAs(textureImport));
             Assert.That(submission.TryGetOrderedPassIndex(pass, out var observedPassIndex), Is.True);
