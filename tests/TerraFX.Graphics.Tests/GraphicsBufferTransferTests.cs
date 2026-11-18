@@ -1387,7 +1387,8 @@ internal sealed class GraphicsBufferTransferTests
                     textureAliasingCapacity: 0,
                     bufferResourceUsageCapacity: 2,
                     textureResourceUsageCapacity: 1,
-                    passValidationCapacity: 1);
+                    passValidationCapacity: 1,
+                    accessPairCapacity: accesses.Length);
                 submission = new GraphicsGraphSubmission(
                     device.DeviceEpoch,
                     target,
@@ -1633,12 +1634,26 @@ internal sealed class GraphicsBufferTransferTests
         try
         {
             using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            var passId = new RenderPassId(1, 0);
             var pass = new GraphicsGraphSubmissionPass(
-                new RenderPassId(1, 0),
+                passId,
                 CommandRecorderPassKind.Copy,
                 null,
                 null,
                 []);
+            var bufferRange = new GraphBufferRange(0, 8);
+            var bufferVersion = new GraphBufferVersion(
+                device.DeviceEpoch,
+                2,
+                0,
+                CreateBufferDescription(),
+                bufferRange);
+            var access = new GraphResourceAccess(
+                passId,
+                bufferVersion,
+                bufferRange,
+                GraphBufferUsage.CopySource,
+                isWrite: false);
             var expectedCharge = GraphicsGraphSubmission.CalculatePreflightWorkspaceBackingByteCharge(
                 bufferImportCapacity: 0,
                 textureImportCapacity: 1,
@@ -1647,12 +1662,19 @@ internal sealed class GraphicsBufferTransferTests
                 textureAliasingCapacity: 0,
                 bufferResourceUsageCapacity: 0,
                 textureResourceUsageCapacity: 1,
-                passValidationCapacity: 1);
+                passValidationCapacity: 1,
+                accessPairCapacity: 1);
 
+            Assert.That(GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(1), Is.EqualTo(80));
+            Assert.That(GraphicsGraphSubmission.CalculateAccessValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationIndexBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(1), Is.EqualTo(80));
             Assert.That(GraphicsGraphSubmission.CalculateResourceUsageFlagsBackingByteCharge(1), Is.EqualTo(80));
-            Assert.That(expectedCharge, Is.EqualTo(320));
+            Assert.That(expectedCharge, Is.EqualTo(480));
+            _ = Assert.Throws<ArgumentOutOfRangeException>(
+                () => GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(-1));
+            _ = Assert.Throws<OverflowException>(
+                () => GraphicsGraphSubmission.CalculateAccessPairIndexBackingByteCharge(long.MaxValue));
             _ = Assert.Throws<ArgumentOutOfRangeException>(
                 () => GraphicsGraphSubmission.CalculatePassValidationFlagsBackingByteCharge(-1));
             _ = Assert.Throws<OverflowException>(
@@ -1664,6 +1686,7 @@ internal sealed class GraphicsBufferTransferTests
                     target,
                     [],
                     expectedCharge - 1,
+                    accesses: [access],
                     submissionPasses: [pass]));
 
             var submission = CreateBufferImportIndexSubmission(
@@ -1671,7 +1694,10 @@ internal sealed class GraphicsBufferTransferTests
                 target,
                 [],
                 expectedCharge,
+                accesses: [access],
                 submissionPasses: [pass]);
+            Assert.That(submission.AccessPairIndexStorageCapacity, Is.EqualTo(1));
+            Assert.That(submission.AccessPairIndexBackingByteCharge, Is.EqualTo(80));
             Assert.That(submission.PassValidationIndexStorageCapacity, Is.EqualTo(1));
             Assert.That(submission.PassValidationIndexBackingByteCharge, Is.EqualTo(80));
         }

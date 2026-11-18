@@ -16,9 +16,13 @@ internal sealed class GraphicsGraphSubmission
     private const byte BufferCopyDestinationResourceFlag = 1 << 0;
     private const byte BufferCopySourcePassFlag = 1 << 1;
     private const byte BufferCopySourceResourceFlag = 1 << 1;
+    private const byte BufferIndexBindingFlag = 1 << 3;
     private const byte BufferIndexResourceFlag = 1 << 3;
+    private const byte BufferStorageBindingFlag = 1 << 5;
     private const byte BufferStorageResourceFlag = 1 << 5;
+    private const byte BufferUniformBindingFlag = 1 << 4;
     private const byte BufferUniformResourceFlag = 1 << 4;
+    private const byte BufferVertexBindingFlag = 1 << 2;
     private const byte BufferVertexResourceFlag = 1 << 2;
     private const byte TextureColorResourceFlag = 1 << 0;
     private const byte TextureCopyDestinationPassFlag = 1 << 2;
@@ -26,9 +30,12 @@ internal sealed class GraphicsGraphSubmission
     private const byte TextureCopySourcePassFlag = 1 << 3;
     private const byte TextureCopySourceResourceFlag = 1 << 3;
     private const byte TextureDepthResourceFlag = 1 << 1;
+    private const byte TextureSampledBindingFlag = 1 << 4;
     private const byte TextureSampledResourceFlag = 1 << 4;
+    private const byte TextureStorageBindingFlag = 1 << 5;
     private const byte TextureStorageResourceFlag = 1 << 5;
 
+    private readonly int[] _accessPairIndex;
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
     private readonly int[] _orderedPassIndex;
@@ -131,6 +138,7 @@ internal sealed class GraphicsGraphSubmission
             orderedPasses.Length,
             aliasingBarriers.Length,
             textureAliasingBarriers.Length,
+            accesses.Length,
             bufferImports.Length,
             textureImports.Length,
             passes.Length,
@@ -148,6 +156,7 @@ internal sealed class GraphicsGraphSubmission
         TextureAliasingBarriers = [.. textureAliasingBarriers];
         _textureAliasingAfterIndex = CreateTextureAliasingAfterIndex(TextureAliasingBarriers);
         Accesses = [.. accesses];
+        _accessPairIndex = CreateAccessPairIndex(Accesses);
         Passes = [.. passes];
         _passValidationIndex = CreatePassValidationIndex(Passes);
         BufferImports = [.. bufferImports];
@@ -157,6 +166,11 @@ internal sealed class GraphicsGraphSubmission
         _orderedPassIndex = CreateOrderedPassIndex(OrderedPasses);
         RecordedPassCommandLists = [.. recordedPassCommandLists];
     }
+
+    internal long AccessPairIndexBackingByteCharge
+        => CalculateAccessPairIndexBackingByteCharge(_accessPairIndex.LongLength);
+
+    internal int AccessPairIndexStorageCapacity => _accessPairIndex.Length;
 
     internal ImmutableArray<GraphResourceAccess> Accesses { get; }
 
@@ -236,6 +250,12 @@ internal sealed class GraphicsGraphSubmission
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
 
+    internal static long CalculateAccessPairIndexBackingByteCharge(long capacity)
+        => CalculateIndexBackingByteCharge(capacity);
+
+    internal static long CalculateAccessValidationFlagsBackingByteCharge(long capacity)
+        => CalculatePassValidationFlagsBackingByteCharge(capacity);
+
     internal static long CalculateAliasingIndexBackingByteCharge(
         long bufferAliasingCapacity,
         long textureAliasingCapacity)
@@ -294,7 +314,8 @@ internal sealed class GraphicsGraphSubmission
         long textureAliasingCapacity,
         long bufferResourceUsageCapacity,
         long textureResourceUsageCapacity,
-        long passValidationCapacity)
+        long passValidationCapacity,
+        long accessPairCapacity = 0)
         => checked(
             CalculatePreflightIndexBackingByteCharge(
                 bufferImportCapacity,
@@ -302,6 +323,8 @@ internal sealed class GraphicsGraphSubmission
                 orderedPassCapacity,
                 bufferAliasingCapacity,
                 textureAliasingCapacity)
+            + CalculateAccessPairIndexBackingByteCharge(accessPairCapacity)
+            + CalculateAccessValidationFlagsBackingByteCharge(accessPairCapacity)
             + CalculateResourceUsageFlagsBackingByteCharge(bufferResourceUsageCapacity)
             + CalculateResourceUsageFlagsBackingByteCharge(textureResourceUsageCapacity)
             + CalculatePassValidationIndexBackingByteCharge(passValidationCapacity)
@@ -362,6 +385,23 @@ internal sealed class GraphicsGraphSubmission
     {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
         return (capacity == 0) ? 0 : checked(64 + ((checked(capacity * sizeof(int)) + 15) & ~15L));
+    }
+
+    private static int CompareAccessPairIndices(
+        ImmutableArray<GraphResourceAccess> accesses,
+        int left,
+        int right)
+    {
+        var leftAccess = accesses[left];
+        var rightAccess = accesses[right];
+        var comparison = CompareRenderPassIds(leftAccess.PassId, rightAccess.PassId);
+
+        if (comparison == 0)
+        {
+            comparison = leftAccess.ResourceId.CompareTo(rightAccess.ResourceId);
+        }
+
+        return (comparison != 0) ? comparison : left.CompareTo(right);
     }
 
     private static int CompareBufferAliasingAfterIndices(
@@ -465,6 +505,34 @@ internal sealed class GraphicsGraphSubmission
         }
 
         return (comparison != 0) ? comparison : left.CompareTo(right);
+    }
+
+    private static int[] CreateAccessPairIndex(ImmutableArray<GraphResourceAccess> accesses)
+    {
+        if (accesses.IsEmpty)
+        {
+            return [];
+        }
+
+        var indices = new int[accesses.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+        {
+            indices[index] = index;
+        }
+
+        for (var root = (indices.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftAccessPairIndex(accesses, indices, root, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftAccessPairIndex(accesses, indices, 0, end);
+        }
+
+        return indices;
     }
 
     private static int[] CreateBufferAliasingAfterIndex(ImmutableArray<GraphResourceAliasingBarrier> barriers)
@@ -635,6 +703,53 @@ internal sealed class GraphicsGraphSubmission
         return indices;
     }
 
+    private static int FindFirstAccessPairIndex(
+        ImmutableArray<GraphResourceAccess> accesses,
+        int[] accessPairIndex,
+        RenderPassId passId,
+        ulong resourceId,
+        out int accessIndex)
+    {
+        var first = 0;
+        var last = accessPairIndex.Length;
+
+        while (first < last)
+        {
+            var middle = first + ((last - first) / 2);
+            var candidate = accesses[accessPairIndex[middle]];
+            var comparison = CompareRenderPassIds(candidate.PassId, passId);
+
+            if (comparison == 0)
+            {
+                comparison = candidate.ResourceId.CompareTo(resourceId);
+            }
+
+            if (comparison < 0)
+            {
+                first = middle + 1;
+            }
+            else
+            {
+                last = middle;
+            }
+        }
+
+        if (first < accessPairIndex.Length)
+        {
+            var candidateIndex = accessPairIndex[first];
+            var candidate = accesses[candidateIndex];
+
+            if ((candidate.PassId == passId) && (candidate.ResourceId == resourceId))
+            {
+                accessIndex = candidateIndex;
+                return first;
+            }
+        }
+
+        accessIndex = -1;
+        return -1;
+    }
+
     private static int FindPassValidationIndex(
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
         int[] passValidationIndex,
@@ -674,6 +789,76 @@ internal sealed class GraphicsGraphSubmission
         return -1;
     }
 
+    private static bool HasAccessValidationFlag(byte[] accessValidationFlags, int accessIndex, byte flag)
+        => (accessValidationFlags[accessIndex] & flag) != 0;
+
+    private static bool HasAccessValidationFlagForPair(
+        byte[] accessValidationFlags,
+        ImmutableArray<GraphResourceAccess> accesses,
+        int[] accessPairIndex,
+        RenderPassId passId,
+        ulong resourceId,
+        byte flag)
+    {
+        var index = FindFirstAccessPairIndex(accesses, accessPairIndex, passId, resourceId, out var accessIndex);
+
+        while ((index >= 0) && (index < accessPairIndex.Length))
+        {
+            var access = accesses[accessPairIndex[index]];
+
+            if ((access.PassId != passId) || (access.ResourceId != resourceId))
+            {
+                return false;
+            }
+
+            if (HasAccessValidationFlag(accessValidationFlags, accessIndex, flag))
+            {
+                return true;
+            }
+
+            index++;
+
+            if (index < accessPairIndex.Length)
+            {
+                accessIndex = accessPairIndex[index];
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasPassAttachment(
+        ImmutableArray<GraphicsGraphSubmissionPass> passes,
+        int[] passValidationIndex,
+        RenderPassId passId,
+        ulong resourceId,
+        bool isDepth)
+    {
+        var index = FindPassValidationIndex(passes, passValidationIndex, passId, out _);
+
+        while ((index >= 0) && (index < passValidationIndex.Length))
+        {
+            var pass = passes[passValidationIndex[index]];
+
+            if (pass.PassId != passId)
+            {
+                return false;
+            }
+
+            foreach (var attachment in pass.Attachments)
+            {
+                if ((attachment.IsDepth == isDepth) && (attachment.Version.ResourceId == resourceId))
+                {
+                    return true;
+                }
+            }
+
+            index++;
+        }
+
+        return false;
+    }
+
     private static bool HasPassValidationFlag(
         byte[] passValidationFlags,
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
@@ -682,6 +867,35 @@ internal sealed class GraphicsGraphSubmission
         byte flag)
         => (FindPassValidationIndex(passes, passValidationIndex, passId, out var passIndex) >= 0)
             && ((passValidationFlags[passIndex] & flag) != 0);
+
+    private static void SetAccessValidationFlag(
+        byte[] accessValidationFlags,
+        ImmutableArray<GraphResourceAccess> accesses,
+        int[] accessPairIndex,
+        RenderPassId passId,
+        ulong resourceId,
+        byte flag)
+    {
+        var index = FindFirstAccessPairIndex(accesses, accessPairIndex, passId, resourceId, out var accessIndex);
+
+        while ((index >= 0) && (index < accessPairIndex.Length))
+        {
+            var access = accesses[accessPairIndex[index]];
+
+            if ((access.PassId != passId) || (access.ResourceId != resourceId))
+            {
+                return;
+            }
+
+            accessValidationFlags[accessIndex] |= flag;
+            index++;
+
+            if (index < accessPairIndex.Length)
+            {
+                accessIndex = accessPairIndex[index];
+            }
+        }
+    }
 
     private static void SetPassValidationFlag(
         byte[] passValidationFlags,
@@ -693,6 +907,32 @@ internal sealed class GraphicsGraphSubmission
         if (FindPassValidationIndex(passes, passValidationIndex, passId, out var passIndex) >= 0)
         {
             passValidationFlags[passIndex] |= flag;
+        }
+    }
+
+    private static void SiftAccessPairIndex(
+        ImmutableArray<GraphResourceAccess> accesses,
+        int[] indices,
+        int root,
+        int count)
+    {
+        while (root < (count / 2))
+        {
+            var child = (2 * root) + 1;
+
+            if (((child + 1) < count)
+                && (CompareAccessPairIndices(accesses, indices[child], indices[child + 1]) < 0))
+            {
+                child++;
+            }
+
+            if (CompareAccessPairIndices(accesses, indices[root], indices[child]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[child]) = (indices[child], indices[root]);
+            root = child;
         }
     }
 
@@ -862,6 +1102,7 @@ internal sealed class GraphicsGraphSubmission
         int orderedPassCapacity,
         int bufferAliasingCapacity,
         int textureAliasingCapacity,
+        int accessPairCapacity,
         int bufferResourceUsageCapacity,
         int textureResourceUsageCapacity,
         int passValidationCapacity,
@@ -877,7 +1118,8 @@ internal sealed class GraphicsGraphSubmission
                 textureAliasingCapacity,
                 bufferResourceUsageCapacity,
                 textureResourceUsageCapacity,
-                passValidationCapacity) > maximumBytes)
+                passValidationCapacity,
+                accessPairCapacity) > maximumBytes)
         {
             throw new OutOfMemoryException("The graph preflight workspace exceeds its CPU component allowance.");
         }
@@ -1114,6 +1356,7 @@ internal sealed class GraphicsGraphSubmission
         var bufferResourceUsageFlags = new byte[BufferImports.Length];
         var textureResourceUsageFlags = new byte[TextureImports.Length];
         var passValidationFlags = new byte[Passes.Length];
+        var accessValidationFlags = new byte[Accesses.Length];
 
         if ((TextureImports.Length < 1)
             || !ReferenceEquals(TextureImports[0].Texture, OutputColorTarget))
@@ -1759,22 +2002,14 @@ internal sealed class GraphicsGraphSubmission
         var hasStorageImageAccess = false;
         var copySourceResourcesUsedCount = 0;
         var copyDestinationResourcesUsedCount = 0;
-        var vertexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var vertexBufferResourcesUsedCount = 0;
-        var indexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var indexBufferResourcesUsedCount = 0;
-        var uniformBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var uniformBufferResourcesUsedCount = 0;
-        var sampledTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var sampledTextureResourcesUsedCount = 0;
         var colorTextureResourcesUsedCount = 0;
         var depthTextureResourcesUsedCount = 0;
-        var storageBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var storageBufferResourcesUsedCount = 0;
-        var storageTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var storageTextureResourcesUsedCount = 0;
-        var colorAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
-        var depthAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var copySourceTextureResourcesUsedCount = 0;
         var copyDestinationTextureResourcesUsedCount = 0;
 
@@ -1895,7 +2130,6 @@ internal sealed class GraphicsGraphSubmission
                         }
 
                         passDepthTargetFormat = description.Format;
-                        _ = depthAttachmentPassResourcePairs.Add((pass.PassId, attachment.Version.ResourceId));
                     }
                     else
                     {
@@ -1928,7 +2162,6 @@ internal sealed class GraphicsGraphSubmission
                         }
 
                         hasOutputColorAttachment |= isOutputTarget;
-                        _ = colorAttachmentPassResourcePairs.Add((pass.PassId, resourceId));
                     }
                 }
 
@@ -2198,7 +2431,13 @@ internal sealed class GraphicsGraphSubmission
                         }
 
                         currentVertexBufferImport = vertexBufferImport;
-                        _ = vertexBufferBindingPairs.Add((pass.PassId, binding.Buffer.ResourceId));
+                        SetAccessValidationFlag(
+                            accessValidationFlags,
+                            Accesses,
+                            _accessPairIndex,
+                            pass.PassId,
+                            binding.Buffer.ResourceId,
+                            BufferVertexBindingFlag);
                         hasVertexBufferBinding = true;
                         break;
                     }
@@ -2251,7 +2490,13 @@ internal sealed class GraphicsGraphSubmission
                         }
 
                         currentIndexBufferImport = indexBufferImport;
-                        _ = indexBufferBindingPairs.Add((pass.PassId, binding.Buffer.ResourceId));
+                        SetAccessValidationFlag(
+                            accessValidationFlags,
+                            Accesses,
+                            _accessPairIndex,
+                            pass.PassId,
+                            binding.Buffer.ResourceId,
+                            BufferIndexBindingFlag);
                         hasIndexBufferBinding = true;
                         break;
                     }
@@ -2319,7 +2564,13 @@ internal sealed class GraphicsGraphSubmission
                                     }
 
                                     hasUniformBufferBinding = true;
-                                    _ = uniformBufferBindingPairs.Add((pass.PassId, binding.Resource.ResourceId));
+                                    SetAccessValidationFlag(
+                                        accessValidationFlags,
+                                        Accesses,
+                                        _accessPairIndex,
+                                        pass.PassId,
+                                        binding.Resource.ResourceId,
+                                        BufferUniformBindingFlag);
                                     break;
                                 }
 
@@ -2394,7 +2645,13 @@ internal sealed class GraphicsGraphSubmission
                                     }
 
                                     hasStorageBufferBinding = true;
-                                    _ = storageBufferBindingPairs.Add((pass.PassId, binding.Resource.ResourceId));
+                                    SetAccessValidationFlag(
+                                        accessValidationFlags,
+                                        Accesses,
+                                        _accessPairIndex,
+                                        pass.PassId,
+                                        binding.Resource.ResourceId,
+                                        BufferStorageBindingFlag);
                                     break;
                                 }
 
@@ -2459,7 +2716,13 @@ internal sealed class GraphicsGraphSubmission
                                     }
 
                                     hasSampledImageBinding = true;
-                                    _ = sampledTextureBindingPairs.Add((pass.PassId, binding.Resource.ResourceId));
+                                    SetAccessValidationFlag(
+                                        accessValidationFlags,
+                                        Accesses,
+                                        _accessPairIndex,
+                                        pass.PassId,
+                                        binding.Resource.ResourceId,
+                                        TextureSampledBindingFlag);
                                     break;
                                 }
 
@@ -2532,7 +2795,13 @@ internal sealed class GraphicsGraphSubmission
                                     }
 
                                     hasStorageImageBinding = true;
-                                    _ = storageTextureBindingPairs.Add((pass.PassId, binding.Resource.ResourceId));
+                                    SetAccessValidationFlag(
+                                        accessValidationFlags,
+                                        Accesses,
+                                        _accessPairIndex,
+                                        pass.PassId,
+                                        binding.Resource.ResourceId,
+                                        TextureStorageBindingFlag);
                                     break;
                                 }
 
@@ -2574,7 +2843,13 @@ internal sealed class GraphicsGraphSubmission
                         {
                             if (!storageBufferImports.TryGetValue(barrierBuffer.ResourceId, out var storageBufferImport)
                                 || (command.StorageBarrierBufferRange != storageBufferImport.Version.Range)
-                                || !storageBufferBindingPairs.Contains((pass.PassId, barrierBuffer.ResourceId)))
+                                || !HasAccessValidationFlagForPair(
+                                    accessValidationFlags,
+                                    Accesses,
+                                    _accessPairIndex,
+                                    pass.PassId,
+                                    barrierBuffer.ResourceId,
+                                    BufferStorageBindingFlag))
                             {
                                 throw new NotSupportedException("A storage-buffer barrier must target the bound graph storage buffer range.");
                             }
@@ -2583,7 +2858,13 @@ internal sealed class GraphicsGraphSubmission
                         {
                             if (!storageTextureImports.TryGetValue(barrierTexture.ResourceId, out var storageTextureImport)
                                 || !command.StorageBarrierTextureRange.IsWithin(storageTextureImport.Version.Range)
-                                || !storageTextureBindingPairs.Contains((pass.PassId, barrierTexture.ResourceId)))
+                                || !HasAccessValidationFlagForPair(
+                                    accessValidationFlags,
+                                    Accesses,
+                                    _accessPairIndex,
+                                    pass.PassId,
+                                    barrierTexture.ResourceId,
+                                    TextureStorageBindingFlag))
                             {
                                 throw new NotSupportedException("A storage-image barrier must target the bound graph storage image range.");
                             }
@@ -2874,8 +3155,10 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        foreach (var access in Accesses)
+        for (var accessIndex = 0; accessIndex < Accesses.Length; accessIndex++)
         {
+            var access = Accesses[accessIndex];
+
             if (access.IsTexture
                 && (access.ResourceId == targetResourceId)
                 && (access.RequiredState != GraphResourceState.CopySource))
@@ -2934,7 +3217,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.VertexRead)
                 && !access.IsWrite)
             {
-                if (!vertexBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, BufferVertexBindingFlag))
                 {
                     throw new InvalidOperationException("The imported vertex buffer is declared by a pass without a matching vertex-buffer binding.");
                 }
@@ -2947,7 +3230,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.IndexRead)
                 && !access.IsWrite)
             {
-                if (!indexBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, BufferIndexBindingFlag))
                 {
                     throw new InvalidOperationException("The imported index buffer is declared by a pass without a matching index-buffer binding.");
                 }
@@ -2960,7 +3243,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.UniformRead)
                 && !access.IsWrite)
             {
-                if (!uniformBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, BufferUniformBindingFlag))
                 {
                     throw new InvalidOperationException("The imported uniform buffer is declared by a pass without a matching binding set.");
                 }
@@ -2979,7 +3262,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.StorageWrite)
                 && access.IsWrite)
             {
-                if (!storageBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, BufferStorageBindingFlag))
                 {
                     throw new InvalidOperationException("The imported storage buffer is declared by a pass without a matching binding set.");
                 }
@@ -2998,7 +3281,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.StorageReadWrite)
                 && access.IsStorageReadWritePair)
             {
-                if (!storageBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, BufferStorageBindingFlag))
                 {
                     throw new InvalidOperationException("The imported storage buffer is declared by a pass without a matching binding set.");
                 }
@@ -3014,7 +3297,12 @@ internal sealed class GraphicsGraphSubmission
 
             if (access.IsTexture
                 && (access.RequiredState == GraphResourceState.ColorAttachment)
-                && colorAttachmentPassResourcePairs.Contains((access.PassId, access.ResourceId)))
+                && HasPassAttachment(
+                    Passes,
+                    _passValidationIndex,
+                    access.PassId,
+                    access.ResourceId,
+                    isDepth: false))
             {
                 if (access.IsWrite && colorTextureImports.ContainsKey(access.ResourceId))
                 {
@@ -3032,7 +3320,12 @@ internal sealed class GraphicsGraphSubmission
                 && depthTextureImports.ContainsKey(access.ResourceId)
                 && (access.RequiredState == GraphResourceState.DepthWrite))
             {
-                if (!depthAttachmentPassResourcePairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasPassAttachment(
+                        Passes,
+                        _passValidationIndex,
+                        access.PassId,
+                        access.ResourceId,
+                        isDepth: true))
                 {
                     throw new InvalidOperationException("The imported depth texture is declared by a pass without a matching depth attachment.");
                 }
@@ -3100,7 +3393,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.ShaderSampledRead)
                 && !access.IsWrite)
             {
-                if (!sampledTextureBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, TextureSampledBindingFlag))
                 {
                     throw new InvalidOperationException("The imported sampled image is declared by a pass without a matching binding set.");
                 }
@@ -3119,7 +3412,7 @@ internal sealed class GraphicsGraphSubmission
                 && (access.RequiredState == GraphResourceState.StorageReadWrite)
                 && access.IsStorageReadWritePair)
             {
-                if (!storageTextureBindingPairs.Contains((access.PassId, access.ResourceId)))
+                if (!HasAccessValidationFlag(accessValidationFlags, accessIndex, TextureStorageBindingFlag))
                 {
                     throw new InvalidOperationException("The imported storage image is declared by a pass without a matching binding set.");
                 }
@@ -3152,7 +3445,13 @@ internal sealed class GraphicsGraphSubmission
                 && uniformBufferImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.UniformRead)
                 && (transition.BeforeState == GraphResourceState.General)
-                && uniformBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    BufferUniformBindingFlag))
             {
                 continue;
             }
@@ -3166,7 +3465,13 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.CopyDestination
                     or GraphResourceState.StorageReadWrite
                     or GraphResourceState.VertexRead)
-                && vertexBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    BufferVertexBindingFlag))
             {
                 continue;
             }
@@ -3180,7 +3485,13 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.CopyDestination
                     or GraphResourceState.VertexRead
                     or GraphResourceState.IndexRead)
-                && indexBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    BufferIndexBindingFlag))
             {
                 continue;
             }
@@ -3237,7 +3548,13 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && storageBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    BufferStorageBindingFlag))
             {
                 continue;
             }
@@ -3251,7 +3568,12 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.ColorAttachment
                     or GraphResourceState.CopySource
                     or GraphResourceState.CopyDestination)
-                && colorAttachmentPassResourcePairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasPassAttachment(
+                    Passes,
+                    _passValidationIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    isDepth: false))
             {
                 continue;
             }
@@ -3267,7 +3589,12 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.ShaderSampledRead
                     or GraphResourceState.CopySource
                     or GraphResourceState.CopyDestination)
-                && depthAttachmentPassResourcePairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasPassAttachment(
+                    Passes,
+                    _passValidationIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    isDepth: true))
             {
                 continue;
             }
@@ -3321,7 +3648,13 @@ internal sealed class GraphicsGraphSubmission
                 && sampledTextureImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState == GraphResourceState.General)
-                && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    TextureSampledBindingFlag))
             {
                 continue;
             }
@@ -3331,7 +3664,13 @@ internal sealed class GraphicsGraphSubmission
                 && sampledTextureImport.IsTransient
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState == GraphResourceState.ColorAttachment)
-                && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    TextureSampledBindingFlag))
             {
                 continue;
             }
@@ -3341,7 +3680,13 @@ internal sealed class GraphicsGraphSubmission
                 && sampledTextureImport.IsTransient
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState is GraphResourceState.DepthRead or GraphResourceState.DepthWrite)
-                && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    TextureSampledBindingFlag))
             {
                 continue;
             }
@@ -3354,7 +3699,13 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && storageTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+                && HasAccessValidationFlagForPair(
+                    accessValidationFlags,
+                    Accesses,
+                    _accessPairIndex,
+                    transition.PassId,
+                    transition.ResourceId,
+                    TextureStorageBindingFlag))
             {
                 continue;
             }
