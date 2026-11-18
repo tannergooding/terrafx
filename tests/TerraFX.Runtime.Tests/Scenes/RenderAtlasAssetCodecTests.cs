@@ -56,22 +56,78 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     private static byte[] CreateRenderAtlasRecord(int pageAssetId, params byte[][] frames)
+        => CreateRenderAtlasRecord([pageAssetId], frames);
+
+    private static byte[] CreateRenderAtlasRecord(int[] pageAssetIds, params byte[][] frames)
     {
-        var pageReference = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
-            new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
-            1,
-            0,
-            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, checked((uint)pageAssetId)),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(
-                2,
-                new ContentSchemaIdentityAssignment("native/texture").SchemaId),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 1));
+        var pageReferences = new byte[pageAssetIds.Length][];
+
+        for (var index = 0; index < pageAssetIds.Length; index++)
+        {
+            pageReferences[index] = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(
+                    1,
+                    checked((uint)pageAssetIds[index])),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(
+                    2,
+                    new ContentSchemaIdentityAssignment("native/texture").SchemaId),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 1));
+        }
+
         return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/atlas").SchemaId,
             1,
             0,
-            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(1, pageReference),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(1, pageReferences),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, frames));
+    }
+
+    [Test]
+    public async Task AtlasAssetCodecAccepts16PagesAndRejects17()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. SceneAssetReaderTests.Fixtures.CreateRegistry().Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+        ]);
+        var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(registrationBuilder);
+        var registration = registrationBuilder.Build();
+        var maximumPageIds = new int[16];
+        var excessPageIds = new int[17];
+        Array.Fill(maximumPageIds, 1);
+        Array.Fill(excessPageIds, 1);
+        var frame = CreateRenderAtlasFrameRecord(
+            new Guid("00000000-0000-0000-0000-000000000001"),
+            page: 0,
+            x: 4,
+            y: 4,
+            width: 4,
+            height: 4);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, CreateRenderAtlasPageTextureRecord(17))),
+            new Package.Entry(100, Package.CreateEnvelope(100, CreateRenderAtlasRecord(maximumPageIds, frame))),
+            new Package.Entry(101, Package.CreateEnvelope(101, CreateRenderAtlasRecord(excessPageIds, frame))));
+        var packagePath = Package.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+        try
+        {
+            using var atlasLease = await store.LoadAsync<RenderAtlasAsset>(new AssetId(100)).ConfigureAwait(false);
+            Assert.That(atlasLease.Value.Pages, Has.Length.EqualTo(16));
+            using var pageSet = await RenderAtlasPageLoader.RetainAsync(atlasLease).ConfigureAwait(false);
+            Assert.That(pageSet.GetPage(15).Mips[0].Pixels[0], Is.EqualTo(17));
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await store.LoadAsync<RenderAtlasAsset>(new AssetId(101)).ConfigureAwait(false));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+        }
     }
 
     [Test]
