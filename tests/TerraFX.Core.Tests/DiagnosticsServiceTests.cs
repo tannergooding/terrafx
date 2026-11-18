@@ -246,6 +246,86 @@ internal sealed class DiagnosticsServiceTests
     }
 
     [Test]
+    public void MeasuresDiagnosticRootAndContextCopyAllocationTraffic()
+    {
+        const int iterationCount = 1024;
+        const string code = "MeasuredDiagnostic";
+        const string operation = "DiagnosticsService.Measure";
+        const string message = "A preconstructed diagnostic message.";
+        ImmutableArray<DiagnosticContextEntry> emptyContext = [];
+        ImmutableArray<DiagnosticContextEntry> context = [
+            new DiagnosticContextEntry("Context0", "Value0"),
+            new DiagnosticContextEntry("Context1", "Value1"),
+            new DiagnosticContextEntry("Context2", "Value2"),
+            new DiagnosticContextEntry("Context3", "Value3"),
+            new DiagnosticContextEntry("Context4", "Value4"),
+            new DiagnosticContextEntry("Context5", "Value5"),
+            new DiagnosticContextEntry("Context6", "Value6"),
+        ];
+
+        static Diagnostic CreateDiagnostic(
+            string code,
+            string operation,
+            string message,
+            ImmutableArray<DiagnosticContextEntry> context)
+        {
+            return new Diagnostic(
+                code,
+                DiagnosticSeverity.Warning,
+                monotonicTimestamp: 1,
+                hostId: null,
+                worldGuid: null,
+                deviceId: null,
+                surfaceId: null,
+                deviceEpoch: null,
+                surfaceEpoch: null,
+                swapchainEpoch: null,
+                tick: null,
+                systemId: null,
+                passId: null,
+                assetId: null,
+                commandIdentity: null,
+                operation,
+                nativeResult: null,
+                message,
+                context);
+        }
+
+        _ = CreateDiagnostic(code, operation, message, emptyContext);
+        _ = CreateDiagnostic(code, operation, message, context);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        var noContextStart = GC.GetAllocatedBytesForCurrentThread();
+        Diagnostic? lastDiagnostic = null;
+
+        for (var index = 0; index < iterationCount; index++)
+        {
+            lastDiagnostic = CreateDiagnostic(code, operation, message, emptyContext);
+        }
+
+        var noContextBytes = checked(GC.GetAllocatedBytesForCurrentThread() - noContextStart);
+        GC.KeepAlive(lastDiagnostic);
+
+        var contextStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < iterationCount; index++)
+        {
+            lastDiagnostic = CreateDiagnostic(code, operation, message, context);
+        }
+
+        var contextBytes = checked(GC.GetAllocatedBytesForCurrentThread() - contextStart);
+        GC.KeepAlive(lastDiagnostic);
+
+        TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
+        TestContext.WriteLine($"Diagnostic with empty context: {noContextBytes / iterationCount} bytes per record");
+        TestContext.WriteLine($"Diagnostic with seven-entry context: {contextBytes / iterationCount} bytes per record");
+        TestContext.WriteLine($"Seven-entry context copy delta: {(contextBytes - noContextBytes) / iterationCount} bytes per record");
+    }
+
+    [Test]
     public void RecordDroppedCountsTelemetryThatCouldNotBeMaterialized()
     {
         var service = new DiagnosticsService(1);
