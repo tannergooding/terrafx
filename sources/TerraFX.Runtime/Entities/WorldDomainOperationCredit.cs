@@ -9,19 +9,25 @@ internal sealed class WorldDomainOperationCredit : IDisposable
 {
     private readonly long _bytes;
     private readonly WorldAdmissionDomain _domain;
+    private readonly bool _isRetainedDiagnosticSource;
     private readonly Lock _gate = new();
     private int _activeUseCount;
     private long _activeWorkspaceBytes;
     private bool _isChargeReleased;
     private bool _isDisposed;
 
-    internal WorldDomainOperationCredit(WorldAdmissionDomain domain, long bytes)
+    internal WorldDomainOperationCredit(WorldAdmissionDomain domain, long bytes, bool isRetainedDiagnosticSource = false)
     {
         _domain = domain;
         _bytes = bytes;
+        _isRetainedDiagnosticSource = isRetainedDiagnosticSource;
     }
 
     internal WorldAdmissionDomain Domain => _domain;
+
+    internal bool IsRetainedDiagnosticSource => _isRetainedDiagnosticSource;
+
+    internal long ReservedBytes => _bytes;
 
     public void Dispose()
     {
@@ -60,7 +66,15 @@ internal sealed class WorldDomainOperationCredit : IDisposable
     {
         if (!_isChargeReleased)
         {
-            _domain.ReleaseOperationCredit(_bytes);
+            if (_isRetainedDiagnosticSource)
+            {
+                _domain.ReleaseRetainedDiagnosticSourceCredit(_bytes);
+            }
+            else
+            {
+                _domain.ReleaseOperationCredit(_bytes);
+            }
+
             _isChargeReleased = true;
         }
     }

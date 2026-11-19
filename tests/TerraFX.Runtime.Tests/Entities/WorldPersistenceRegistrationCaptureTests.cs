@@ -499,7 +499,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             new ResetMarkerCodec());
         _ = registrationBuilder.RegisterComponent(resetSchema, new ResetMarkerFactory(resetBinding));
         var registration = registrationBuilder.Build();
-        using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        using var domain = new WorldAdmissionDomain(64 * 1024 * 1024);
         using var world = World.Create(new WorldOptions(registration) {
             AdmissionDomain = domain,
             CpuWorkerCount = 0,

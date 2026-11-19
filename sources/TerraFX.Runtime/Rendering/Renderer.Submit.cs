@@ -105,14 +105,18 @@ public sealed partial class Renderer
         }
 
         using var submissionAdmission = AcquireSubmissionAdmission(skinnedNormalDiagnosticPass.HasValue);
-        WorldDiagnosticAttributionAccount? diagnosticAttributionAccount = null;
+        using var diagnosticFundingUse = skinnedNormalDiagnosticPass.HasValue
+            ? snapshot.RetainDiagnosticFundingUse()
+            : default;
+        var diagnosticFundingControl = skinnedNormalDiagnosticPass.HasValue
+            ? diagnosticFundingUse.Control
+            : null;
 
         if (skinnedNormalDiagnosticPass.HasValue)
         {
-            _ = _diagnostics
-                ?? throw new InvalidOperationException("The native Renderer has no borrowed host Diagnostics service.");
+            _ = _diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The native Renderer has no borrowed host diagnostic service owner.");
             ArgumentOutOfRangeException.ThrowIfZero(_hostId);
-            diagnosticAttributionAccount = snapshot.RetainDiagnosticAttributionAccount();
         }
 
         using var snapshotAssetPins = snapshot.RetainAssetPins();
@@ -859,8 +863,8 @@ public sealed partial class Renderer
                     result.DeviceEpoch,
                     result.SurfaceEpoch,
                     result.SwapchainEpoch,
-                    diagnosticAttributionAccount
-                        ?? throw new InvalidOperationException("The diagnostic submission has no retained World attribution account."));
+                    diagnosticFundingControl
+                        ?? throw new InvalidOperationException("The diagnostic submission has no retained source funding control."));
             }
 
             return new RenderSubmissionReceipt(

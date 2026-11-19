@@ -42,6 +42,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
     private int _activeInterestCount;
     private int _activeOperationCreditCount;
     private int _activeReservationCount;
+    private int _activeRetainedDiagnosticSourceCreditCount;
     private ReentrantGate _gate;
     private ReentrantGate _growthGate;
     private WorldGuidUseControl? _independentUseHead;
@@ -429,6 +430,39 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
             _worldBytes = checked(_worldBytes - bytes);
             _activeOperationCreditCount--;
+            completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
+
+            if (completeRetirement)
+            {
+                ReleaseRegistry();
+            }
+        }
+
+        if (completeRetirement)
+        {
+            PublishRetirement();
+        }
+    }
+
+    internal void ReleaseRetainedDiagnosticSourceCredit(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        var completeRetirement = false;
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_activeOperationCreditCount <= 0)
+                || (_activeRetainedDiagnosticSourceCreditCount <= 0)
+                || (_worldBytes < bytes))
+            {
+                throw new InvalidOperationException("The retained diagnostic source credit is not active.");
+            }
+
+            _worldBytes = checked(_worldBytes - bytes);
+            _activeOperationCreditCount--;
+            _activeRetainedDiagnosticSourceCreditCount--;
             completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
 
             if (completeRetirement)
@@ -1727,6 +1761,40 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         catch (OutOfMemoryException)
         {
             ReleaseOperationCredit(bytes);
+            throw;
+        }
+    }
+
+    internal bool TryReserveRetainedDiagnosticSourceCredit(long bytes, out WorldDomainOperationCredit? credit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed
+                || (_terminalAnchorState != TerminalAnchorStateNone)
+                || (_activeOperationCreditCount >= MaximumReservations)
+                || (bytes > _maximumBytes - _registryCharge - _pendingGrowthBytes - _worldBytes))
+            {
+                credit = null;
+                return false;
+            }
+
+            _worldBytes = checked(_worldBytes + bytes);
+            _activeOperationCreditCount = checked(_activeOperationCreditCount + 1);
+            _activeRetainedDiagnosticSourceCreditCount = checked(_activeRetainedDiagnosticSourceCreditCount + 1);
+        }
+
+        try
+        {
+            credit = new WorldDomainOperationCredit(this, bytes, isRetainedDiagnosticSource: true);
+            return true;
+        }
+        catch (OutOfMemoryException)
+        {
+            ReleaseRetainedDiagnosticSourceCredit(bytes);
             throw;
         }
     }
@@ -3125,20 +3193,55 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_terminalAnchorState == TerminalAnchorStateEscrowed)
+            switch (_terminalAnchorState)
             {
-                if (!published)
+                case TerminalAnchorStateEscrowed:
                 {
-                    throw new InvalidOperationException("The admission-domain retirement publisher could not publish its terminal task.");
+                    if (!published)
+                    {
+                        throw new InvalidOperationException("The admission-domain retirement publisher could not publish its terminal task.");
+                    }
+
+                    _terminalAnchorState = TerminalAnchorStatePublished;
+                    return;
                 }
 
-                _terminalAnchorState = TerminalAnchorStatePublished;
-                return;
-            }
+                case TerminalAnchorStateReturned:
+                case TerminalAnchorStateCompletionPending:
+                {
+                    if (!published)
+                    {
+                        throw new InvalidOperationException("The admission-domain retirement publisher could not publish its terminal task.");
+                    }
 
-            if (_terminalAnchorState != TerminalAnchorStateNone)
-            {
-                throw new InvalidOperationException("The admission-domain retirement publisher cannot release a retained terminal anchor.");
+                    return;
+                }
+
+                case TerminalAnchorStateBindingReleased:
+                {
+                    if (!published)
+                    {
+                        throw new InvalidOperationException("The admission-domain retirement publisher could not publish its terminal task.");
+                    }
+
+                    _terminalRegistry = null;
+                    _terminalGrant = default;
+                    _terminalLifetime = null;
+                    _terminalFailure = null;
+                    _terminalWorldReturnReady = false;
+                    _terminalAnchorState = TerminalAnchorStateNone;
+                    break;
+                }
+
+                case TerminalAnchorStateNone:
+                {
+                    break;
+                }
+
+                default:
+                {
+                    throw new InvalidOperationException("The admission-domain retirement publisher cannot release a retained terminal anchor.");
+                }
             }
         }
 
@@ -3164,6 +3267,11 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
     private void ReleaseRegistry()
     {
+        if ((_activeOperationCreditCount != 0) || (_activeRetainedDiagnosticSourceCreditCount != 0))
+        {
+            throw new InvalidOperationException("The World-domain registry cannot be released while operation credits remain.");
+        }
+
         _lineages = [];
         _lineageIndex = [];
         _lineageKeys = [];
@@ -3171,6 +3279,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         _reservations = [];
         _activeInterestCount = 0;
         _activeOperationCreditCount = 0;
+        _activeRetainedDiagnosticSourceCreditCount = 0;
         _activeReservationCount = 0;
         _lineageEdgeCount = 0;
         _lineageKeyCount = 0;

@@ -175,7 +175,7 @@ public sealed partial class World
                 }
                 catch (Exception exception)
                 {
-                    _diagnosticsCapability.Write(deliveryReport.GetFailureDiagnostic(index));
+                    WriteDiagnostic(deliveryReport.GetFailureDiagnostic(index));
                     deliveryReport.Fail(index, exception);
                 }
             }
@@ -193,11 +193,11 @@ public sealed partial class World
     {
         try
         {
-            _diagnosticsCapability.WriteSubscriptionCapacityWarning();
+            WriteSubscriptionCapacityWarning();
         }
         catch (OutOfMemoryException)
         {
-            _diagnosticsCapability.RecordDropped();
+            RecordDiagnosticDropped();
         }
     }
 

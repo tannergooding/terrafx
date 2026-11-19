@@ -1,13 +1,16 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading;
 
 namespace TerraFX.Entities;
 
 internal sealed class WorldConstructionPlan
 {
     private readonly WorldAdmissionDomain _admissionDomain;
+    private WorldDiagnosticFundingControl? _diagnosticFundingControl;
     private readonly WorldDiagnosticsCapability _diagnosticsCapability;
+    private WorldDiagnosticsServiceOwner? _diagnosticsServiceOwner;
     private readonly WorldDomainReservation _domainReservation;
     private readonly Guid _executionSessionId;
     private readonly Guid _identityBranchId;
@@ -54,6 +57,8 @@ internal sealed class WorldConstructionPlan
         WorldGuidRegistry registry,
         WorldGuidGrant worldGuidGrant,
         WorldDiagnosticsCapability diagnosticsCapability,
+        WorldDiagnosticsServiceOwner diagnosticsServiceOwner,
+        WorldDiagnosticFundingControl diagnosticFundingControl,
         StableIdentityLedger identityLedger,
         WorldSystemQuarantineReservation systemQuarantineReservation,
         WorldWorkerPool workerPool,
@@ -126,6 +131,10 @@ internal sealed class WorldConstructionPlan
         _worldGuid = worldGuid;
         _worldGuidGrant = worldGuidGrant;
         _diagnosticsCapability = diagnosticsCapability;
+        ArgumentNullException.ThrowIfNull(diagnosticsServiceOwner);
+        _diagnosticsServiceOwner = diagnosticsServiceOwner;
+        ArgumentNullException.ThrowIfNull(diagnosticFundingControl);
+        _diagnosticFundingControl = diagnosticFundingControl;
         _identityLedger = identityLedger;
         _systemQuarantineReservation = systemQuarantineReservation;
         _workerPool = workerPool;
@@ -240,6 +249,10 @@ internal sealed class WorldConstructionPlan
 
         try
         {
+            (_diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The untransferred restore plan lost its diagnostic service owner."))
+                .CloseCapability(_diagnosticsCapability);
+
             if (enrolled)
             {
                 _admissionDomain.BeginWorldClose(_domainReservation);
@@ -272,20 +285,42 @@ internal sealed class WorldConstructionPlan
                 }
                 finally
                 {
-                    if (enrolled)
+                    try
                     {
-                        _admissionDomain.CompleteWorldClose(
-                            _domainReservation,
-                            cleanupSucceeded && quarantineReturned && capacityReturned);
+                        if (enrolled)
+                        {
+                            _admissionDomain.CompleteWorldClose(
+                                _domainReservation,
+                                cleanupSucceeded && quarantineReturned && capacityReturned);
+                        }
+                        else
+                        {
+                            _domainReservation.Dispose();
+                        }
                     }
-                    else
+                    finally
                     {
-                        _domainReservation.Dispose();
+                        try
+                        {
+                            Interlocked.Exchange(ref _diagnosticFundingControl, null)?.ReleaseUse();
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref _diagnosticsServiceOwner, null)?.ReleaseWorldUse();
+                        }
                     }
                 }
             }
         }
     }
+
+    internal WorldDiagnosticFundingControl TakeDiagnosticFundingControl()
+        => Interlocked.Exchange(ref _diagnosticFundingControl, null)
+            ?? throw new InvalidOperationException("The construction plan no longer owns its diagnostic funding use.");
+
+    internal WorldDiagnosticsServiceOwner TakeDiagnosticsServiceOwner()
+        => Interlocked.Exchange(ref _diagnosticsServiceOwner, null)
+            ?? throw new InvalidOperationException("The construction plan no longer owns its diagnostic service use.");
 
     internal void TransferRestoreResourcesToWorld()
     {
@@ -338,6 +373,9 @@ internal sealed class WorldConstructionPlan
             || (_diagnosticsCapability is null)
             || (_diagnosticsCapability.WorldGuid != _worldGuid)
             || (_diagnosticsCapability.ExecutionSessionId != _executionSessionId)
+            || (_diagnosticsServiceOwner is null)
+            || (_diagnosticFundingControl is null)
+            || (_diagnosticFundingControl.Account.WorldGuid != _worldGuid)
             || (_identityLedger is null)
             || (_systemQuarantineReservation is null)
             || (_workerPool is null)

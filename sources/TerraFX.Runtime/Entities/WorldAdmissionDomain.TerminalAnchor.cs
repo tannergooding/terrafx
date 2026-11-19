@@ -8,6 +8,8 @@ namespace TerraFX.Entities;
 public sealed partial class WorldAdmissionDomain
 {
     private const int TerminalAnchorStateBinding = 1;
+    private const int TerminalAnchorStateBindingReleased = 10;
+    private const int TerminalAnchorStateCompletionPending = 9;
     private const int TerminalAnchorStateDetaching = 3;
     private const int TerminalAnchorStateEscrowed = 6;
     private const int TerminalAnchorStateInvoking = 5;
@@ -22,6 +24,58 @@ public sealed partial class WorldAdmissionDomain
     private WorldGuidGrant _terminalGrant;
     private WorldLifetimeControl? _terminalLifetime;
     private WorldGuidRegistry? _terminalRegistry;
+    private bool _terminalWorldReturnReady;
+
+    internal bool CompleteTerminalAnchorBindingRelease(WorldGuidRegistry registry, in WorldGuidGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStateCompletionPending)
+                || !ReferenceEquals(_terminalRegistry, registry)
+                || !_terminalGrant.Equals(grant)
+                || (_terminalLifetime is null)
+                || !_isDisposed
+                || !_terminalWorldReturnReady
+                || (_activeInterestCount != 0)
+                || (_activeOperationCreditCount != _activeRetainedDiagnosticSourceCreditCount)
+                || (_activeReservationCount != 0))
+            {
+                return false;
+            }
+
+            if (_activeOperationCreditCount == 0)
+            {
+                if (_registryCharge != RegistrarControlBytes)
+                {
+                    return false;
+                }
+
+                if (_retirement.Task.IsCompleted)
+                {
+                    _registryCharge = 0;
+                    _terminalWorldReturnReady = false;
+                    _terminalAnchorState = TerminalAnchorStateNone;
+                }
+                else
+                {
+                    _terminalAnchorState = TerminalAnchorStateBindingReleased;
+                }
+            }
+            else
+            {
+                _terminalAnchorState = TerminalAnchorStateBindingReleased;
+            }
+
+            _terminalRegistry = null;
+            _terminalGrant = default;
+            _terminalLifetime = null;
+            _terminalFailure = null;
+            return true;
+        }
+    }
 
     internal bool IsTerminalAnchorBound(WorldGuidRegistry registry, in WorldGuidGrant grant, WorldLifetimeControl lifetime)
     {
@@ -47,14 +101,19 @@ public sealed partial class WorldAdmissionDomain
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if ((_terminalAnchorState != TerminalAnchorStatePublished)
+            if ((_terminalAnchorState is not (TerminalAnchorStateEscrowed or TerminalAnchorStatePublished))
+                || !_terminalWorldReturnReady
+                || !_isDisposed
+                || (_activeInterestCount != 0)
+                || (_activeReservationCount != 0)
+                || (_activeOperationCreditCount != _activeRetainedDiagnosticSourceCreditCount)
                 || !ReferenceEquals(_terminalLifetime, lifetime))
             {
                 return false;
             }
 
             registry = _terminalRegistry
-                ?? throw new InvalidOperationException("The published terminal anchor lost its WorldGuid registry.");
+                ?? throw new InvalidOperationException("The terminal anchor lost its WorldGuid registry.");
             grant = _terminalGrant;
             permit = lifetime.RetirementPermit;
         }
@@ -66,7 +125,8 @@ public sealed partial class WorldAdmissionDomain
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if ((_terminalAnchorState != TerminalAnchorStatePublished)
+            if ((_terminalAnchorState is not (TerminalAnchorStateEscrowed or TerminalAnchorStatePublished))
+                || !_terminalWorldReturnReady
                 || !ReferenceEquals(_terminalRegistry, registry)
                 || !_terminalGrant.Equals(grant)
                 || !ReferenceEquals(_terminalLifetime, lifetime))
@@ -94,6 +154,7 @@ public sealed partial class WorldAdmissionDomain
             _terminalRegistry = registry;
             _terminalGrant = grant;
             _terminalLifetime = null;
+            _terminalWorldReturnReady = false;
             _terminalAnchorState = TerminalAnchorStateBinding;
         }
 
@@ -103,6 +164,7 @@ public sealed partial class WorldAdmissionDomain
             _terminalRegistry = null;
             _terminalGrant = default;
             _terminalLifetime = null;
+            _terminalWorldReturnReady = false;
             _terminalAnchorState = TerminalAnchorStateNone;
             return false;
         }
@@ -139,7 +201,7 @@ public sealed partial class WorldAdmissionDomain
             if (_isDisposed
                 || (_terminalAnchorState != TerminalAnchorStateNone)
                 || (_activeInterestCount != 1)
-                || (_activeOperationCreditCount != 0)
+                || (_activeOperationCreditCount != _activeRetainedDiagnosticSourceCreditCount)
                 || (_activeReservationCount != 0)
                 || (_pendingGrowthBytes != 0)
                 || (_prospectiveInterestCount != 0)
@@ -166,6 +228,7 @@ public sealed partial class WorldAdmissionDomain
             _terminalRegistry = registry;
             _terminalGrant = grant;
             _terminalLifetime = lifetime;
+            _terminalWorldReturnReady = false;
             _terminalAnchorState = TerminalAnchorStateBinding;
         }
 
@@ -175,6 +238,7 @@ public sealed partial class WorldAdmissionDomain
             _terminalRegistry = null;
             _terminalGrant = default;
             _terminalLifetime = null;
+            _terminalWorldReturnReady = false;
             _terminalAnchorState = TerminalAnchorStateNone;
             return false;
         }
@@ -280,6 +344,7 @@ public sealed partial class WorldAdmissionDomain
             _terminalRegistry = null;
             _terminalGrant = default;
             _terminalLifetime = null;
+            _terminalWorldReturnReady = false;
             _terminalAnchorState = TerminalAnchorStateNone;
         }
 
@@ -298,21 +363,20 @@ public sealed partial class WorldAdmissionDomain
                 || !_terminalGrant.Equals(grant)
                 || (_terminalLifetime is null)
                 || !_isDisposed
+                || !_terminalWorldReturnReady
                 || (_activeInterestCount != 0)
-                || (_activeOperationCreditCount != 0)
-                || (_activeReservationCount != 0)
-                || (_registryCharge != RegistrarControlBytes)
-                || !_retirement.Task.IsCompleted)
+                || (_activeOperationCreditCount != _activeRetainedDiagnosticSourceCreditCount)
+                || (_activeReservationCount != 0))
             {
                 return false;
             }
 
-            _registryCharge = 0;
-            _terminalRegistry = null;
-            _terminalGrant = default;
-            _terminalLifetime = null;
-            _terminalFailure = null;
-            _terminalAnchorState = TerminalAnchorStateNone;
+            if ((_activeOperationCreditCount == 0) && (_registryCharge != RegistrarControlBytes))
+            {
+                return false;
+            }
+
+            _terminalAnchorState = TerminalAnchorStateCompletionPending;
             return true;
         }
     }

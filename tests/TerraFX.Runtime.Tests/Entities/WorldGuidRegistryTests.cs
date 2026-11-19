@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -70,6 +71,24 @@ internal sealed class WorldGuidRegistryTests
                 return candidate;
             }
         }
+    }
+
+    private static WorldAdmissionDomain GetAdmissionDomain(World world)
+    {
+        var field = typeof(WorldDiagnosticFundingControl).GetField("_credit", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The diagnostic source credit is missing.");
+        var credit = (WorldDomainOperationCredit)(field.GetValue(GetDiagnosticFundingControl(world))
+            ?? throw new InvalidOperationException("The diagnostic source credit is not initialized."));
+        return credit.Domain;
+    }
+
+    private static WorldDiagnosticFundingControl GetDiagnosticFundingControl(World world)
+    {
+        var field = typeof(World).GetField("_diagnosticFundingControl", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The World diagnostic funding control is missing.");
+
+        return (WorldDiagnosticFundingControl)(field.GetValue(world)
+            ?? throw new InvalidOperationException("The World diagnostic funding control is not initialized."));
     }
 
     [Test]
@@ -431,6 +450,73 @@ internal sealed class WorldGuidRegistryTests
         Assert.That(registry.TryReleaseFresh(replacement), Is.True);
         Assert.That(registry.TryReserveFresh(worldGuid, out var next, out _), Is.True);
         Assert.That(registry.TryReleaseFresh(next), Is.True);
+    }
+
+    [Test]
+    public void TerminalAnchorAcceptsConcurrentFinalDiagnosticSourceReturn()
+    {
+        for (var iteration = 0; iteration < 16; iteration++)
+        {
+            using var world = CreateEmptyWorld(Guid.NewGuid());
+            var fundingControl = GetDiagnosticFundingControl(world);
+            var domain = GetAdmissionDomain(world);
+            using var retainedUse = new WorldDiagnosticFundingUse(fundingControl);
+            using var releaseGate = new ManualResetEventSlim();
+            var releaseTask = Task.Run(() => {
+                releaseGate.Wait();
+                retainedUse.Dispose();
+            });
+
+            Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.True);
+            releaseGate.Set();
+            world.Dispose();
+            releaseTask.GetAwaiter().GetResult();
+
+            Assert.That(domain.Retirement.IsCompleted, Is.True);
+        }
+    }
+
+    [Test]
+    public void TerminalAnchorRejectsGenuineOperationCredits()
+    {
+        using var world = CreateEmptyWorld(Guid.NewGuid());
+        var domain = GetAdmissionDomain(world);
+
+        if (!domain.TryReserveOperationCredit(1, out var operationCredit)
+            || (operationCredit is null))
+        {
+            throw new InvalidOperationException("The terminal-anchor test could not reserve an ordinary operation credit.");
+        }
+
+        using (operationCredit)
+        {
+            Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.False);
+        }
+
+        Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.True);
+        world.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void TerminalAnchorReleasesBindingBeforeRetainedDiagnosticSourceRetiresDomain()
+    {
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+        using var world = CreateEmptyWorld(worldGuid);
+        var fundingControl = GetDiagnosticFundingControl(world);
+        var domain = GetAdmissionDomain(world);
+        using var retainedUse = new WorldDiagnosticFundingUse(fundingControl);
+
+        Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.True);
+        world.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+        Assert.That(registry.TryReserveFresh(worldGuid, out var replacement, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(replacement), Is.True);
+
+        retainedUse.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
     }
 
     [Test]

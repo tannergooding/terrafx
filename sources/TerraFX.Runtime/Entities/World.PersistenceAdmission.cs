@@ -710,6 +710,13 @@ public sealed partial class World
 
         var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, initialTimeScale, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
+
+        if (options.SchedulingLimits.MaximumDiagnosticBytes > options.SchedulingLimits.MaximumOwnedStateBytes)
+        {
+            admissionRefusal = WorldAdmissionRefusal.OperationCapacity;
+            return false;
+        }
+
         restoreEcsPlan ??= WorldRestoreEcsPlan.CreateEmpty(restoreIdentityState.EntitySlots.LiveEntityCount);
         var (restoreEcsArchetypeMetadataBytes, restoreEcsStorageBytes, restoreWorkPlanCapacity, restoreWorkPlanBytes, restoreComponentWorkspaceBytes) =
             MeasureRestoreEcsStorage(_ownerId, options, restoreIdentityState, restoreEcsPlan);
@@ -728,6 +735,11 @@ public sealed partial class World
         WorldDomainReservation? domainReservation = null;
         WorldSystemQuarantineReservation? quarantineReservation = null;
         WorldDiagnosticsCapability? diagnosticsCapability = null;
+        WorldDomainOperationCredit? diagnosticFundingCredit = null;
+        WorldDiagnosticFundingControl? diagnosticFundingControl = null;
+        var diagnosticsServiceOwner = _diagnosticsServiceOwner
+            ?? throw new InvalidOperationException("The target World lost its diagnostic service owner.");
+        var diagnosticsServiceOwnerUseAcquired = false;
         var lineageGrant = default(WorldLineageGrant);
         var lineageReserved = false;
         var planCreated = false;
@@ -760,11 +772,41 @@ public sealed partial class World
                     {
                         try
                         {
-                            diagnosticsCapability?.Close();
+                            if (diagnosticsCapability is not null)
+                            {
+                                diagnosticsServiceOwner.CloseCapability(diagnosticsCapability);
+                            }
                         }
                         finally
                         {
-                            domainReservation?.Dispose();
+                            try
+                            {
+                                if (diagnosticsServiceOwnerUseAcquired)
+                                {
+                                    diagnosticsServiceOwner.ReleaseWorldUse();
+                                    diagnosticsServiceOwnerUseAcquired = false;
+                                }
+                            }
+                            finally
+                            {
+                                try
+                                {
+                                    diagnosticFundingControl?.ReleaseUse();
+                                    diagnosticFundingControl = null;
+                                }
+                                finally
+                                {
+                                    try
+                                    {
+                                        diagnosticFundingCredit?.Dispose();
+                                        diagnosticFundingCredit = null;
+                                    }
+                                    finally
+                                    {
+                                        domainReservation?.Dispose();
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -787,6 +829,15 @@ public sealed partial class World
                 return false;
             }
 
+            if (!_admissionDomain.TryReserveRetainedDiagnosticSourceCredit(
+                    options.SchedulingLimits.MaximumDiagnosticBytes,
+                    out diagnosticFundingCredit)
+                || (diagnosticFundingCredit is null))
+            {
+                admissionRefusal = WorldAdmissionRefusal.OperationCapacity;
+                return false;
+            }
+
             if (!_admissionDomain.TryReserveRetainedLineageHistoryForBranch(
                     domainReservation,
                     restoreIdentityState.LineageMembership,
@@ -799,10 +850,20 @@ public sealed partial class World
             }
 
             lineageReserved = true;
-            diagnosticsCapability = _diagnosticsCapability.Diagnostics.CreateBorrowedWorldCapability(
+            diagnosticsServiceOwner.RetainWorldUse();
+            diagnosticsServiceOwnerUseAcquired = true;
+            var selectedDiagnosticsCapability = _diagnosticsCapability.Diagnostics.CreateBorrowedWorldCapability(
                 restoreIdentityState.WorldGuid,
                 _executionSessionId,
-                options.SchedulingLimits.MaximumDiagnosticBytes);
+                options.SchedulingLimits.MaximumDiagnosticBytes - WorldDiagnosticFundingControl.OwnedByteReservation);
+            diagnosticsCapability = selectedDiagnosticsCapability;
+            var selectedDiagnosticFundingControl = new WorldDiagnosticFundingControl(
+                selectedDiagnosticsCapability.AttributionAccount,
+                diagnosticFundingCredit
+                    ?? throw new InvalidOperationException("The restore diagnostic envelope credit was not initialized."));
+            diagnosticFundingControl = selectedDiagnosticFundingControl;
+            diagnosticFundingCredit = null;
+            diagnosticFundingCredit = null;
             quarantineReservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(options.Registration.Systems.Length);
             var lifetimeControl = new WorldLifetimeControl(
                 _registry,
@@ -833,7 +894,9 @@ public sealed partial class World
                 lineageGrant,
                 _registry,
                 replacementGrant,
-                diagnosticsCapability,
+                selectedDiagnosticsCapability,
+                diagnosticsServiceOwner,
+                selectedDiagnosticFundingControl,
                 restoreIdentityState.IdentityLedger,
                 quarantineReservation,
                 _workerPool,
@@ -855,6 +918,8 @@ public sealed partial class World
                 targetWorld: this);
             domainReservation = null;
             planCreated = true;
+            diagnosticsServiceOwnerUseAcquired = false;
+            diagnosticFundingControl = null;
             return true;
         }
         finally

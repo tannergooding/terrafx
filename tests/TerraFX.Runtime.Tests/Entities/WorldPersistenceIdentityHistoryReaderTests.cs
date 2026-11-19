@@ -331,7 +331,7 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
     [Test]
     public void CreatesReplacementConstructionPlanFromAdmittedBranchHistory()
     {
-        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        using var domain = new WorldAdmissionDomain(32 * 1024 * 1024);
         var history = CreateValidatedLiveEntityHistory();
         var configuration = CreateConfiguration(maximumIdentityBranches: 2);
         var branchId = Guid.NewGuid();

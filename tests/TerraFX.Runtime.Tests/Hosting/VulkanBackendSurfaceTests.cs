@@ -118,7 +118,7 @@ internal sealed partial class EngineHostOptionsTests
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
         GpuResidencyService? residencyService = null;
-        DiagnosticsService? diagnostics = null;
+        WorldDiagnosticsServiceOwner? diagnosticsServiceOwner = null;
         Renderer? rendererForCleanup = null;
         Surface? surface = null;
         World? renderWorld = null;
@@ -183,8 +183,8 @@ internal sealed partial class EngineHostOptionsTests
                     activeSurface.ColorFormat),
                 Is.True);
             residencyService = new GpuResidencyService(graphicsDevice);
-            diagnostics = new DiagnosticsService();
-            var renderer = Renderer.Create(graphicsDevice, residencyService, diagnostics, platformOwner.OwnerId);
+            diagnosticsServiceOwner = DiagnosticsServiceTestHelper.CreateHostOwner().Owner;
+            var renderer = Renderer.Create(graphicsDevice, residencyService, diagnosticsServiceOwner, platformOwner.OwnerId);
             rendererForCleanup = renderer;
             var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
             _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
@@ -579,7 +579,7 @@ internal sealed partial class EngineHostOptionsTests
                             }
                             finally
                             {
-                                diagnostics?.Close();
+                                diagnosticsServiceOwner?.CloseService();
                             }
                         }
                     }

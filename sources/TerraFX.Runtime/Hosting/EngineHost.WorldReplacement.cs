@@ -36,12 +36,12 @@ public sealed partial class EngineHost
 
         var workerPool = _workerPool
             ?? throw new InvalidOperationException("The EngineHost worker pool is not initialized.");
-        var diagnostics = _diagnostics
-            ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
+        var diagnosticsServiceOwner = _diagnosticsServiceOwner
+            ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized.");
         var admissionDomain = _admissionDomain
             ?? throw new InvalidOperationException("The EngineHost admission domain is not initialized.");
 
-        if (!replacementWorld.IsHostedBy(workerPool, diagnostics, admissionDomain))
+        if (!replacementWorld.IsHostedBy(workerPool, diagnosticsServiceOwner, admissionDomain))
         {
             throw new InvalidOperationException("The replacement World was not prepared for this exact EngineHost.");
         }
@@ -118,13 +118,13 @@ public sealed partial class EngineHost
         ArgumentNullException.ThrowIfNull(execution);
         var workerPool = _workerPool
             ?? throw new InvalidOperationException("The EngineHost worker pool is not initialized.");
-        var diagnostics = _diagnostics
-            ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
+        var diagnosticsServiceOwner = _diagnosticsServiceOwner
+            ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized.");
         var admissionDomain = _admissionDomain
             ?? throw new InvalidOperationException("The EngineHost admission domain is not initialized.");
 
         if (!ReferenceEquals(execution.Persistence.Host, this)
-            || !execution.TargetWorld.IsHostedBy(workerPool, diagnostics, admissionDomain))
+            || !execution.TargetWorld.IsHostedBy(workerPool, diagnosticsServiceOwner, admissionDomain))
         {
             throw new InvalidOperationException("The World load execution is not bound to this exact EngineHost.");
         }

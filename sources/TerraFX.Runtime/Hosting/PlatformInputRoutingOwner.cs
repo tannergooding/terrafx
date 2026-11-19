@@ -19,7 +19,7 @@ internal sealed class PlatformInputRoutingOwner
 {
     private readonly Dictionary<InputDeviceHandle, (InputRouter Router, ushort PlayerSlot)> _deviceAssignments = [];
     private readonly Dictionary<(uint RecipientId, ushort PlayerSlot), InputDeviceHandle> _devicesByTimelinePlayer = [];
-    private readonly DiagnosticsService _diagnostics;
+    private readonly WorldDiagnosticsServiceOwner _diagnosticsServiceOwner;
     private readonly Func<uint, InputRouter?> _findSimulationTimelineRouter;
     private readonly HashSet<InputRouter> _inputRouters;
     private readonly Dictionary<InputRouter, WorldInputTimelineAdapter> _inputTimelineByRouter;
@@ -34,7 +34,7 @@ internal sealed class PlatformInputRoutingOwner
         HostProfile profile,
         IPlatformInputRoutingHost platformOwner,
         HostEventSequenceLease sequenceLease,
-        DiagnosticsService diagnostics,
+        WorldDiagnosticsServiceOwner diagnosticsServiceOwner,
         int ownerThreadId,
         HashSet<InputRouter> inputRouters,
         Dictionary<InputRouter, WorldInputTimelineAdapter> inputTimelineByRouter,
@@ -42,7 +42,7 @@ internal sealed class PlatformInputRoutingOwner
     {
         ArgumentNullException.ThrowIfNull(platformOwner);
         ArgumentNullException.ThrowIfNull(sequenceLease);
-        ArgumentNullException.ThrowIfNull(diagnostics);
+        ArgumentNullException.ThrowIfNull(diagnosticsServiceOwner);
         ArgumentOutOfRangeException.ThrowIfLessThan(ownerThreadId, 1);
         ArgumentNullException.ThrowIfNull(inputRouters);
         ArgumentNullException.ThrowIfNull(inputTimelineByRouter);
@@ -53,7 +53,7 @@ internal sealed class PlatformInputRoutingOwner
             throw new ArgumentOutOfRangeException(nameof(profile));
         }
 
-        _diagnostics = diagnostics;
+        _diagnosticsServiceOwner = diagnosticsServiceOwner;
         _findSimulationTimelineRouter = findSimulationTimelineRouter;
         _inputRouters = inputRouters;
         _inputTimelineByRouter = inputTimelineByRouter;
@@ -798,7 +798,7 @@ internal sealed class PlatformInputRoutingOwner
 
                         if (diagnostic is not null)
                         {
-                            _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                            _diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
                         }
                     }
                     else
@@ -816,7 +816,7 @@ internal sealed class PlatformInputRoutingOwner
 
                         if (diagnostic is not null)
                         {
-                            _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                            _diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
                         }
                     }
                     else
@@ -834,8 +834,8 @@ internal sealed class PlatformInputRoutingOwner
                         exception.HResult,
                         "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
                         exception.Message);
-                    _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
-                    _diagnostics.Write(
+                    _diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
+                    _diagnosticsServiceOwner.WriteUnattributed(
                         new Diagnostic(
                             "TextCommitUnavailable",
                             DiagnosticSeverity.Error,
@@ -1048,7 +1048,7 @@ internal sealed class PlatformInputRoutingOwner
                 : DiagnosticSeverity.Error;
             var reason = receipt.Rejection?.Code ?? receipt.Status.ToString();
             var world = adapter.World;
-            _diagnostics.Write(
+            _diagnosticsServiceOwner.WriteUnattributed(
                 new Diagnostic(
                     "input-state-reconciliation-rejected",
                     severity,
@@ -1244,7 +1244,7 @@ internal sealed class PlatformInputRoutingOwner
         if ((status != TextInputBatchPublishStatus.Published)
             && (session.LastDiagnostic is { } diagnostic))
         {
-            _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+            _diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
         }
     }
 
@@ -1290,7 +1290,7 @@ internal sealed class PlatformInputRoutingOwner
 
             if (session.LastDiagnostic is { } diagnostic)
             {
-                _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                _diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
             }
         }
     }
@@ -1312,7 +1312,7 @@ internal sealed class PlatformInputRoutingOwner
             ? DiagnosticSeverity.Warning
             : DiagnosticSeverity.Error;
         var reason = receipt.Rejection?.Code ?? receipt.Status.ToString();
-        _diagnostics.Write(
+        _diagnosticsServiceOwner.WriteUnattributed(
             new Diagnostic(
                 code,
                 severity,
@@ -1366,7 +1366,7 @@ internal sealed class PlatformInputRoutingOwner
             context.Add(new DiagnosticContextEntry("DeviceGeneration", deviceHandle.Generation.ToString(CultureInfo.InvariantCulture)));
         }
 
-        _diagnostics.Write(
+        _diagnosticsServiceOwner.WriteUnattributed(
             new Diagnostic(
                 "platform-input-copies-discarded",
                 DiagnosticSeverity.Warning,
@@ -1409,7 +1409,7 @@ internal sealed class PlatformInputRoutingOwner
             ];
         }
 
-        _diagnostics.Write(
+        _diagnosticsServiceOwner.WriteUnattributed(
             new Diagnostic(
                 code,
                 severity,
@@ -1475,7 +1475,7 @@ internal sealed class PlatformInputRoutingOwner
 
     private void WritePlatformInputSampleDropDiagnostic(long discardedSampleCount)
     {
-        _diagnostics.Write(
+        _diagnosticsServiceOwner.WriteUnattributed(
             new Diagnostic(
                 "platform-input-samples-discarded",
                 DiagnosticSeverity.Warning,
@@ -1505,7 +1505,7 @@ internal sealed class PlatformInputRoutingOwner
         InputRouter.InputOverflowResult overflow)
     {
         var world = adapter.World;
-        _diagnostics.Write(
+        _diagnosticsServiceOwner.WriteUnattributed(
             new Diagnostic(
                 "input-overflow",
                 DiagnosticSeverity.Warning,

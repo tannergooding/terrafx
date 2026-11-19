@@ -38,6 +38,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private readonly AssetStore _assets;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private DiagnosticsService? _diagnostics;
+    private WorldDiagnosticsServiceOwner? _diagnosticsServiceOwner;
     private GpuResidencyService? _gpuResidency;
     private GraphicsDevice? _graphicsDevice;
     private HostEventSequenceLease? _hostEventSequenceLease;
@@ -437,8 +438,8 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         var workerPool = _workerPool
             ?? throw new InvalidOperationException("The EngineHost worker pool is not initialized.");
-        var diagnostics = _diagnostics
-            ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
+        var diagnosticsServiceOwner = _diagnosticsServiceOwner
+            ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized.");
         var admissionDomain = _admissionDomain
             ?? throw new InvalidOperationException("The EngineHost admission domain is not initialized.");
         using var packageLease = _assets.AcquirePackageLease();
@@ -448,7 +449,7 @@ public sealed partial class EngineHost : IAsyncDisposable
             throw new ArgumentException("The World registration must use the exact compiled schema registry of the selected package.", nameof(options));
         }
 
-        var world = World.CreateHosted(options, workerPool, diagnostics, admissionDomain);
+        var world = World.CreateHosted(options, workerPool, diagnosticsServiceOwner, admissionDomain);
 
         try
         {
@@ -723,8 +724,6 @@ public sealed partial class EngineHost : IAsyncDisposable
         var world = schedule.World;
         var platformOwner = _platformOwner
             ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized.");
-        var diagnostics = _diagnostics
-            ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
         var debtSeconds = debtTicks / (double)world.TickRate;
         var diagnostic = new Diagnostic(
             dropped ? "SimulationDebtDropped" : "SimulationOverrun",
@@ -748,7 +747,9 @@ public sealed partial class EngineHost : IAsyncDisposable
                 ? $"The host discarded {debtTicks} tick(s) of simulation debt ({debtSeconds.ToString("R", CultureInfo.InvariantCulture)} seconds)."
                 : $"The host paused simulation with {debtTicks} tick(s) of debt ({debtSeconds.ToString("R", CultureInfo.InvariantCulture)} seconds).",
             context: [new DiagnosticContextEntry("DebtTicks", debtTicks.ToString(CultureInfo.InvariantCulture))]);
-        diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+        (_diagnosticsServiceOwner
+            ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized."))
+            .WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
     }
 
     [SuppressMessage(
@@ -762,8 +763,19 @@ public sealed partial class EngineHost : IAsyncDisposable
         try
         {
             _ownerThreadId = Environment.CurrentManagedThreadId;
-            var diagnostics = new DiagnosticsService();
+            var diagnosticsConfiguration = WorldDiagnosticsServiceOwner.GetConfiguration(
+                DiagnosticsService.MaximumServiceByteCapacity,
+                maximumPendingAttributionReservations: 1);
+            var diagnostics = new DiagnosticsService(
+                diagnosticsConfiguration.MaximumRecords,
+                diagnosticsConfiguration.DiagnosticsMaximumBytes);
             _diagnostics = diagnostics;
+            var diagnosticsServiceOwner = new WorldDiagnosticsServiceOwner(
+                diagnostics,
+                diagnosticsConfiguration.MaximumRecords,
+                maximumPendingAttributionReservations: 1,
+                ownsService: false);
+            _diagnosticsServiceOwner = diagnosticsServiceOwner;
             _workerPool = new WorldWorkerPool(_options.CpuWorkerCount);
             _admissionDomain = new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
             var sequenceLease = new HostEventSequenceLease();
@@ -808,7 +820,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                 _options.Profile,
                 new PlatformInputRoutingHostAdapter(platformOwner),
                 sequenceLease,
-                diagnostics,
+                diagnosticsServiceOwner,
                 _ownerThreadId,
                 _inputRouters,
                 _inputTimelineByRouter,
@@ -854,12 +866,12 @@ public sealed partial class EngineHost : IAsyncDisposable
             _renderer = Renderer.Create(
                 _graphicsDevice,
                 _gpuResidency,
-                diagnostics,
+                diagnosticsServiceOwner,
                 _hostId);
 
             foreach (var diagnostic in platformOwner.DrainStartupDiagnostics())
             {
-                diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
             }
 
             if (_platform.GamepadStatus is PlatformServiceStatus.Unavailable)
@@ -886,7 +898,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                         ? "The documented GameInput PC runtime is unavailable; gamepad capture is disabled and no XInput fallback is used."
                         : "The GameInputSharp COM adapter requires runtime-generated COM stubs, which this process does not support; gamepad capture is disabled and no XInput fallback is used.",
                     context: []);
-                _diagnostics.Write(gamepadDiagnostic, executionSessionId: null, worldOwnerId: null);
+                diagnosticsServiceOwner.WriteUnattributed(gamepadDiagnostic, executionSessionId: null, worldOwnerId: null);
             }
 
             _ = _startupCompletion.TrySetResult();
@@ -909,18 +921,15 @@ public sealed partial class EngineHost : IAsyncDisposable
                 {
                     foreach (var diagnostic in modeDiagnostics)
                     {
-                        diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                        diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
                     }
                 }
 
                 if (!capturedInput.Diagnostics.IsEmpty)
                 {
-                    var capturedDiagnostics = _diagnostics
-                        ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
-
                     foreach (var diagnostic in capturedInput.Diagnostics)
                     {
-                        capturedDiagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                        diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
                     }
                 }
 
@@ -1275,7 +1284,14 @@ public sealed partial class EngineHost : IAsyncDisposable
         {
             try
             {
-                _diagnostics?.Close();
+                if (_diagnosticsServiceOwner is WorldDiagnosticsServiceOwner diagnosticsServiceOwner)
+                {
+                    diagnosticsServiceOwner.CloseService();
+                }
+                else
+                {
+                    _diagnostics?.Close();
+                }
             }
             catch (Exception exception)
             {

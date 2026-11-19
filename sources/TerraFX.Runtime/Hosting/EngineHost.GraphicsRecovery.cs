@@ -57,7 +57,10 @@ public sealed partial class EngineHost
                 new DiagnosticContextEntry("AdapterName", graphicsDevice.Capabilities.AdapterName),
                 new DiagnosticContextEntry("GraphicsFailurePolicy", policy.ToString()),
             ]);
-        Volatile.Read(ref _diagnostics)?.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+        Volatile.Read(ref _diagnosticsServiceOwner)?.WriteUnattributed(
+            diagnostic,
+            executionSessionId: null,
+            worldOwnerId: null);
 
         if (policy is GraphicsFailurePolicy.StopHost)
         {
@@ -80,12 +83,12 @@ public sealed partial class EngineHost
 
         if (!capturedInput.Diagnostics.IsEmpty)
         {
-            var diagnostics = _diagnostics
-                ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
+            var diagnosticsServiceOwner = _diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized.");
 
             foreach (var diagnostic in capturedInput.Diagnostics)
             {
-                diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
             }
         }
 
@@ -101,12 +104,12 @@ public sealed partial class EngineHost
 
         if (!modeDiagnostics.IsEmpty)
         {
-            var diagnostics = _diagnostics
-                ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
+            var diagnosticsServiceOwner = _diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized.");
 
             foreach (var diagnostic in modeDiagnostics)
             {
-                diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                diagnosticsServiceOwner.WriteUnattributed(diagnostic, executionSessionId: null, worldOwnerId: null);
             }
         }
     }
@@ -281,7 +284,8 @@ public sealed partial class EngineHost
             var replacementRenderer = Renderer.Create(
                 replacementDevice,
                 replacementResidency,
-                _diagnostics ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized."),
+                _diagnosticsServiceOwner
+                    ?? throw new InvalidOperationException("The EngineHost diagnostic service owner is not initialized."),
                 _hostId);
             var publishedDevice = replacementDevice;
             replacementDevice.SetDeviceLostCallback(

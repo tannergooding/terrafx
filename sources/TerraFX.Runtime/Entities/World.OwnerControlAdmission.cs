@@ -60,7 +60,7 @@ public sealed partial class World
             nativeResult: null,
             message: message,
             context: [.. context]);
-        _diagnosticsCapability.Write(diagnostic);
+        WriteDiagnostic(diagnostic);
         return new WorldTimeScaleChangeOutcome(false, null, [diagnostic]);
     }
 

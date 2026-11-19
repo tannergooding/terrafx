@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
 using TerraFX;
+using TerraFX.Entities;
 using TerraFX.Numerics;
 
 namespace TerraFX.Rendering;
@@ -16,7 +17,7 @@ public abstract class RenderSnapshot : IDisposable
     private readonly Lock _assetPinGate = new();
     private readonly ImmutableArray<Guid> _cameraIds;
     private readonly ImmutableArray<CameraSnapshot> _cameras;
-    private WorldDiagnosticAttributionAccount? _diagnosticAttributionAccount;
+    private WorldDiagnosticFundingUse _diagnosticFundingUse;
     private readonly ImmutableArray<Guid> _directionalLightIds;
     private readonly ImmutableArray<RenderDirectionalLightSnapshot> _directionalLights;
     private int _isDisposed;
@@ -42,18 +43,19 @@ public abstract class RenderSnapshot : IDisposable
         ImmutableArray<RenderSpriteSnapshot> spriteDraws,
         ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
         RenderSnapshotAssetPins? assetPins,
-        WorldDiagnosticAttributionAccount diagnosticAttributionAccount,
+        WorldDiagnosticFundingControl diagnosticFundingControl,
         PixelSize targetExtent)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(snapshotId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(tickIndex);
-        ArgumentNullException.ThrowIfNull(diagnosticAttributionAccount);
+        ArgumentNullException.ThrowIfNull(diagnosticFundingControl);
+        var diagnosticAttributionAccount = diagnosticFundingControl.Account;
 
         if (diagnosticAttributionAccount.WorldGuid != worldGuid
             || (diagnosticAttributionAccount.WorldOwnerId == 0))
         {
-            throw new ArgumentException("The diagnostic attribution account must identify this exact source World.", nameof(diagnosticAttributionAccount));
+            throw new ArgumentException("The diagnostic attribution account must identify this exact source World.", nameof(diagnosticFundingControl));
         }
 
         if (cameraIds.IsDefault
@@ -264,7 +266,6 @@ public abstract class RenderSnapshot : IDisposable
         _spriteDraws = [.. spriteDraws];
         _spriteCameraOrders = [.. spriteCameraOrders];
         _assetPins = assetPins;
-        _diagnosticAttributionAccount = diagnosticAttributionAccount;
         TargetExtent = targetExtent;
     }
 
@@ -328,6 +329,12 @@ public abstract class RenderSnapshot : IDisposable
         GC.SuppressFinalize(this);
     }
 
+    internal void InitializeDiagnosticFundingUse(WorldDiagnosticFundingControl diagnosticFundingControl)
+    {
+        ArgumentNullException.ThrowIfNull(diagnosticFundingControl);
+        _diagnosticFundingUse = new WorldDiagnosticFundingUse(diagnosticFundingControl);
+    }
+
     internal RenderSnapshotAssetPins? RetainAssetPins()
     {
         lock (_assetPinGate)
@@ -337,13 +344,12 @@ public abstract class RenderSnapshot : IDisposable
         }
     }
 
-    internal WorldDiagnosticAttributionAccount RetainDiagnosticAttributionAccount()
+    internal WorldDiagnosticFundingUse RetainDiagnosticFundingUse()
     {
         lock (_assetPinGate)
         {
             ObjectDisposedException.ThrowIf(IsDisposed, this);
-            return _diagnosticAttributionAccount
-                ?? throw new InvalidOperationException("The render snapshot lost its source diagnostic attribution account.");
+            return new WorldDiagnosticFundingUse(_diagnosticFundingUse.Control);
         }
     }
 
@@ -354,6 +360,7 @@ public abstract class RenderSnapshot : IDisposable
         if (disposing)
         {
             RenderSnapshotAssetPins? assetPins;
+            WorldDiagnosticFundingUse diagnosticFundingUse;
 
             lock (_assetPinGate)
             {
@@ -363,10 +370,18 @@ public abstract class RenderSnapshot : IDisposable
                 }
 
                 assetPins = Interlocked.Exchange(ref _assetPins, null);
-                _ = Interlocked.Exchange(ref _diagnosticAttributionAccount, null);
+                diagnosticFundingUse = _diagnosticFundingUse;
+                _diagnosticFundingUse = default;
             }
 
-            assetPins?.Dispose();
+            try
+            {
+                assetPins?.Dispose();
+            }
+            finally
+            {
+                diagnosticFundingUse.Dispose();
+            }
         }
     }
 }

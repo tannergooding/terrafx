@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX.Entities;
 using TerraFX.Graphics;
 
 namespace TerraFX.Rendering;
@@ -50,11 +51,12 @@ public sealed partial class Renderer
         uint deviceEpoch,
         uint surfaceEpoch,
         uint swapchainEpoch,
-        WorldDiagnosticAttributionAccount attributionAccount)
+        WorldDiagnosticFundingControl fundingControl)
     {
-        var service = _diagnostics
-            ?? throw new InvalidOperationException("The native Renderer has no borrowed host Diagnostics service.");
-        ArgumentNullException.ThrowIfNull(attributionAccount);
+        var serviceOwner = _diagnosticsServiceOwner
+            ?? throw new InvalidOperationException("The native Renderer has no borrowed host diagnostic service owner.");
+        ArgumentNullException.ThrowIfNull(fundingControl);
+        var attributionAccount = fundingControl.Account;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(submissionSequence);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(completedFence);
         ArgumentOutOfRangeException.ThrowIfZero(deviceId);
@@ -106,7 +108,7 @@ public sealed partial class Renderer
                 commandIdentityLength: 110,
                 contextStringLengths: contextStringLengths);
 
-            if (!service.TryReserveAttributionPayload(attributionAccount, admissionBytes, out var reservation))
+            if (!serviceOwner.TryReserveAttributionPayload(fundingControl, admissionBytes, out var reservation))
             {
                 continue;
             }
@@ -122,12 +124,14 @@ public sealed partial class Renderer
                     deviceEpoch,
                     surfaceEpoch,
                     swapchainEpoch,
-                    service,
+                    serviceOwner,
+                    fundingControl,
                     ref reservation);
             }
             finally
             {
                 reservation.Dispose();
+                serviceOwner.CompleteAttributionReservation(fundingControl);
             }
         }
     }
@@ -141,7 +145,8 @@ public sealed partial class Renderer
         uint deviceEpoch,
         uint surfaceEpoch,
         uint swapchainEpoch,
-        DiagnosticsService service,
+        WorldDiagnosticsServiceOwner serviceOwner,
+        WorldDiagnosticFundingControl fundingControl,
         ref DiagnosticAttributionReservation reservation)
     {
         var snapshotId = snapshot.SnapshotId.ToString("N");
@@ -168,7 +173,7 @@ public sealed partial class Renderer
         var diagnostic = new Diagnostic(
             DiagnosticCode,
             DiagnosticSeverity.Warning,
-            service.GetTimestamp(),
+            serviceOwner.Diagnostics.GetTimestamp(),
             _hostId,
             snapshot.WorldGuid,
             deviceId,
@@ -185,6 +190,6 @@ public sealed partial class Renderer
             nativeResult: null,
             DiagnosticMessage,
             context);
-        return service.WriteNoncoalescingWarning(diagnostic, ref reservation);
+        return serviceOwner.WriteNoncoalescingWarning(fundingControl, diagnostic, ref reservation);
     }
 }

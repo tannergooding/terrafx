@@ -408,7 +408,7 @@ public sealed partial class World
             null,
             message,
             []);
-        _diagnosticsCapability.Write(diagnostic);
+        WriteDiagnostic(diagnostic);
         return new FrameChangeReceipt(
             FrameChangeStatus.Rejected,
             _worldGuid,

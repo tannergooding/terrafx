@@ -34,6 +34,34 @@ internal sealed class WorldAdmissionDomainTests
         return new WeakReference<WorldDomainReservation>(reservation);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static long MeasureDomainControlAllocation()
+    {
+        const int MeasurementCount = 64;
+
+        for (var index = 0; index < MeasurementCount; index++)
+        {
+            var domain = new WorldAdmissionDomain(4096);
+            domain.Dispose();
+            GC.KeepAlive(domain);
+        }
+
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < MeasurementCount; index++)
+        {
+            var domain = new WorldAdmissionDomain(4096);
+            domain.Dispose();
+            GC.KeepAlive(domain);
+        }
+
+        return (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / MeasurementCount;
+    }
+
+    [Test]
+    public void DomainControlAllocationFitsFixedRegistrarCharge()
+        => Assert.That(MeasureDomainControlAllocation(), Is.LessThanOrEqualTo(4096));
+
     [Test]
     public void DomainGrowthRequiresTheCompleteOldAndNewPeak()
     {

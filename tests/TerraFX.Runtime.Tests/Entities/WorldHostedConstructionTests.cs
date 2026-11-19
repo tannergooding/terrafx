@@ -4,6 +4,7 @@ using System;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
+using TerraFX.Runtime.Tests;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -27,17 +28,12 @@ internal sealed class WorldHostedConstructionTests
         var registration = new WorldRegistrationBuilder(schemas).Build();
         using var admissionDomain = new WorldAdmissionDomain(16 * 1024 * 1024);
         using var workerPool = new WorldWorkerPool(workerCount: 0);
-        using var diagnosticsOwner = World.Create(new WorldOptions(registration) {
-            CpuWorkerCount = 0,
-            InitialReplayLineageId = Guid.NewGuid(),
-            WorldGuid = Guid.NewGuid(),
-        });
-        var sharedDiagnostics = diagnosticsOwner.Diagnostics;
+        var (sharedDiagnostics, sharedDiagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
 
         var firstHostedWorld = World.CreateHosted(
             CreateHostedOptions(registration, admissionDomain),
             workerPool,
-            sharedDiagnostics,
+            sharedDiagnosticsOwner,
             admissionDomain);
         _ = firstHostedWorld.Step();
         firstHostedWorld.Dispose();
@@ -51,12 +47,13 @@ internal sealed class WorldHostedConstructionTests
         var secondHostedWorld = World.CreateHosted(
             CreateHostedOptions(registration, admissionDomain),
             workerPool,
-            sharedDiagnostics,
+            sharedDiagnosticsOwner,
             admissionDomain);
         _ = secondHostedWorld.Step();
         secondHostedWorld.Dispose();
 
         Assert.That(sharedDiagnostics.TryGetLatestFault(out var secondFault), Is.False);
         Assert.That(secondFault, Is.Null);
+        sharedDiagnosticsOwner.CloseService();
     }
 }

@@ -228,6 +228,12 @@ internal sealed partial class WorldGuidRegistry
         ReleaseUseCell(grant.OwnerUseCellIndex, ref ownerUseCell);
         keyCell._roleCount -= 2;
         ReleaseKeyIfUnowned(grant.KeyCellIndex, ref keyCell);
+
+        if (!domain.CompleteTerminalAnchorBindingRelease(this, grant))
+        {
+            throw new InvalidOperationException("The released terminal binding could not complete its admission-domain return.");
+        }
+
         return true;
     }
 

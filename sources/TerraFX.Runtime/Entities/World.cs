@@ -15,8 +15,8 @@ namespace TerraFX.Entities;
 public sealed partial class World : IDisposable
 {
     private const long DefaultAdmissionDomainBytes = 8_589_934_592L;
-    private const long FreshWorldControlBytes = 4096;
     private const long RestoreContextControlBytes = 128;
+    private static readonly long FreshWorldControlBytes = checked(4096L + (4L * IntPtr.Size));
 
     private long _acceptedOwnerRequests;
     private long _activeAttachmentMembershipSourceToken;
@@ -48,7 +48,9 @@ public sealed partial class World : IDisposable
     private long _controlStorageByteReservation;
     private WorldFrameCohort _currentFrameCohort;
     private int _currentIdentityBranchIndex;
+    private WorldDiagnosticFundingControl? _diagnosticFundingControl;
     private readonly WorldDiagnosticsCapability _diagnosticsCapability;
+    private WorldDiagnosticsServiceOwner? _diagnosticsServiceOwner;
     private int _disposed;
     private readonly WorldDomainReservation _domainReservation;
     private readonly EntitySlotTable _entitySlots;
@@ -442,7 +444,7 @@ public sealed partial class World : IDisposable
     /// <exception cref="ArgumentOutOfRangeException">A capacity, tick rate, time scale, or worker count is invalid.</exception>
     /// <exception cref="InvalidOperationException">A WorldGuid/domain/lineage admission is refused or owner issuance is exhausted.</exception>
     public static World Create(WorldOptions options)
-        => AdmitWorld(options, sharedWorkerPool: null, sharedDiagnostics: null, hostAdmissionDomain: null);
+        => AdmitWorld(options, sharedWorkerPool: null, sharedDiagnosticsOwner: null, hostAdmissionDomain: null);
 
     internal static World CreateRestoreCandidate(WorldConstructionPlan constructionPlan)
     {
@@ -458,7 +460,10 @@ public sealed partial class World : IDisposable
 
         try
         {
-            candidate = new World(constructionPlan);
+            candidate = new World(constructionPlan) {
+                _diagnosticsServiceOwner = constructionPlan.TakeDiagnosticsServiceOwner(),
+                _diagnosticFundingControl = constructionPlan.TakeDiagnosticFundingControl(),
+            };
             (constructionPlan.ReplacementPreparation
                 ?? throw new InvalidOperationException("The restore construction plan omitted its replacement preparation."))
                 .TransferReplacementGrantToCandidate(candidate._lifetimeControl);
@@ -500,7 +505,7 @@ public sealed partial class World : IDisposable
     private static World AdmitWorld(
         WorldOptions options,
         WorldWorkerPool? sharedWorkerPool,
-        DiagnosticsService? sharedDiagnostics,
+        WorldDiagnosticsServiceOwner? sharedDiagnosticsOwner,
         WorldAdmissionDomain? hostAdmissionDomain)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -522,7 +527,13 @@ public sealed partial class World : IDisposable
             throw new InvalidOperationException(WorldRegistration.CosmeticCreditStorageUnavailableMessage);
         }
 
+        if (options.SchedulingLimits.MaximumDiagnosticBytes > options.SchedulingLimits.MaximumOwnedStateBytes)
+        {
+            throw new InvalidOperationException("The diagnostic source envelope exceeds the World-owned state budget.");
+        }
+
         var ownsWorkerPool = sharedWorkerPool is null;
+        var standaloneDiagnosticService = sharedDiagnosticsOwner is null;
         var worldGuid = options.WorldGuid ?? Guid.NewGuid();
 
         if (worldGuid == Guid.Empty)
@@ -541,6 +552,10 @@ public sealed partial class World : IDisposable
         WorldWorkerPool? workerPool = null;
         WorldLineageGrant lineageGrant = default;
         DiagnosticsService? diagnostics = null;
+        WorldDiagnosticsServiceOwner? diagnosticsServiceOwner = null;
+        WorldDomainOperationCredit? diagnosticFundingCredit = null;
+        WorldDiagnosticFundingControl? diagnosticFundingControl = null;
+        var diagnosticsServiceOwnerUseAcquired = false;
         WorldDiagnosticsCapability? diagnosticsCapability = null;
         var lineageCommitted = false;
         var publicationCommitted = false;
@@ -567,14 +582,43 @@ public sealed partial class World : IDisposable
             ownsAdmissionDomain = (options.AdmissionDomain is null) && (hostAdmissionDomain is null);
 
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
-            var diagnosticAccountBytes = WorldDiagnosticAttributionAccount.ControlByteCharge;
-            var diagnosticServiceMaximumBytes = maximumDiagnosticBytes - diagnosticAccountBytes;
-            var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(diagnosticServiceMaximumBytes);
-            var diagnosticBytes = checked(
-                diagnosticAccountBytes
-                + ((sharedDiagnostics is null)
-                    ? DiagnosticsService.GetOwnedByteReservation(diagnosticRecordCount)
-                    : 0));
+            var diagnosticFundingControlBytes = WorldDiagnosticFundingControl.OwnedByteReservation;
+            var diagnosticRecordCount = 0;
+            var diagnosticServiceMaximumBytes = 0L;
+            var diagnosticServiceOwnerBytes = 0L;
+            var diagnosticAccountMaximumBytes = 0L;
+
+            if (standaloneDiagnosticService)
+            {
+                var diagnosticServiceConfiguration = WorldDiagnosticsServiceOwner.GetConfiguration(
+                    maximumDiagnosticBytes
+                        - WorldDiagnosticAttributionAccount.ControlByteCharge
+                        - diagnosticFundingControlBytes,
+                    maximumPendingAttributionReservations: 0);
+                diagnosticRecordCount = diagnosticServiceConfiguration.MaximumRecords;
+                diagnosticServiceMaximumBytes = diagnosticServiceConfiguration.DiagnosticsMaximumBytes;
+                diagnosticServiceOwnerBytes = diagnosticServiceConfiguration.OwnerByteReservation;
+            }
+            else
+            {
+                var sharedOwner = sharedDiagnosticsOwner
+                    ?? throw new InvalidOperationException("The hosted World omitted its diagnostic service owner.");
+                diagnosticRecordCount = sharedOwner.MaximumRecords;
+                diagnosticServiceMaximumBytes = sharedOwner.Diagnostics.MaximumByteReservation;
+                diagnosticServiceOwnerBytes = sharedOwner.OwnedByteReservation;
+            }
+
+            var diagnosticCoreStorageBytes = DiagnosticsService.GetOwnedByteReservation(diagnosticRecordCount);
+            diagnosticAccountMaximumBytes = maximumDiagnosticBytes - diagnosticFundingControlBytes
+                - (standaloneDiagnosticService
+                    ? checked(diagnosticServiceOwnerBytes + diagnosticCoreStorageBytes)
+                    : 0);
+
+            if (diagnosticAccountMaximumBytes < WorldDiagnosticAttributionAccount.ControlByteCharge)
+            {
+                throw new InvalidOperationException("The diagnostic source envelope cannot fit its required service and control backing.");
+            }
+
             var archetypeDirectoryBytes = checked(2 * ArrayBytes(options.MaximumArchetypes, IntPtr.Size));
             var resourceBytes = 0L;
             var systemBytes = checked(
@@ -601,7 +645,6 @@ public sealed partial class World : IDisposable
                 FreshWorldControlBytes
                 + archetypeDirectoryBytes
                 + ownerControlQueueBytes
-                + diagnosticBytes
                 + resourceAndSystemStateBytes
                 + sceneSupportBytes
                 + cpuExtractionSupportBytes
@@ -613,15 +656,56 @@ public sealed partial class World : IDisposable
                 throw new InvalidOperationException("The admission domain cannot reserve the World and its owned diagnostics service.");
             }
 
+            if (!admissionDomain.TryReserveRetainedDiagnosticSourceCredit(maximumDiagnosticBytes, out diagnosticFundingCredit)
+                || (diagnosticFundingCredit is null))
+            {
+                throw new InvalidOperationException("The admission domain cannot reserve the World diagnostic source envelope.");
+            }
+
             defaultDomainOwner = ownsAdmissionDomain
                 ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
                 : null;
-            diagnostics = sharedDiagnostics
-                ?? new DiagnosticsService(diagnosticRecordCount, diagnosticServiceMaximumBytes);
+
+            if (standaloneDiagnosticService)
+            {
+                diagnostics = new DiagnosticsService(diagnosticRecordCount, diagnosticServiceMaximumBytes);
+                diagnosticsServiceOwner = new WorldDiagnosticsServiceOwner(
+                    diagnostics,
+                    diagnosticRecordCount,
+                    maximumPendingAttributionReservations: 0,
+                    ownsService: true);
+            }
+            else
+            {
+                diagnosticsServiceOwner = sharedDiagnosticsOwner
+                    ?? throw new InvalidOperationException("The hosted World omitted its diagnostic service owner.");
+                diagnostics = diagnosticsServiceOwner.Diagnostics;
+            }
+
+            var selectedDiagnosticsServiceOwner = diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The World diagnostic service owner was not initialized.");
+            selectedDiagnosticsServiceOwner.RetainWorldUse();
+            diagnosticsServiceOwnerUseAcquired = true;
+            var selectedDiagnostics = diagnostics
+                ?? throw new InvalidOperationException("The World diagnostic service was not initialized.");
             var executionSessionId = ExecutionSession.ExecutionSessionId;
-            diagnosticsCapability = (sharedDiagnostics is null)
-                ? diagnostics.CreateWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes)
-                : diagnostics.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes);
+            var selectedDiagnosticsCapability = selectedDiagnostics.CreateBorrowedWorldCapability(
+                worldGuid,
+                executionSessionId,
+                diagnosticAccountMaximumBytes);
+            diagnosticsCapability = selectedDiagnosticsCapability;
+            var selectedDiagnosticFundingControl = new WorldDiagnosticFundingControl(
+                selectedDiagnosticsCapability.AttributionAccount,
+                diagnosticFundingCredit
+                    ?? throw new InvalidOperationException("The World diagnostic envelope credit was not initialized."));
+            diagnosticFundingControl = selectedDiagnosticFundingControl;
+            diagnosticFundingCredit = null;
+
+            if (standaloneDiagnosticService)
+            {
+                selectedDiagnosticsServiceOwner.SetBaselineFundingControl(selectedDiagnosticFundingControl);
+            }
+
             var replayLineageId = options.InitialReplayLineageId ?? Guid.NewGuid();
 
             if (replayLineageId == Guid.Empty)
@@ -678,11 +762,16 @@ public sealed partial class World : IDisposable
                 lineageGrant,
                 registry,
                 worldGuidGrant,
-                diagnosticsCapability,
+                selectedDiagnosticsCapability,
+                selectedDiagnosticsServiceOwner,
+                selectedDiagnosticFundingControl,
                 identityLedger,
                 systemQuarantineReservation,
                 workerPool);
-            var world = new World(constructionPlan);
+            var world = new World(constructionPlan) {
+                _diagnosticsServiceOwner = constructionPlan.TakeDiagnosticsServiceOwner(),
+                _diagnosticFundingControl = constructionPlan.TakeDiagnosticFundingControl(),
+            };
             unpublishedWorld = world;
 
             try
@@ -712,6 +801,8 @@ public sealed partial class World : IDisposable
 
                 world._lifetimeControl.PublishFresh();
                 publicationCommitted = true;
+                diagnosticsServiceOwnerUseAcquired = false;
+                diagnosticFundingControl = null;
                 return world;
             }
             catch (Exception exception)
@@ -769,12 +860,42 @@ public sealed partial class World : IDisposable
 
                     if (diagnosticsCapability is not null)
                     {
-                        diagnosticsCapability.Close();
+                        if (diagnosticsServiceOwner is not null)
+                        {
+                            diagnosticsServiceOwner.CloseCapability(diagnosticsCapability);
+                        }
+                        else
+                        {
+                            diagnosticsCapability.Close();
+                        }
                     }
-                    else if (sharedDiagnostics is null)
+                    else if ((diagnosticsServiceOwner is null) && (diagnostics is not null))
                     {
                         diagnostics?.Close();
                     }
+
+                    if (unpublishedWorld is not null)
+                    {
+                        unpublishedWorld._diagnosticFundingControl = null;
+                        unpublishedWorld._diagnosticsServiceOwner = null;
+                    }
+
+                    if (diagnosticsServiceOwnerUseAcquired)
+                    {
+                        diagnosticsServiceOwner?.ReleaseWorldUse();
+                        diagnosticsServiceOwnerUseAcquired = false;
+                    }
+                    else if ((diagnosticsServiceOwner is not null)
+                        && standaloneDiagnosticService
+                        && (diagnostics is not null))
+                    {
+                        diagnosticsServiceOwner.CloseService();
+                    }
+
+                    diagnosticFundingControl?.ReleaseUse();
+                    diagnosticFundingControl = null;
+                    diagnosticFundingCredit?.Dispose();
+                    diagnosticFundingCredit = null;
 
                     var retainsQuarantineDomain = systemQuarantineReservation?.RetainsDomainReservation == true;
 
@@ -1455,7 +1576,9 @@ public sealed partial class World : IDisposable
                 || (attachmentCleanupException is not null)
                 || _systemQuarantineReservation.RetainsDomainReservation
                 || attachmentQuarantineRetainsReservation;
-            _diagnosticsCapability.Close();
+            var diagnosticsServiceOwner = _diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The disposed World lost its diagnostic service owner.");
+            diagnosticsServiceOwner.CloseCapability(_diagnosticsCapability);
             _identityLedger.ReleaseOwnedStorage();
             _entitySlots.ReleaseOwnedStorage();
             _archetypes = [];
@@ -1485,6 +1608,12 @@ public sealed partial class World : IDisposable
             }
 
             _lifetimeControl.CloseDefaultDomain();
+            diagnosticsServiceOwner.ReleaseWorldUse();
+            _diagnosticsServiceOwner = null;
+            var diagnosticFundingControl = _diagnosticFundingControl
+                ?? throw new InvalidOperationException("The disposed World lost its diagnostic funding use.");
+            diagnosticFundingControl.ReleaseUse();
+            _diagnosticFundingControl = null;
 
             if (attachmentCleanupException is not null)
             {
@@ -1879,12 +2008,12 @@ public sealed partial class World : IDisposable
 
     internal bool IsHostedBy(
         WorldWorkerPool workerPool,
-        DiagnosticsService diagnostics,
+        WorldDiagnosticsServiceOwner diagnosticsServiceOwner,
         WorldAdmissionDomain admissionDomain)
         => (_lifetimeControl.DefaultDomainOwner is null)
             && !_ownsWorkerPool
             && ReferenceEquals(_workerPool, workerPool)
-            && ReferenceEquals(_diagnosticsCapability.Diagnostics, diagnostics)
+            && ReferenceEquals(_diagnosticsServiceOwner, diagnosticsServiceOwner)
             && ReferenceEquals(_admissionDomain, admissionDomain);
 
     internal bool TryAttachTerminalAnchorForDefaultDomain()
@@ -2193,7 +2322,7 @@ public sealed partial class World : IDisposable
             null,
             validationDiagnostic?.Message ?? exception.Message,
             []);
-        _diagnosticsCapability.Write(fault);
+        WriteDiagnostic(fault);
         _lastFault = fault;
         Volatile.Write(ref _faulted, 1);
     }
@@ -2283,6 +2412,7 @@ public sealed partial class World : IDisposable
             + _controlStorageByteReservation
             + _sceneControlPayloadByteReservation
             + _cpuExtractionSupportByteReservation
+            + (_diagnosticFundingControl?.EnvelopeBytes ?? 0)
             + _subscriptionStorageByteReservation
             + _ownerCommandPreparationByteReservation
             + _ownerControlQueueByteReservation);

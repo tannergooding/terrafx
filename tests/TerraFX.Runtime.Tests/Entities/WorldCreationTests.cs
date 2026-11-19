@@ -8,6 +8,7 @@ using System.Threading;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
+using TerraFX.Runtime.Tests;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -1078,11 +1079,13 @@ internal sealed class WorldCreationTests
         using var world = World.Create(new WorldOptions(CreateEmptyRegistration()) {
             AdmissionDomain = domain,
             InitialReplayLineageId = Guid.NewGuid(),
+            SchedulingLimits = DiagnosticsServiceTestHelper.CreateSchedulingLimitsWithDiagnosticBudget(64 * 1024),
             WorldGuid = Guid.NewGuid(),
         });
         using var foreignWorld = World.Create(new WorldOptions(CreateEmptyRegistration()) {
             AdmissionDomain = domain,
             InitialReplayLineageId = Guid.NewGuid(),
+            SchedulingLimits = DiagnosticsServiceTestHelper.CreateSchedulingLimitsWithDiagnosticBudget(64 * 1024),
             WorldGuid = Guid.NewGuid(),
         });
         var assignment = new ContentSchemaIdentityAssignment("application/component/optional-reference-test/v1");

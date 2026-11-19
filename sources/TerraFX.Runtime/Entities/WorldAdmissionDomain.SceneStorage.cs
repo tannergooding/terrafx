@@ -762,11 +762,27 @@ public sealed partial class WorldAdmissionDomain
                     && (_worldBytes >= bytes)
                     && (_activeInterestCount > 0))
                 {
+                    var worldCloseProgress = interest.WorldCloseProgress;
                     parent.MarkReleased(this);
                     ReleaseInterestEntry(ref interest);
                     _worldBytes -= bytes;
                     _activeInterestCount--;
                     released = true;
+
+                    if ((_terminalAnchorState == TerminalAnchorStateEscrowed)
+                        && ReferenceEquals(_terminalLifetime, lifetime)
+                        && _isDisposed
+                        && (_activeInterestCount == 0)
+                        && (_activeOperationCreditCount == _activeRetainedDiagnosticSourceCreditCount)
+                        && (_activeReservationCount == 0)
+                        && (_pendingGrowthBytes == 0)
+                        && (_prospectiveInterestCount == 0)
+                        && (_worldUseRawTicket.State != WorldUseRawPending)
+                        && ((worldCloseProgress & WorldCloseSucceeded) != 0))
+                    {
+                        _terminalWorldReturnReady = true;
+                    }
+
                     completeRetirement = _isDisposed && (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
 
                     if (completeRetirement)

@@ -6,6 +6,7 @@ using System.Threading;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
+using TerraFX.Runtime.Tests;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -153,6 +154,7 @@ internal sealed class WorldAttachmentRecordBindingTests
         using var world = World.Create(new WorldOptions(builder.Build()) {
             AdmissionDomain = domain,
             InitialReplayLineageId = Guid.NewGuid(),
+            SchedulingLimits = DiagnosticsServiceTestHelper.CreateSchedulingLimitsWithDiagnosticBudget(64 * 1024),
             WorldGuid = Guid.NewGuid(),
         });
         var target = world.CreateEntity(new EntityDescription());

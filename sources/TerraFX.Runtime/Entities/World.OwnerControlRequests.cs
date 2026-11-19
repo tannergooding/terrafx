@@ -117,7 +117,7 @@ public sealed partial class World
                 new DiagnosticContextEntry("AcceptedOwnerRequests", snapshot.AcceptedOwnerRequests.ToString(CultureInfo.InvariantCulture)),
                 new DiagnosticContextEntry("NextControlSequence", snapshot.NextControlSequence.ToString(CultureInfo.InvariantCulture)),
             ]);
-        _diagnosticsCapability.Write(diagnostic);
+        WriteDiagnostic(diagnostic);
         return diagnostic;
     }
 

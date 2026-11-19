@@ -1001,7 +1001,7 @@ public sealed partial class Renderer
                 spriteDraws,
                 spriteCameraOrders,
                 assetPins,
-                frameReadLease.DiagnosticAttributionAccount,
+                frameReadLease.DiagnosticFundingControl,
                 options.TargetExtent,
                 frame);
             assetPins = null;
@@ -1157,7 +1157,7 @@ public sealed partial class Renderer
                 spriteDraws,
                 spriteCameraOrders,
                 assetPins,
-                frameReadLease.DiagnosticAttributionAccount,
+                frameReadLease.DiagnosticFundingControl,
                 options.TargetExtent,
                 frameReadLease.Frame3,
                 meshCapture.Draws,

@@ -353,7 +353,7 @@ internal sealed partial class EngineHostOptionsTests
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? device = null;
         GpuResidencyService? residencyService = null;
-        DiagnosticsService? diagnosticsService = null;
+        WorldDiagnosticsServiceOwner? diagnosticsServiceOwner = null;
         Renderer? rendererForCleanup = null;
 
         try
@@ -383,11 +383,11 @@ internal sealed partial class EngineHostOptionsTests
             var graphicsDevice = device
                 ?? throw new InvalidOperationException($"{graphicsBackend} GraphicsDevice startup returned no device.");
             residencyService = new GpuResidencyService(graphicsDevice);
-            diagnosticsService = new DiagnosticsService();
+            diagnosticsServiceOwner = DiagnosticsServiceTestHelper.CreateHostOwner().Owner;
             var renderer = Renderer.Create(
                 graphicsDevice,
                 residencyService,
-                diagnosticsService,
+                diagnosticsServiceOwner,
                 platformOwner.OwnerId);
             rendererForCleanup = renderer;
             var schemas = new CompiledContentSchemaRegistry([
@@ -699,7 +699,7 @@ internal sealed partial class EngineHostOptionsTests
                 }
                 finally
                 {
-                    diagnosticsService?.Close();
+                    diagnosticsServiceOwner?.CloseService();
                 }
             }
         }

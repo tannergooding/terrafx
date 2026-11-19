@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using TerraFX;
+using TerraFX.Entities;
 
 namespace TerraFX.Rendering;
 
@@ -26,7 +27,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
         ImmutableArray<RenderSpriteSnapshot> spriteDraws,
         ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
         RenderSnapshotAssetPins? assetPins,
-        WorldDiagnosticAttributionAccount diagnosticAttributionAccount,
+        WorldDiagnosticFundingControl diagnosticFundingControl,
         PixelSize targetExtent,
         SpatialFrame2 frame)
         : base(
@@ -44,7 +45,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
             spriteDraws,
             spriteCameraOrders,
             assetPins,
-            diagnosticAttributionAccount,
+            diagnosticFundingControl,
             targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));
@@ -59,6 +60,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
         }
 
         _frame = frame;
+        InitializeDiagnosticFundingUse(diagnosticFundingControl);
     }
 
     /// <summary>Gets the exact 2D frame represented by this snapshot.</summary>

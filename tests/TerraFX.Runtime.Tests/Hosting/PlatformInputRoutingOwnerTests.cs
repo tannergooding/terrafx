@@ -119,7 +119,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             routers,
             timelineRouters,
@@ -212,7 +212,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             timelineRouters,
@@ -267,7 +267,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             [],
@@ -353,7 +353,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             [],
@@ -441,7 +441,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             [],
@@ -506,12 +506,12 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         var sequenceLease = new HostEventSequenceLease();
         var inputRouters = new HashSet<InputRouter>();
         InputRouter? simulationRouter = null;
-        var diagnostics = new DiagnosticsService();
+        var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
         var routingOwner = new PlatformInputRoutingOwner(
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            diagnostics,
+            diagnosticsOwner,
             ownerThreadId,
             inputRouters,
             [],
@@ -599,7 +599,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             [],
@@ -670,7 +670,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             timelineRouters,
@@ -730,7 +730,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             [],
@@ -842,7 +842,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            new DiagnosticsService(),
+            DiagnosticsServiceTestHelper.CreateHostOwner().Owner,
             ownerThreadId,
             inputRouters,
             timelineRouters,
@@ -1011,12 +1011,12 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             }
 
             platformHost.CreateWindow(window);
-            var diagnostics = new DiagnosticsService();
+            var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
             routingOwner = new PlatformInputRoutingOwner(
                 HostProfile.Interactive,
                 platformHost,
                 sequenceLease,
-                diagnostics,
+                diagnosticsOwner,
                 ownerThreadId,
                 inputRouters,
                 timelineRouters,
@@ -1239,12 +1239,12 @@ internal sealed partial class PlatformInputRoutingOwnerTests
 
             platformHost = nativeHost;
             nativeHost.CreateWindow(window);
-            var diagnostics = new DiagnosticsService();
+            var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
             var nativeRoutingOwner = new PlatformInputRoutingOwner(
                 HostProfile.Interactive,
                 nativeHost,
                 sequenceLease,
-                diagnostics,
+                diagnosticsOwner,
                 ownerThreadId,
                 inputRouters,
                 timelineRouters,
@@ -1388,7 +1388,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         var ownerThreadId = Environment.CurrentManagedThreadId;
         var ownerId = OwnerIdAllocator.Allocate();
         var sequenceLease = new HostEventSequenceLease();
-        var diagnostics = new DiagnosticsService();
+        var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
         var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
             SequenceLease = sequenceLease,
             TextInputCapabilities = PlatformTextInputCapabilities.None,
@@ -1399,7 +1399,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            diagnostics,
+            diagnosticsOwner,
             ownerThreadId,
             inputRouters,
             [],
@@ -1488,7 +1488,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         var ownerThreadId = Environment.CurrentManagedThreadId;
         var ownerId = OwnerIdAllocator.Allocate();
         var sequenceLease = new HostEventSequenceLease();
-        var diagnostics = new DiagnosticsService();
+        var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
         var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
             SequenceLease = sequenceLease,
             TextInputCapabilities = PlatformTextInputCapabilities.CommittedText,
@@ -1499,7 +1499,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            diagnostics,
+            diagnosticsOwner,
             ownerThreadId,
             inputRouters,
             [],
@@ -1599,7 +1599,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         var ownerThreadId = Environment.CurrentManagedThreadId;
         var ownerId = OwnerIdAllocator.Allocate();
         var sequenceLease = new HostEventSequenceLease();
-        var diagnostics = new DiagnosticsService();
+        var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
         var nativeResult = unchecked((int)0x80004005);
         var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
             SequenceLease = sequenceLease,
@@ -1611,7 +1611,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             HostProfile.Interactive,
             platformOwner,
             sequenceLease,
-            diagnostics,
+            diagnosticsOwner,
             ownerThreadId,
             inputRouters,
             [],
@@ -1713,12 +1713,12 @@ internal sealed partial class PlatformInputRoutingOwnerTests
 
             platformHost = nativeHost;
             nativeHost.CreateWindow(window);
-            var diagnostics = new DiagnosticsService();
+            var (diagnostics, diagnosticsOwner) = DiagnosticsServiceTestHelper.CreateHostOwner();
             var nativeRoutingOwner = new PlatformInputRoutingOwner(
                 HostProfile.Interactive,
                 nativeHost,
                 sequenceLease,
-                diagnostics,
+                diagnosticsOwner,
                 ownerThreadId,
                 inputRouters,
                 timelineRouters,

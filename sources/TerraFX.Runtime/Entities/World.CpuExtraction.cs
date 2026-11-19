@@ -63,7 +63,8 @@ public sealed partial class World
                 publication.PublicationSequence,
                 publication.CompletedTick,
                 _worldGuid,
-                _diagnosticsCapability.AttributionAccount,
+                _diagnosticFundingControl
+                    ?? throw new InvalidOperationException("The World has no diagnostic source-funding control."),
                 frameCohort.Frame3,
                 frameCohort.Frame2);
         }
