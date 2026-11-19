@@ -2,7 +2,7 @@
 
 ## Status and selection
 
-**Tentative private construction/ownership decision; not a qualified footprint or permission to execute it.** Select an explicit, immutable, engine-private **credit-storage-only** World registration request. Fund its complete standing graph in the original World/domain construction reservation, and retain its actual owner through `WorldLifetimeControl`.
+**Tentative private construction/ownership decision; not a qualified footprint or permission to execute it.** The explicit immutable engine-private **credit-storage-only** World registration request and early fail-closed selection gate are implemented. The complete standing graph is not constructed, funded or retained through `WorldLifetimeControl`.
 
 This is the lower storage sub-capability of the eventual particle implementation, not `CosmeticParticleSupportRegistration`, a Scene participant, a canonical Resource/System/Attachment, or an empty particle producer. It installs no frame actor, root slot, spawn ingress, Task publisher, tick dispatch or GPU consumer. The existing public-token projection still requires Scenes and a complete particle factory; this private request does not satisfy or bypass that contract.
 
@@ -12,15 +12,17 @@ The [budget/return](m05-cosmetic-particle-budget-return-addendum.md), [credit-ha
 
 Propose only these private registration facts:
 
-- `WorldRegistrationBuilder.RegisterCosmeticCreditStorage()` is internal, takes no application provider/delegate, and returns the builder. Default is unselected; duplicate selection throws `ArgumentException`; frozen-builder use retains `InvalidOperationException`.
-- `Build` copies one immutable internal `WorldRegistration.CosmeticCreditStorageSelected` Boolean. Reusing the registration produces distinct per-World owners, never shared cells or debt.
+- `WorldRegistrationBuilder.RegisterCosmeticCreditStorage()` is internal, takes no application provider/delegate, and returns the builder. Default is unselected; duplicate selection throws `ArgumentException`; frozen-builder use retains `InvalidOperationException`. Implemented in `WorldRegistrationBuilder.cs`.
+- `Build` copies one immutable internal `WorldRegistration.CosmeticCreditStorageSelected` Boolean. Reusing the registration produces distinct per-World owners, never shared cells or debt. Implemented in `WorldRegistration.cs`.
 - Selection adds no component/tag/schema/System/resource/attachment identity. Registering `render/particle-emitter`, Scene support, or existing CPU extraction support does not select it implicitly.
-- Both existing component-only staging validators must reject this new request if a staged factory attempts to smuggle it into its component inventory. Do not relax those validators.
+- Both existing component-only staging builders disable the selection request and reject attempts to smuggle it into their component inventory. Focused regressions cover both CPU-extraction and Scene staging paths; do not relax those validators.
 - The first supported construction route is **fresh standalone World admission with its private default domain**: no supplied `WorldOptions.AdmissionDomain`, host-shared construction, restore/replacement or default-domain handoff. Selected unsupported routes refuse before candidate construction/claim capture; they do not silently unselect storage or substitute another domain. Unselected routes retain their contracts.
 
 The first qualification input is an otherwise ordinary empty World registration with no Scene/CPU support or application factories. This is a bounded input to the real construction route, not a second test constructor. Additional registration compositions need their actual combined profiles; selecting this private request does not certify them.
 
 Resolve the exact closed construction profile once in fresh admission preflight, before provisional WorldGuid issuance. A missing profile produces conventional `InvalidOperationException`, before creating a default domain or allocating storage. Capture its effective amount and target/source binding in the existing construction plan; never represent “unqualified selected” as zero bytes. There is no new public option, diagnostic ID, allocator or mutable switch on an existing World.
+
+The current fail-closed implementation checks the immutable request immediately after options validation and before generating or reserving a WorldGuid, creating a default domain, or allocating World/owner storage. `WorldConstructionPlan.ValidateForConstruction` repeats the guard before restore-candidate construction. The complete profile is absent, so every selected World still throws the recorded `InvalidOperationException`; no selected World is created. The same WorldGuid can subsequently be admitted by an unselected registration.
 
 The eventual full particle factory may request this same lower capability through its atomic registration path. It must still supply its complete Scene/resource/phase producer closure. Do not implement that factory to deliver this batch.
 
@@ -77,7 +79,9 @@ The private default-domain restriction avoids borrowing a caller-owned domain/pu
 
 ## 5. What can proceed and exact stop
 
-The next coherent source candidate is the private immutable selection, captured plan amount, actual lifetime retaining edge/construction-debt state, matching World accounting, and symmetric fresh-failure/disposal retention predicates. Keep the profile unavailable and do not execute selected construction while deriving its new header/base-field and caller-tail rows. If a new common field cannot yet be funded for existing unselected Worlds, keep that physical hook uninstalled rather than silently changing their allocation under old charges. No Scene, public token, phase, persistence schema or live pool implementation is needed to compile that candidate.
+The private immutable selection and early fail-closed admission guard are implemented at `6cce8f1e7b039f364b8609ec082f1c013564dc13`; they add no World-lifetime field, selected owner, or allocation. The next coherent source candidate is the captured plan amount, actual lifetime retaining edge/construction-debt state, matching World accounting, and symmetric fresh-failure/disposal retention predicates. Keep the profile unavailable and do not execute selected construction while deriving its new header/base-field and caller-tail rows. If a new common field cannot yet be funded for existing unselected Worlds, keep that physical hook uninstalled rather than silently changing their allocation under old charges. No Scene, public token, phase, persistence schema or live pool implementation is needed to compile that candidate.
+
+The focused selection and staging tests pass 2/2 in Debug and Release. The broader World creation/hosted/options selection passes 56/56 in each configuration. The selected request still refuses before WorldGuid/domain/World storage admission; no selected owner or World was constructed.
 
 Only a complete source/toolchain-bound standing construction/unwind/close profile permits later real World create/dispose observations. The 10,304-byte result proves neither the owner header/new lower fields nor actual claim admission, protected fault/cleanup provision, constructor failure overlap, last access, domain retirement publication or release after close. Existing legacy tests establish neither that new graph nor a finite operation/publisher envelope.
 
@@ -89,11 +93,11 @@ These are working-tree inputs, not an accepted executable profile. Source paths 
 
 | Input | SHA-256 |
 |---|---|
-| `Entities\WorldRegistrationBuilder.cs` | `40B6C12CF129A56FC1BE0890311AFF5203F805C50376DDE9184EECB42E703487` |
-| `Entities\WorldRegistration.cs` | `0FA11E1B9C75FF4D2EB8309EF2E2226C54820D003CE8579CEE2D91D52E311D6E` |
-| `Entities\WorldConstructionPlan.cs` | `3A6E51A8099482A0FCA32F7FAAC3BD55CFC7C53D233FC88B1BD369DEDB32C066` |
+| `Entities\WorldRegistrationBuilder.cs` | `63B526D8A01A8795BB54D8522F25F33E5C8DE492B8DFFD7A7F731FA2A290EC84` |
+| `Entities\WorldRegistration.cs` | `05368A6952DE904A07DA3782D11837C82FF2A37C515D2A11A669B5219A79ADB7` |
+| `Entities\WorldConstructionPlan.cs` | `B2EE768A7CFD14753882452CE019FFFF3DF274969B3368572E3EF26DDFFBFB06` |
 | `Entities\WorldConstructionPlanControl.cs` | `7EBD30AD74D1BF889BD342CD395FB58217CDBF059309C153803EA5D2943D4744` |
-| `Entities\World.cs` | `692F721BEAD29E5EC258BF7B1844EC785E2D1548E9F53DFA9BDB57A22A01F09F` |
+| `Entities\World.cs` | `99DF71A9956B22E072FDF5314056A6854880BBDE83654D09E5EAB4A197B92FE8` |
 | `Entities\WorldLifetimeControl.cs` | `7F47BE8C4943CE6FC2610FD98D3D2B7470B8F83EA00EC5D9C6C4A3F5C46A9BEB` |
 | `Entities\WorldDefaultDomainOwner.cs` | `BCF8F830FBB29E652D480608A3BDFC197D89D7E58299622941E87685B4C2AAD4` |
 | `Entities\WorldDomainReservation.cs` | `EA012B9B40ACEDAA820885EAFE27DCD11DF55F842B68F2849785DAB756E8E3BC` |
@@ -107,6 +111,13 @@ These are working-tree inputs, not an accepted executable profile. Source paths 
 | `docs\proposals\m05-cosmetic-particle-credit-handback-addendum.md` | `6FF6EA4E6BA175558C492155FC95E08B936C1171B6747CA6E499166A2F8CB19C` |
 | `docs\proposals\m05-cosmetic-particle-credit-layout-evidence-addendum.md` | `BFAFB74AA1570308830BB95C92058963101588419D196E4929EC5E8B786FDC50` |
 | `tests\TerraFX.Runtime.Tests\Entities\WorldLifetimeControlQuarantineTests.cs` | `F52196A4EA7F99AB47931B436CF7CE9512D7A10F8ADA80860D6928DA90F552AE` |
+| `tests\TerraFX.Runtime.Tests\Entities\WorldOptionsTests.cs` | `AE075BEBF688FA767B0FE6906495DBA8DCABA6DD4B59E82BCC9658BBA4C6579C` |
+| `artifacts\bin\sources\TerraFX.Runtime\Debug\net11.0\TerraFX.Runtime.dll` | `07E56CCC7680E152DF9D9A956F90A09C6DBE5652BDFAB163EC2C6F923F3D0954` |
+| `artifacts\bin\sources\TerraFX.Runtime\Release\net11.0\TerraFX.Runtime.dll` | `E29827B9763AB0588084F3B9723541AB5012F5F99BDFFEBD9C1B96BB0C20BD4A` |
+| `artifacts\bin\tests\TerraFX.Runtime.Tests\Debug\net11.0\TerraFX.Runtime.Tests.dll` | `B3FF79A799773285D56C8001D6161E6D7482BFDA0D54968B35DEEC0C04BD5D00` |
+| `artifacts\bin\tests\TerraFX.Runtime.Tests\Release\net11.0\TerraFX.Runtime.Tests.dll` | `1FBCCCCF595C1E41E7E2FCE89F1380960B803604A51B2F59AC12102768968A1E` |
+| `artifacts\tst\Debug\cosmetic-credit-selection-debug.trx` | `F48F5091AA3AA35D75947EA8E95AC4E411089BF194CEF567A76A3B2772D28FE2` |
+| `artifacts\tst\Release\cosmetic-credit-selection-release.trx` | `FC6DD7E49D015F946BB30AB3EB655455929BF8E1A48D3302E18464A9CF9E4CD9` |
 | `artifacts\log\particle-credit-layout\results.json` | `04EA2D33084973DE93A43EE6565CAEBE35CB17D34AAF674A3458CA0B572046D0` |
 
-Only this proposal is added. No source/tests or maintained chapters/roadmap are edited; no build, test, World/Scene/pool operation or probe executes.
+This update records the private selection gate and its focused managed tests. No owner, World storage, pool operation, Scene preparation, native consumer or owner funding profile was enabled or qualified.
