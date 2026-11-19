@@ -15,6 +15,15 @@ public sealed class DiagnosticSnapshot
     /// <exception cref="ArgumentException"><paramref name="records"/> is default.</exception>
     /// <exception cref="ArgumentOutOfRangeException">A counter is negative.</exception>
     internal DiagnosticSnapshot(ImmutableArray<Diagnostic> records, long droppedCount, long coalescedCount)
+        : this(records, droppedCount, coalescedCount, copyRecords: true)
+    {
+    }
+
+    private DiagnosticSnapshot(
+        ImmutableArray<Diagnostic> records,
+        long droppedCount,
+        long coalescedCount,
+        bool copyRecords)
     {
         if (records.IsDefault)
         {
@@ -29,7 +38,7 @@ public sealed class DiagnosticSnapshot
             ArgumentNullException.ThrowIfNull(record);
         }
 
-        Records = [.. records];
+        Records = copyRecords ? [.. records] : records;
         DroppedCount = droppedCount;
         CoalescedCount = coalescedCount;
     }
@@ -42,4 +51,10 @@ public sealed class DiagnosticSnapshot
 
     /// <summary>Gets the immutable records in stable admission order.</summary>
     public ImmutableArray<Diagnostic> Records { get; }
+
+    internal static DiagnosticSnapshot CreateOwned(
+        ImmutableArray<Diagnostic> records,
+        long droppedCount,
+        long coalescedCount)
+        => new(records, droppedCount, coalescedCount, copyRecords: false);
 }

@@ -25,6 +25,8 @@ public sealed class RenderGraph
     private readonly List<RenderMeshGraphDeferredTexture> _builtInMeshDeferredTextures = [];
     private readonly Dictionary<RenderPassId, RenderMeshC0GraphPass> _builtInMeshPasses = [];
     private readonly Dictionary<RenderPassId, RenderMeshC0ShadowGraphPass> _builtInMeshShadowPasses = [];
+    private RenderMeshC0NormalDiagnosticGraphPass? _builtInMeshNormalDiagnosticPass;
+    private RenderPassId? _builtInMeshNormalDiagnosticPassId;
     private readonly List<RenderSpriteGraphBufferUpload> _builtInSpriteBufferUploads = [];
     private readonly List<RenderSpriteGraphDeferredTexture> _builtInSpriteDeferredTextures = [];
     private readonly Dictionary<RenderPassId, RenderSpriteC0GraphPass> _builtInSpritePasses = [];
@@ -568,6 +570,18 @@ public sealed class RenderGraph
             "Renderer.BuildGraph"));
     }
 
+    internal RenderPassId AddBuiltInMeshNormalDiagnosticComputePass(RenderPassDescription description)
+    {
+        if (_builtInMeshNormalDiagnosticPassId.HasValue)
+        {
+            throw new InvalidOperationException("The render graph already has a built-in Mesh diagnostic pass.");
+        }
+
+        var pass = AddPass(description, RenderGraphPassKind.Compute, callback: null);
+        _builtInMeshNormalDiagnosticPassId = pass;
+        return pass;
+    }
+
     internal RenderPassId AddBuiltInMeshRasterPass(RenderPassDescription description, RenderMeshC0GraphPass meshPass)
     {
         ArgumentNullException.ThrowIfNull(meshPass);
@@ -722,6 +736,20 @@ public sealed class RenderGraph
         return _builtInSurfaceColorTargetVersion;
     }
 
+    internal void SetBuiltInMeshNormalDiagnosticComputePass(
+        RenderPassId pass,
+        RenderMeshC0NormalDiagnosticGraphPass meshPass)
+    {
+        if (_builtInMeshNormalDiagnosticPassId != pass
+            || _builtInMeshNormalDiagnosticPass.HasValue
+            || (meshPass.DrawCount <= 0))
+        {
+            throw new InvalidOperationException("The built-in Mesh diagnostic pass state is missing, duplicated, or invalid.");
+        }
+
+        _builtInMeshNormalDiagnosticPass = meshPass;
+    }
+
     internal void SetDefaultPresentationSource(GraphTextureVersion version)
     {
         EnsureCanMutate();
@@ -774,6 +802,7 @@ public sealed class RenderGraph
         if (_builtInSpritePasses.Count == 0
             && _builtInMeshPasses.Count == 0
             && _builtInMeshShadowPasses.Count == 0
+            && !_builtInMeshNormalDiagnosticPassId.HasValue
             && _builtInSpriteToneMapPasses.Count == 0
             && _builtInSpriteBufferUploads.Count == 0
             && _builtInSpriteDeferredTextures.Count == 0
@@ -794,7 +823,9 @@ public sealed class RenderGraph
             _builtInSpritePasses.ToImmutableDictionary(),
             _builtInMeshPasses.ToImmutableDictionary(),
             _builtInMeshShadowPasses.ToImmutableDictionary(),
-            _builtInSpriteToneMapPasses.ToImmutableDictionary());
+            _builtInSpriteToneMapPasses.ToImmutableDictionary(),
+            _builtInMeshNormalDiagnosticPassId,
+            _builtInMeshNormalDiagnosticPass);
     }
 
     private Diagnostic CreateDiagnostic(

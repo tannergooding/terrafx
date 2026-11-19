@@ -10,7 +10,6 @@ public sealed partial class World
 {
     private const int MaximumSubscriptions = 64;
     private const string SubscriberThrowStackContextKey = "TerraFX.Entities.SubscriberThrowStack.v1";
-    private const string SubscriptionCapacityMessage = "World subscription capacity (64) reached; subscription was not admitted.";
 
     private int _isPublicationDeliveryActive;
     private PublicationDeliveryReport? _lastDeliveryReport;
@@ -194,30 +193,7 @@ public sealed partial class World
     {
         try
         {
-            var diagnostic = new Diagnostic(
-                "WorldSubscriptionCapacityExceeded",
-                DiagnosticSeverity.Warning,
-                _diagnosticsCapability.GetTimestamp(),
-                null,
-                _worldGuid,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                "TerraFX.Entities.World.TrySubscribe",
-                null,
-                SubscriptionCapacityMessage,
-                [
-                    new DiagnosticContextEntry("ActiveSubscriptions", "64"),
-                    new DiagnosticContextEntry("MaximumSubscriptions", "64"),
-                ]);
-            _diagnosticsCapability.Write(diagnostic);
+            _diagnosticsCapability.WriteSubscriptionCapacityWarning();
         }
         catch (OutOfMemoryException)
         {

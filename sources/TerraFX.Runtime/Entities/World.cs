@@ -562,10 +562,14 @@ public sealed partial class World : IDisposable
             ownsAdmissionDomain = (options.AdmissionDomain is null) && (hostAdmissionDomain is null);
 
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
-            var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
-            var diagnosticBytes = (sharedDiagnostics is null)
-                ? DiagnosticsService.GetOwnedByteReservation(diagnosticRecordCount)
-                : 0;
+            var diagnosticAccountBytes = WorldDiagnosticAttributionAccount.ControlByteCharge;
+            var diagnosticServiceMaximumBytes = maximumDiagnosticBytes - diagnosticAccountBytes;
+            var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(diagnosticServiceMaximumBytes);
+            var diagnosticBytes = checked(
+                diagnosticAccountBytes
+                + ((sharedDiagnostics is null)
+                    ? DiagnosticsService.GetOwnedByteReservation(diagnosticRecordCount)
+                    : 0));
             var archetypeDirectoryBytes = checked(2 * ArrayBytes(options.MaximumArchetypes, IntPtr.Size));
             var resourceBytes = 0L;
             var systemBytes = checked(
@@ -607,11 +611,12 @@ public sealed partial class World : IDisposable
             defaultDomainOwner = ownsAdmissionDomain
                 ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
                 : null;
-            diagnostics = sharedDiagnostics ?? new DiagnosticsService(diagnosticRecordCount);
+            diagnostics = sharedDiagnostics
+                ?? new DiagnosticsService(diagnosticRecordCount, diagnosticServiceMaximumBytes);
             var executionSessionId = ExecutionSession.ExecutionSessionId;
             diagnosticsCapability = (sharedDiagnostics is null)
-                ? diagnostics.CreateWorldCapability(worldGuid, executionSessionId)
-                : diagnostics.CreateBorrowedWorldCapability(worldGuid, executionSessionId);
+                ? diagnostics.CreateWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes)
+                : diagnostics.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes);
             var replayLineageId = options.InitialReplayLineageId ?? Guid.NewGuid();
 
             if (replayLineageId == Guid.Empty)

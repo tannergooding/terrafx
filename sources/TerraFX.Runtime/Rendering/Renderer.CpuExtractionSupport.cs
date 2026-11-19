@@ -13,18 +13,36 @@ namespace TerraFX.Rendering;
 /// <summary>Creates immutable CPU render snapshots from committed World state.</summary>
 public sealed partial class Renderer
 {
+    private readonly DiagnosticsService? _diagnostics;
     private readonly GpuResidencyService? _gpuResidencyService;
     private readonly GraphicsDevice? _graphicsDevice;
+    private readonly uint _hostId;
 
-    private Renderer(GraphicsDevice? graphicsDevice, GpuResidencyService? gpuResidencyService)
+    private Renderer(
+        GraphicsDevice? graphicsDevice,
+        GpuResidencyService? gpuResidencyService,
+        DiagnosticsService? diagnostics,
+        uint hostId)
     {
         if ((graphicsDevice is null) != (gpuResidencyService is null))
         {
             throw new ArgumentException("GPU residency and GraphicsDevice ownership must be selected together.", nameof(gpuResidencyService));
         }
 
+        if ((diagnostics is null) != (hostId == 0))
+        {
+            throw new ArgumentException("A host-bound diagnostic publisher requires the exact nonzero host identity.", nameof(hostId));
+        }
+
+        if ((graphicsDevice is not null) && (diagnostics is null))
+        {
+            throw new ArgumentNullException(nameof(diagnostics), "A native Renderer requires its borrowed host Diagnostics service.");
+        }
+
+        _diagnostics = diagnostics;
         _gpuResidencyService = gpuResidencyService;
         _graphicsDevice = graphicsDevice;
+        _hostId = hostId;
     }
 
     /// <summary>Creates the opaque per-World CPU extraction registration.</summary>
@@ -34,7 +52,8 @@ public sealed partial class Renderer
 
     /// <summary>Creates a Renderer that performs CPU extraction without activating a graphics device.</summary>
     /// <returns>The headless Renderer service.</returns>
-    public static Renderer CreateHeadless() => new(graphicsDevice: null, gpuResidencyService: null);
+    public static Renderer CreateHeadless()
+        => new(graphicsDevice: null, gpuResidencyService: null, diagnostics: null, hostId: 0);
 
     /// <summary>Registers the built-in native Mesh, Texture, Atlas, and Material asset codecs with an Assets builder.</summary>
     /// <param name="builder">The asset-store builder whose schema registry contains the Rendering schemas.</param>
@@ -52,8 +71,10 @@ public sealed partial class Renderer
 
     internal static Renderer Create(
         GraphicsDevice? graphicsDevice,
-        GpuResidencyService? gpuResidencyService)
-        => new(graphicsDevice, gpuResidencyService);
+        GpuResidencyService? gpuResidencyService,
+        DiagnosticsService diagnostics,
+        uint hostId)
+        => new(graphicsDevice, gpuResidencyService, diagnostics, hostId);
 
     private sealed class BuiltInCpuExtractionSupportRegistration : IWorldCpuExtractionSupportRegistration
     {

@@ -7,6 +7,7 @@ namespace TerraFX;
 
 internal sealed class WorldDiagnosticsCapability
 {
+    private WorldDiagnosticAttributionAccount? _attributionAccount;
     private int _closed;
     private readonly DiagnosticsService _diagnostics;
     private readonly Guid _executionSessionId;
@@ -18,7 +19,8 @@ internal sealed class WorldDiagnosticsCapability
         DiagnosticsService diagnostics,
         Guid worldGuid,
         Guid executionSessionId,
-        bool ownsDiagnosticsService)
+        bool ownsDiagnosticsService,
+        long maximumDiagnosticBytes)
     {
         ArgumentNullException.ThrowIfNull(diagnostics);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
@@ -28,7 +30,15 @@ internal sealed class WorldDiagnosticsCapability
         _worldGuid = worldGuid;
         _executionSessionId = executionSessionId;
         _ownsDiagnosticsService = ownsDiagnosticsService;
+        _attributionAccount = new WorldDiagnosticAttributionAccount(
+            worldGuid,
+            executionSessionId,
+            maximumDiagnosticBytes);
     }
+
+    internal WorldDiagnosticAttributionAccount AttributionAccount
+        => Volatile.Read(ref _attributionAccount)
+            ?? throw new ObjectDisposedException(nameof(WorldDiagnosticsCapability));
 
     internal DiagnosticsService Diagnostics => _diagnostics;
 
@@ -44,12 +54,16 @@ internal sealed class WorldDiagnosticsCapability
         {
             throw new InvalidOperationException("The diagnostics capability is already bound to a World owner.");
         }
+
+        AttributionAccount.BindOwner(worldOwnerId);
     }
 
     internal void Close()
     {
         if (Interlocked.Exchange(ref _closed, 1) == 0)
         {
+            _ = Interlocked.Exchange(ref _attributionAccount, null);
+
             if (_ownsDiagnosticsService)
             {
                 _diagnostics.Close();
@@ -86,6 +100,23 @@ internal sealed class WorldDiagnosticsCapability
             throw new InvalidOperationException("The diagnostics capability is not bound to a World owner.");
         }
 
-        _diagnostics.Write(diagnostic, _executionSessionId, checked((uint)worldOwnerId));
+        _diagnostics.Write(
+            diagnostic,
+            _executionSessionId,
+            checked((uint)worldOwnerId),
+            AttributionAccount);
+    }
+
+    internal void WriteSubscriptionCapacityWarning()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _closed) != 0, this);
+        var worldOwnerId = Volatile.Read(ref _worldOwnerId);
+
+        if (worldOwnerId == 0)
+        {
+            throw new InvalidOperationException("The diagnostics capability is not bound to a World owner.");
+        }
+
+        _diagnostics.WriteSubscriptionCapacityWarning(AttributionAccount);
     }
 }

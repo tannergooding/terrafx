@@ -801,7 +801,8 @@ public sealed partial class World
             lineageReserved = true;
             diagnosticsCapability = _diagnosticsCapability.Diagnostics.CreateBorrowedWorldCapability(
                 restoreIdentityState.WorldGuid,
-                _executionSessionId);
+                _executionSessionId,
+                options.SchedulingLimits.MaximumDiagnosticBytes);
             quarantineReservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(options.Registration.Systems.Length);
             var lifetimeControl = new WorldLifetimeControl(
                 _registry,

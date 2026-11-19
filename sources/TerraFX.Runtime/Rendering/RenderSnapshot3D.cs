@@ -31,6 +31,7 @@ public sealed class RenderSnapshot3D : RenderSnapshot
         ImmutableArray<RenderSpriteSnapshot> spriteDraws,
         ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
         RenderSnapshotAssetPins? assetPins,
+        WorldDiagnosticAttributionAccount diagnosticAttributionAccount,
         PixelSize targetExtent,
         SpatialFrame3 frame,
         ImmutableArray<RenderMeshSnapshot> meshDraws,
@@ -51,6 +52,7 @@ public sealed class RenderSnapshot3D : RenderSnapshot
             spriteDraws,
             spriteCameraOrders,
             assetPins,
+            diagnosticAttributionAccount,
             targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));

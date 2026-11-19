@@ -118,6 +118,8 @@ internal sealed partial class EngineHostOptionsTests
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
         GpuResidencyService? residencyService = null;
+        DiagnosticsService? diagnostics = null;
+        Renderer? rendererForCleanup = null;
         Surface? surface = null;
         World? renderWorld = null;
         WindowHandle? window = null;
@@ -181,7 +183,9 @@ internal sealed partial class EngineHostOptionsTests
                     activeSurface.ColorFormat),
                 Is.True);
             residencyService = new GpuResidencyService(graphicsDevice);
-            var renderer = Renderer.Create(graphicsDevice, residencyService);
+            diagnostics = new DiagnosticsService();
+            var renderer = Renderer.Create(graphicsDevice, residencyService, diagnostics, platformOwner.OwnerId);
+            rendererForCleanup = renderer;
             var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
             _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
             _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
@@ -523,6 +527,7 @@ internal sealed partial class EngineHostOptionsTests
         {
             try
             {
+                rendererForCleanup?.StopAndDrainSubmissionsAsync().GetAwaiter().GetResult();
                 renderWorld?.Dispose();
 
                 if ((surface is not null)
@@ -568,7 +573,14 @@ internal sealed partial class EngineHostOptionsTests
                         }
                         finally
                         {
-                            platformOwner.DisposeFromOwner();
+                            try
+                            {
+                                platformOwner.DisposeFromOwner();
+                            }
+                            finally
+                            {
+                                diagnostics?.Close();
+                            }
                         }
                     }
                 }

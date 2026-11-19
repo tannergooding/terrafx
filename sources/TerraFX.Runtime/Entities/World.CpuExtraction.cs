@@ -63,6 +63,7 @@ public sealed partial class World
                 publication.PublicationSequence,
                 publication.CompletedTick,
                 _worldGuid,
+                _diagnosticsCapability.AttributionAccount,
                 frameCohort.Frame3,
                 frameCohort.Frame2);
         }

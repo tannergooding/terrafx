@@ -11,8 +11,6 @@ namespace TerraFX.Rendering;
 
 public sealed partial class Renderer
 {
-    private int _activeSkinnedNormalDiagnosticSubmission;
-
     private static bool MatchesTextureDescription(TextureDescription expected, TextureDescription actual)
         => (expected.Dimension == actual.Dimension)
             && (expected.Width == actual.Width)
@@ -44,7 +42,6 @@ public sealed partial class Renderer
         var device = _graphicsDevice
             ?? throw new NotSupportedException("Headless rendering does not submit native render graphs.");
         ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
-        using var snapshotAssetPins = snapshot.RetainAssetPins();
 
         if ((graph.SnapshotId != snapshot.SnapshotId)
             || (graph.WorldGuid != snapshot.WorldGuid)
@@ -107,6 +104,18 @@ public sealed partial class Renderer
             throw new InvalidOperationException("The graph's skinned-normal result export does not match its diagnostic pass.");
         }
 
+        using var submissionAdmission = AcquireSubmissionAdmission(skinnedNormalDiagnosticPass.HasValue);
+        WorldDiagnosticAttributionAccount? diagnosticAttributionAccount = null;
+
+        if (skinnedNormalDiagnosticPass.HasValue)
+        {
+            _ = _diagnostics
+                ?? throw new InvalidOperationException("The native Renderer has no borrowed host Diagnostics service.");
+            ArgumentOutOfRangeException.ThrowIfZero(_hostId);
+            diagnosticAttributionAccount = snapshot.RetainDiagnosticAttributionAccount();
+        }
+
+        using var snapshotAssetPins = snapshot.RetainAssetPins();
         var graphResourceOwners = new HashSet<GraphicsResourceOwner>();
 
         if (offscreenOutputTarget is not null)
@@ -162,7 +171,6 @@ public sealed partial class Renderer
         GraphicsDevice.GraphFrameSlotReservation? graphFrameSlotReservation = null;
         var graphResourceUseLeasesTransferred = false;
         IDisposable? spriteSubmissionLease = null;
-        var diagnosticBatchReserved = false;
         GraphicsBufferReadbackStorage? diagnosticReadbackStorage = null;
         var skinnedNormalDiagnostics = ImmutableArray<RenderSkinnedNormalDiagnostic>.Empty;
 
@@ -170,12 +178,6 @@ public sealed partial class Renderer
         {
             if (skinnedNormalDiagnosticPass.HasValue)
             {
-                if (Interlocked.CompareExchange(ref _activeSkinnedNormalDiagnosticSubmission, 1, 0) != 0)
-                {
-                    throw new InvalidOperationException("A skinned-normal diagnostic submission is already active for this Renderer.");
-                }
-
-                diagnosticBatchReserved = true;
                 var readbackFootprint = skinnedNormalDiagnosticPass.Value.ReadbackFootprint;
                 diagnosticReadbackStorage = GraphicsBufferReadbackStorage.Create(
                     device,
@@ -846,14 +848,28 @@ public sealed partial class Renderer
                 skinnedNormalDiagnostics = selectedDiagnosticPass.CreateResults(diagnosticReadbackLease);
             }
 
+            if (skinnedNormalDiagnosticPass.HasValue)
+            {
+                PublishSkinnedNormalDiagnostics(
+                    snapshot,
+                    skinnedNormalDiagnostics,
+                    result.SubmissionSequence,
+                    result.CompletedFence,
+                    device.OwnerId,
+                    result.DeviceEpoch,
+                    result.SurfaceEpoch,
+                    result.SwapchainEpoch,
+                    diagnosticAttributionAccount
+                        ?? throw new InvalidOperationException("The diagnostic submission has no retained World attribution account."));
+            }
+
             return new RenderSubmissionReceipt(
                 result.SubmissionSequence,
                 result.CompletedFence,
                 result.PresentationSequence,
                 result.DeviceEpoch,
                 result.SurfaceEpoch,
-                result.SwapchainEpoch,
-                skinnedNormalDiagnostics);
+                result.SwapchainEpoch);
         }
         finally
         {
@@ -916,18 +932,8 @@ public sealed partial class Renderer
             }
             finally
             {
-                try
-                {
-                    diagnosticReadbackStorage?.Dispose();
-                    spriteSubmissionLease?.Dispose();
-                }
-                finally
-                {
-                    if (diagnosticBatchReserved)
-                    {
-                        Volatile.Write(ref _activeSkinnedNormalDiagnosticSubmission, 0);
-                    }
-                }
+                diagnosticReadbackStorage?.Dispose();
+                spriteSubmissionLease?.Dispose();
             }
         }
     }

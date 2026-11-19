@@ -41,6 +41,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private GpuResidencyService? _gpuResidency;
     private GraphicsDevice? _graphicsDevice;
     private HostEventSequenceLease? _hostEventSequenceLease;
+    private uint _hostId;
     private readonly HashSet<InputRouter> _inputRouters = [];
     private readonly Dictionary<InputRouter, WorldInputTimelineAdapter> _inputTimelineByRouter = [];
     private readonly EngineHostOptions _options;
@@ -52,7 +53,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private PlatformHost? _platform;
     private PlatformInputRoutingOwner? _platformInputRouting;
     private PlatformHostOwner? _platformOwner;
-    private Renderer _renderer;
+    private Renderer? _renderer;
     private readonly TaskCompletionSource _startupCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _stopTask;
     private bool _stopping;
@@ -77,7 +78,6 @@ public sealed partial class EngineHost : IAsyncDisposable
         graphicsDevice?.SetDeviceLostCallback(HandleGraphicsDeviceLost);
         _gpuResidency = (graphicsDevice is null) ? null : new GpuResidencyService(graphicsDevice);
         _persistence = new WorldPersistence(assets, options.PersistenceMetadata, this);
-        _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
         _ownerThread = new Thread(RunOwnerLoop) {
             IsBackground = true,
             Name = "TerraFX.EngineHost",
@@ -120,7 +120,8 @@ public sealed partial class EngineHost : IAsyncDisposable
         => _platform ?? throw new InvalidOperationException("EngineHost startup has not completed.");
 
     /// <summary>Gets the CPU render-snapshot extraction service.</summary>
-    public Renderer Renderer => _renderer;
+    public Renderer Renderer
+        => _renderer ?? throw new InvalidOperationException("EngineHost startup has not completed.");
 
     /// <summary>Starts a host with its explicitly selected services.</summary>
     /// <param name="options">The immutable host profile and service selections.</param>
@@ -801,6 +802,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                 (window, mode, cancellationToken) =>
                     InvokeWindowModeCommandAsync(window, mode, cancellationToken));
             _platformOwner = platformOwner;
+            _hostId = platformOwner.OwnerId;
             _platform = platformOwner.Platform;
             _platformInputRouting = new PlatformInputRoutingOwner(
                 _options.Profile,
@@ -842,13 +844,18 @@ public sealed partial class EngineHost : IAsyncDisposable
                 _graphicsDevice = graphicsDevice;
                 graphicsDevice.SetDeviceLostCallback(HandleGraphicsDeviceLost);
                 _gpuResidency = new GpuResidencyService(graphicsDevice);
-                _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
 
                 if (presentationProbeWindow is WindowHandle probeWindow)
                 {
                     platformOwner.CloseWindow(probeWindow);
                 }
             }
+
+            _renderer = Renderer.Create(
+                _graphicsDevice,
+                _gpuResidency,
+                diagnostics,
+                _hostId);
 
             foreach (var diagnostic in platformOwner.DrainStartupDiagnostics())
             {
@@ -1117,6 +1124,21 @@ public sealed partial class EngineHost : IAsyncDisposable
     private void ShutdownOwnerServices()
     {
         var inputFailures = new List<Exception>();
+        var rendererDrainFailed = false;
+
+        if (_renderer is Renderer renderer)
+        {
+            try
+            {
+                WaitForGraphicsTask(renderer.StopAndDrainSubmissionsAsync());
+                _renderer = null;
+            }
+            catch (Exception exception)
+            {
+                inputFailures.Add(exception);
+                rendererDrainFailed = true;
+            }
+        }
 
         try
         {
@@ -1176,17 +1198,20 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
 
         var failures = inputFailures;
-        var surfaceRetirementFailed = false;
+        var surfaceRetirementFailed = rendererDrainFailed;
         var graphicsRetirementFailed = false;
 
-        try
+        if (!rendererDrainFailed)
         {
-            RetireSurfacesBeforePlatformShutdown();
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-            surfaceRetirementFailed = true;
+            try
+            {
+                RetireSurfacesBeforePlatformShutdown();
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+                surfaceRetirementFailed = true;
+            }
         }
 
         if (!surfaceRetirementFailed && (_graphicsDevice is GraphicsDevice graphicsDevice))
@@ -1247,13 +1272,16 @@ public sealed partial class EngineHost : IAsyncDisposable
             failures.Add(exception);
         }
 
-        try
+        if (!rendererDrainFailed)
         {
-            _diagnostics?.Close();
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
+            try
+            {
+                _diagnostics?.Close();
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
         }
 
         if (failures.Count != 0)

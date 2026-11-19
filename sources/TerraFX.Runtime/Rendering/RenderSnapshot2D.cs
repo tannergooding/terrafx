@@ -26,6 +26,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
         ImmutableArray<RenderSpriteSnapshot> spriteDraws,
         ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
         RenderSnapshotAssetPins? assetPins,
+        WorldDiagnosticAttributionAccount diagnosticAttributionAccount,
         PixelSize targetExtent,
         SpatialFrame2 frame)
         : base(
@@ -43,6 +44,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
             spriteDraws,
             spriteCameraOrders,
             assetPins,
+            diagnosticAttributionAccount,
             targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));

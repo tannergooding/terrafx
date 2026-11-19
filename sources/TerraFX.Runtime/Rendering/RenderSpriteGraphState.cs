@@ -17,7 +17,9 @@ internal sealed class RenderSpriteGraphState
         ImmutableDictionary<RenderPassId, RenderSpriteC0GraphPass> passes,
         ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> meshPasses,
         ImmutableDictionary<RenderPassId, RenderMeshC0ShadowGraphPass> meshShadowPasses,
-        ImmutableDictionary<RenderPassId, RenderSpriteToneMapGraphPass> toneMapPasses)
+        ImmutableDictionary<RenderPassId, RenderSpriteToneMapGraphPass> toneMapPasses,
+        RenderPassId? meshNormalDiagnosticPassId,
+        RenderMeshC0NormalDiagnosticGraphPass? meshNormalDiagnosticPass)
     {
         if (!Enum.IsDefined(spriteColorTargetFormat) || !Enum.IsDefined(toneMapColorTargetFormat))
         {
@@ -30,9 +32,16 @@ internal sealed class RenderSpriteGraphState
             || passes is null
             || meshPasses is null
             || meshShadowPasses is null
-            || toneMapPasses is null)
+            || toneMapPasses is null
+            || (meshNormalDiagnosticPassId.HasValue != meshNormalDiagnosticPass.HasValue))
         {
             throw new ArgumentException("Built-in Sprite graph state must be initialized.");
+        }
+
+        if (meshNormalDiagnosticPassId is RenderPassId passId
+            && (!passId.IsValid || (meshNormalDiagnosticPass?.DrawCount is not > 0)))
+        {
+            throw new ArgumentException("The built-in Mesh diagnostic pass identity and state must be valid.");
         }
 
         SpriteColorTargetFormat = spriteColorTargetFormat;
@@ -42,6 +51,8 @@ internal sealed class RenderSpriteGraphState
         MeshDeferredTextures = meshDeferredTextures;
         Passes = passes;
         MeshPasses = meshPasses;
+        MeshNormalDiagnosticPassId = meshNormalDiagnosticPassId;
+        MeshNormalDiagnosticPass = meshNormalDiagnosticPass;
         MeshShadowPasses = meshShadowPasses;
         ToneMapPasses = toneMapPasses;
     }
@@ -51,6 +62,10 @@ internal sealed class RenderSpriteGraphState
     internal ImmutableArray<RenderSpriteGraphDeferredTexture> DeferredTextures { get; }
 
     internal ImmutableArray<RenderMeshGraphDeferredTexture> MeshDeferredTextures { get; }
+
+    internal RenderMeshC0NormalDiagnosticGraphPass? MeshNormalDiagnosticPass { get; }
+
+    internal RenderPassId? MeshNormalDiagnosticPassId { get; }
 
     internal ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> MeshPasses { get; }
 

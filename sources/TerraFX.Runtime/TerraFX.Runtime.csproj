@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="TerraFX.Content.Tools" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Content.Tools.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <ProjectReference Include="..\TerraFX.Assets\TerraFX.Assets.csproj" />
     <ProjectReference Include="..\TerraFX.Core\TerraFX.Core.csproj" />
     <ProjectReference Include="..\TerraFX.Input\TerraFX.Input.csproj" />
@@ -33,6 +34,7 @@
     <TerraFXShaderSource Include="Shaders\MeshC0TexturedShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderSource Include="Shaders\MeshC0SkinnedShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderSource Include="Shaders\MeshC0SkinnedTexturedShadowVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\SkinnedNormalDiagnostic.hlsl" EntryPoint="CSMain" Stage="compute" />
     <TerraFXShaderSource Include="Shaders\MeshC0ShadowPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0TexturedShadowPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
   </ItemGroup>
@@ -80,6 +82,8 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0ShadowPixel.pixel.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0TexturedShadowPixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\SkinnedNormalDiagnostic.compute.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SkinnedNormalDiagnostic.compute.spv" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
@@ -151,6 +155,10 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedShadowPixel\MeshC0TexturedShadowPixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedShadowPixel.pixel.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SkinnedNormalDiagnostic\SkinnedNormalDiagnostic.compute.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.SkinnedNormalDiagnostic.compute.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SkinnedNormalDiagnostic\SkinnedNormalDiagnostic.compute.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SkinnedNormalDiagnostic.compute.spv" />
   </ItemGroup>
 
   <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />

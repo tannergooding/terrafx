@@ -17,6 +17,8 @@ internal static class RenderMeshC0ShaderReflection
 
     internal static ShaderReflection Pixel { get; } = CreatePixel();
 
+    internal static ShaderReflection SkinnedNormalDiagnosticCompute { get; } = CreateSkinnedNormalDiagnosticCompute();
+
     internal static ShaderReflection SkinnedTexturedVertex { get; } = CreateVertex(skinned: true, textured: true);
 
     internal static ShaderReflection SkinnedVertex { get; } = CreateVertex(skinned: true, textured: false);
@@ -192,6 +194,82 @@ internal static class RenderMeshC0ShaderReflection
             groupSizeY: 0,
             groupSizeZ: 0);
     }
+
+    private static ShaderReflection CreateSkinnedNormalDiagnosticCompute()
+        => new(
+            ShaderStage.Compute,
+            "CSMain",
+            s_compilerIdentity,
+            [],
+            [],
+            [
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.StorageBuffer,
+                    arrayCount: 1,
+                    access: ShaderResourceAccess.ReadWrite),
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    ShaderResourceKind.StorageBuffer,
+                    arrayCount: 1,
+                    access: ShaderResourceAccess.ReadWrite),
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    2,
+                    ShaderResourceKind.StorageBuffer,
+                    arrayCount: 1,
+                    access: ShaderResourceAccess.ReadWrite),
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    3,
+                    ShaderResourceKind.StorageBuffer,
+                    arrayCount: 1,
+                    access: ShaderResourceAccess.ReadWrite),
+            ],
+            [
+                new ShaderRecordLayout(
+                    "BonePaletteEntry",
+                    RenderMeshC0BoneBufferBuilder.Stride,
+                    [
+                        new ShaderFieldLayout("SkinRow0", ShaderValueType.Float4, 0, 16, 1, 0),
+                        new ShaderFieldLayout("SkinRow1", ShaderValueType.Float4, 16, 16, 1, 0),
+                        new ShaderFieldLayout("SkinRow2", ShaderValueType.Float4, 32, 16, 1, 0),
+                        new ShaderFieldLayout("SkinRow3", ShaderValueType.Float4, 48, 16, 1, 0),
+                        new ShaderFieldLayout("NormalRow0", ShaderValueType.Float4, 64, 16, 1, 0),
+                        new ShaderFieldLayout("NormalRow1", ShaderValueType.Float4, 80, 16, 1, 0),
+                        new ShaderFieldLayout("NormalRow2", ShaderValueType.Float4, 96, 16, 1, 0),
+                    ]),
+                new ShaderRecordLayout(
+                    "DiagnosticResultElement",
+                    16,
+                    [
+                        new ShaderFieldLayout("Value", ShaderValueType.UInt4, 0, 16, 1, 0),
+                    ]),
+                new ShaderRecordLayout(
+                    "DiagnosticVertex",
+                    RenderMeshC0VertexBufferBuilder.VertexStride,
+                    [
+                        new ShaderFieldLayout("PositionNormalX", ShaderValueType.Float4, 0, 16, 1, 0),
+                        new ShaderFieldLayout("NormalYzUv", ShaderValueType.Float4, 16, 16, 1, 0),
+                        new ShaderFieldLayout("Tangent", ShaderValueType.Float4, 32, 16, 1, 0),
+                        new ShaderFieldLayout("Color", ShaderValueType.Float4, 48, 16, 1, 0),
+                        new ShaderFieldLayout("JointIndices", ShaderValueType.Float4, 64, 16, 1, 0),
+                        new ShaderFieldLayout("JointWeights", ShaderValueType.Float4, 80, 16, 1, 0),
+                    ]),
+                new ShaderRecordLayout(
+                    "DiagnosticWorkElement",
+                    16,
+                    [
+                        new ShaderFieldLayout("Value", ShaderValueType.UInt4, 0, 16, 1, 0),
+                    ]),
+            ],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 64,
+            groupSizeY: 1,
+            groupSizeZ: 1);
 
     private static ShaderReflection CreateVertex(bool skinned, bool textured)
     {

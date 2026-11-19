@@ -17,6 +17,7 @@ internal ref struct WorldFrameReadLease
     private bool _isDisposed;
     private readonly long _publicationSequence;
     private readonly long _sequence;
+    private readonly WorldDiagnosticAttributionAccount _diagnosticAttributionAccount;
     private readonly World _world;
     private readonly Guid _worldGuid;
 
@@ -29,6 +30,7 @@ internal ref struct WorldFrameReadLease
         long publicationSequence,
         long completedTick,
         Guid worldGuid,
+        WorldDiagnosticAttributionAccount diagnosticAttributionAccount,
         SpatialFrame3 frame3,
         SpatialFrame2? frame2)
     {
@@ -40,6 +42,7 @@ internal ref struct WorldFrameReadLease
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(publicationSequence);
         ArgumentOutOfRangeException.ThrowIfNegative(completedTick);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
+        ArgumentNullException.ThrowIfNull(diagnosticAttributionAccount);
         _world = world;
         _sequence = sequence;
         _cohortGeneration = cohortGeneration;
@@ -48,6 +51,7 @@ internal ref struct WorldFrameReadLease
         _publicationSequence = publicationSequence;
         _completedTick = completedTick;
         _worldGuid = worldGuid;
+        _diagnosticAttributionAccount = diagnosticAttributionAccount;
         _frame3 = frame3;
         _frame2 = frame2;
         _isDisposed = false;
@@ -60,6 +64,9 @@ internal ref struct WorldFrameReadLease
     internal readonly long CommittedMutationRevision => _committedMutationRevision;
 
     internal readonly long CompletedTick => _completedTick;
+
+    internal readonly WorldDiagnosticAttributionAccount DiagnosticAttributionAccount
+        => _diagnosticAttributionAccount;
 
     internal readonly SpatialFrame2? Frame2 => _frame2;
 

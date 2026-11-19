@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\TerraFX.Content.Tools.Tests\NativeMeshTestData.cs" Link="Rendering\NativeMeshTestData.cs" />
     <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" />
     <ProjectReference Include="..\..\sources\TerraFX.Runtime\TerraFX.Runtime.csproj" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj" />

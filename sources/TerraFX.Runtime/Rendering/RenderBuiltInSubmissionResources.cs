@@ -15,6 +15,7 @@ internal sealed class RenderBuiltInSubmissionResources
         GpuPipeline? skinnedMeshShadowPipeline,
         GpuPipeline? skinnedMeshAlphaMaskPipeline,
         GpuPipeline? skinnedMeshBlendPipeline,
+        GpuPipeline? skinnedNormalDiagnosticComputePipeline,
         GpuPipeline? meshBlendPipeline,
         GpuPipeline? normalMappedMeshPipeline,
         GpuPipeline? skinnedNormalMappedMeshPipeline,
@@ -37,6 +38,7 @@ internal sealed class RenderBuiltInSubmissionResources
         SkinnedMeshShadowPipeline = skinnedMeshShadowPipeline;
         SkinnedMeshAlphaMaskPipeline = skinnedMeshAlphaMaskPipeline;
         SkinnedMeshBlendPipeline = skinnedMeshBlendPipeline;
+        SkinnedNormalDiagnosticComputePipeline = skinnedNormalDiagnosticComputePipeline;
         MeshBlendPipeline = meshBlendPipeline;
         NormalMappedMeshPipeline = normalMappedMeshPipeline;
         SkinnedNormalMappedMeshPipeline = skinnedNormalMappedMeshPipeline;
@@ -75,6 +77,8 @@ internal sealed class RenderBuiltInSubmissionResources
     internal GpuPipeline? SkinnedMeshPipeline { get; }
 
     internal GpuPipeline? SkinnedMeshShadowPipeline { get; }
+
+    internal GpuPipeline? SkinnedNormalDiagnosticComputePipeline { get; }
 
     internal GpuPipeline? SkinnedNormalMappedMeshPipeline { get; }
 

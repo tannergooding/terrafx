@@ -149,6 +149,8 @@ public sealed partial class EngineHost
             throw new InvalidOperationException("The GraphicsDevice exhausted its device epochs and cannot be replaced.");
         }
 
+        var oldRenderer = _renderer
+            ?? throw new InvalidOperationException("The graphics-enabled host has no active Renderer.");
         var surfaceEntries = _surfacesByWindow.ToArray();
         var replacementSurfaceEpochs = new Dictionary<WindowHandle, uint>(surfaceEntries.Length);
 
@@ -169,6 +171,7 @@ public sealed partial class EngineHost
         }
 
         _graphicsRecoveryPending = true;
+        WaitForGraphicsTask(oldRenderer.StopAndDrainSubmissionsAsync());
         var oldResidency = _gpuResidency;
 
         if (oldResidency is not null)
@@ -275,7 +278,11 @@ public sealed partial class EngineHost
             }
 
             var replacementResidency = new GpuResidencyService(replacementDevice);
-            var replacementRenderer = Renderer.Create(replacementDevice, replacementResidency);
+            var replacementRenderer = Renderer.Create(
+                replacementDevice,
+                replacementResidency,
+                _diagnostics ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized."),
+                _hostId);
             var publishedDevice = replacementDevice;
             replacementDevice.SetDeviceLostCallback(
                 nativeResult => HandleGraphicsDeviceLost(publishedDevice, nativeResult));

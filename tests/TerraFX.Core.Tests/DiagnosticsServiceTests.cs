@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.Globalization;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -18,7 +19,9 @@ internal sealed class DiagnosticsServiceTests
         DiagnosticSeverity severity,
         long timestamp,
         Guid? worldGuid = null,
-        ImmutableArray<DiagnosticContextEntry> context = default)
+        ImmutableArray<DiagnosticContextEntry> context = default,
+        string operation = "TestOperation",
+        string message = "Test diagnostic.")
         => new(
             code,
             severity,
@@ -35,10 +38,45 @@ internal sealed class DiagnosticsServiceTests
             null,
             null,
             null,
-            "TestOperation",
+            operation,
             null,
-            "Test diagnostic.",
+            message,
             context.IsDefault ? [] : context);
+
+    [Test]
+    public void AbandonedWarningPreclaimRefundsServiceAndWorldReservations()
+    {
+        var minimumServiceBytes = DiagnosticsService.GetMinimumServiceByteReservation();
+        var service = new DiagnosticsService(1, minimumServiceBytes);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        var preclaimBytes = DiagnosticsService.GetNoncoalescingWarningAdmissionBytes(
+            codeLength: 1,
+            operationLength: 1,
+            messageLength: 1,
+            commandIdentityLength: 0,
+            contextStringLengths: []);
+
+        Assert.That(service.TryReserveAttributionPayload(account, preclaimBytes, out var reservation), Is.True);
+        Assert.That(account.ReservedBytes, Is.EqualTo(preclaimBytes));
+        reservation.Dispose();
+        Assert.That(account.ReservedBytes, Is.Zero);
+
+        service.Write(
+            CreateDiagnostic("x", DiagnosticSeverity.Warning, 1, worldGuid, operation: "x", message: "x"),
+            executionSessionId,
+            17,
+            account);
+        Assert.That(
+            service.GetSnapshot(new DiagnosticQuery(1, DiagnosticSeverity.Warning, null, null)).Records,
+            Has.Length.EqualTo(1));
+
+        capability.Close();
+        service.Close();
+    }
 
     [Test]
     public void BorrowedWorldCapabilityCloseRetainsHostService()
@@ -113,6 +151,26 @@ internal sealed class DiagnosticsServiceTests
         var newest = service.GetSnapshot(new DiagnosticQuery(2, DiagnosticSeverity.Information, null, null));
         Assert.That(newest.Records[0].Code, Is.EqualTo("record-8191"));
         Assert.That(newest.Records[1].Code, Is.EqualTo("critical-fault"));
+    }
+
+    [Test]
+    public void DiagnosticByteBudgetAdmitsExactlyTheMinimumRingAndWarningWorkspace()
+    {
+        var minimumBytes = DiagnosticsService.GetMinimumServiceByteReservation();
+
+        Assert.That(DiagnosticsService.GetMaximumRecordCount(minimumBytes), Is.EqualTo(1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => DiagnosticsService.GetMaximumRecordCount(minimumBytes - 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new DiagnosticsService(1, minimumBytes - 1));
+
+        var service = new DiagnosticsService(1, minimumBytes);
+        service.Write(
+            CreateDiagnostic("x", DiagnosticSeverity.Warning, 1, operation: "x", message: "x"),
+            null,
+            null);
+        Assert.That(
+            service.GetSnapshot(new DiagnosticQuery(1, DiagnosticSeverity.Warning, null, null)).Records,
+            Has.Length.EqualTo(1));
+        service.Close();
     }
 
     [Test]
@@ -379,6 +437,43 @@ internal sealed class DiagnosticsServiceTests
     }
 
     [Test]
+    public void NoncoalescingWarningsRetainDistinctRowsAndRefundUnusedPreclaims()
+    {
+        var service = new DiagnosticsService(4);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+
+        for (var index = 0; index < 2; index++)
+        {
+            var availableBytes = account.MaximumRetainedBytes - account.ReservedBytes;
+            Assert.That(service.TryReserveAttributionPayload(account, availableBytes, out var reservation), Is.True);
+            Assert.That(
+                service.WriteNoncoalescingWarning(
+                    CreateDiagnostic("same-warning", DiagnosticSeverity.Warning, index, worldGuid),
+                    ref reservation),
+                Is.True);
+            Assert.That(account.ReservedBytes, Is.EqualTo(account.MaximumRetainedBytes));
+            reservation.Dispose();
+            Assert.That(account.ReservedBytes, Is.LessThan(account.MaximumRetainedBytes));
+        }
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+
+        Assert.That(snapshot.Records, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Records[0].Context[^1], Is.EqualTo(new DiagnosticContextEntry("OccurrenceCount", "1")));
+        Assert.That(snapshot.Records[1].Context[^1], Is.EqualTo(new DiagnosticContextEntry("OccurrenceCount", "1")));
+        Assert.That(snapshot.CoalescedCount, Is.Zero);
+        Assert.That(account.ReservedBytes, Is.LessThan(account.MaximumRetainedBytes));
+
+        capability.Close();
+        service.Close();
+        Assert.That(account.ReservedBytes, Is.Zero);
+    }
+
+    [Test]
     public void RecordDroppedCountsTelemetryThatCouldNotBeMaterialized()
     {
         var service = new DiagnosticsService(1);
@@ -434,5 +529,140 @@ internal sealed class DiagnosticsServiceTests
                 [new DiagnosticContextEntry("OccurrenceCount", "1")]),
             sessionId,
             17));
+    }
+
+    [Test]
+    public void WarningReplacementRequiresTheOldAndNewPayloadPeak()
+    {
+        var service = new DiagnosticsService(4);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        service.Write(
+            CreateDiagnostic("same-warning", DiagnosticSeverity.Warning, 1, worldGuid),
+            executionSessionId,
+            17,
+            account);
+
+        var unallocatedBytes = account.MaximumRetainedBytes - account.ReservedBytes;
+        Assert.That(unallocatedBytes, Is.GreaterThan(0));
+        Assert.That(service.TryReserveAttributionPayload(account, unallocatedBytes, out var blocker), Is.True);
+
+        service.Write(
+            CreateDiagnostic("same-warning", DiagnosticSeverity.Warning, 2, worldGuid),
+            executionSessionId,
+            17,
+            account);
+        var rejectedSnapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+        Assert.That(rejectedSnapshot.Records, Has.Length.EqualTo(1));
+        Assert.That(rejectedSnapshot.Records[0].MonotonicTimestamp, Is.EqualTo(1));
+        Assert.That(rejectedSnapshot.Records[0].Context[^1], Is.EqualTo(new DiagnosticContextEntry("OccurrenceCount", "1")));
+        Assert.That(rejectedSnapshot.DroppedCount, Is.EqualTo(1));
+        Assert.That(rejectedSnapshot.CoalescedCount, Is.Zero);
+
+        blocker.Dispose();
+        service.Write(
+            CreateDiagnostic("same-warning", DiagnosticSeverity.Warning, 3, worldGuid),
+            executionSessionId,
+            17,
+            account);
+        var admittedSnapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+
+        Assert.That(admittedSnapshot.Records, Has.Length.EqualTo(1));
+        Assert.That(admittedSnapshot.Records[0].MonotonicTimestamp, Is.EqualTo(1));
+        Assert.That(admittedSnapshot.Records[0].Context[^1], Is.EqualTo(new DiagnosticContextEntry("OccurrenceCount", "2")));
+        Assert.That(admittedSnapshot.DroppedCount, Is.EqualTo(1));
+        Assert.That(admittedSnapshot.CoalescedCount, Is.EqualTo(1));
+
+        capability.Close();
+        service.Close();
+    }
+
+    [Test]
+    public void WorldAttributionIsSharedAcrossServicesAndReleasedAfterServiceClose()
+    {
+        var service = new DiagnosticsService(4);
+        var otherService = new DiagnosticsService(4);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        var diagnostic = CreateDiagnostic("attributed", DiagnosticSeverity.Information, 1, worldGuid);
+
+        service.Write(diagnostic, executionSessionId, 17, account);
+
+        var retainedBytes = account.ReservedBytes;
+        Assert.That(retainedBytes, Is.GreaterThan(0));
+        Assert.That(retainedBytes, Is.LessThanOrEqualTo(account.MaximumRetainedBytes));
+        Assert.That(
+            otherService.TryReserveAttributionPayload(account, account.MaximumRetainedBytes, out _),
+            Is.False);
+        Assert.That(account.ReservedBytes, Is.EqualTo(retainedBytes));
+        Assert.That(
+            otherService.GetSnapshot(new DiagnosticQuery(1, DiagnosticSeverity.Trace, null, null)).DroppedCount,
+            Is.EqualTo(1));
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(1, DiagnosticSeverity.Trace, null, null));
+        service.Close();
+
+        Assert.That(account.ReservedBytes, Is.Zero);
+        Assert.That(snapshot.Records[0], Is.SameAs(diagnostic));
+        Assert.That(snapshot.Records[0].Code, Is.EqualTo("attributed"));
+
+        Assert.That(
+            otherService.TryReserveAttributionPayload(account, account.MaximumRetainedBytes, out var reservation),
+            Is.True);
+        reservation.Dispose();
+        Assert.That(account.ReservedBytes, Is.Zero);
+
+        capability.Close();
+        otherService.Close();
+    }
+
+    [Test]
+    public void WorldQuotaPressureEvictsOnlyThatWorldsServiceRows()
+    {
+        var service = new DiagnosticsService(16);
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var firstWorldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var secondWorldGuid = new Guid("40112233-4455-4677-8899-aabbccddeeff");
+        var firstWorld = service.CreateBorrowedWorldCapability(firstWorldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        var secondWorld = service.CreateBorrowedWorldCapability(secondWorldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        firstWorld.BindOwner(17);
+        secondWorld.BindOwner(18);
+        var firstAccount = firstWorld.AttributionAccount;
+        var secondAccount = secondWorld.AttributionAccount;
+
+        for (var index = 0; index < 12; index++)
+        {
+            service.Write(
+                CreateDiagnostic($"world-a-{index}", DiagnosticSeverity.Information, index, firstWorldGuid),
+                executionSessionId,
+                17,
+                firstAccount);
+        }
+
+        service.Write(
+            CreateDiagnostic("world-b-retained", DiagnosticSeverity.Information, 20, secondWorldGuid),
+            executionSessionId,
+            18,
+            secondAccount);
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(16, DiagnosticSeverity.Trace, null, null));
+
+        Assert.That(snapshot.Records.Any(static record => record.Code == "world-a-0"), Is.False);
+        Assert.That(snapshot.Records.Any(static record => record.Code == "world-a-11"), Is.True);
+        Assert.That(snapshot.Records.Any(static record => record.Code == "world-b-retained"), Is.True);
+        Assert.That(snapshot.DroppedCount, Is.GreaterThan(0));
+        Assert.That(firstAccount.ReservedBytes, Is.LessThanOrEqualTo(firstAccount.MaximumRetainedBytes));
+        Assert.That(secondAccount.ReservedBytes, Is.GreaterThan(0));
+
+        firstWorld.Close();
+        secondWorld.Close();
+        service.Close();
+        Assert.That(firstAccount.ReservedBytes, Is.Zero);
+        Assert.That(secondAccount.ReservedBytes, Is.Zero);
     }
 }

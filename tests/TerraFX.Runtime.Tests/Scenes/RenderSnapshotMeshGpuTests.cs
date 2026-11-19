@@ -842,6 +842,8 @@ internal sealed partial class SceneAssetStoreTests
                 });
             }
 
+            var diagnosticsBefore = engineHost.Diagnostics.GetSnapshot(
+                new DiagnosticQuery(8192, DiagnosticSeverity.Trace, null, null));
             RenderSubmissionReceipt submission;
 
             try
@@ -858,6 +860,19 @@ internal sealed partial class SceneAssetStoreTests
             }
 
             Assert.That(submission.CompletedFence, Is.GreaterThan(0));
+            var diagnosticsAfter = engineHost.Diagnostics.GetSnapshot(
+                new DiagnosticQuery(8192, DiagnosticSeverity.Trace, null, null));
+            var snapshotIdText = meshSnapshot.SnapshotId.ToString("N");
+            Assert.That(
+                diagnosticsAfter.Records.Any(diagnostic =>
+                    (diagnostic.Code == "DegenerateSkinnedNormal")
+                    && diagnostic.Context.Any(context =>
+                        (context.Key == "SnapshotId")
+                        && (context.Value == snapshotIdText))),
+                Is.False);
+            Assert.That(diagnosticsAfter.DroppedCount, Is.EqualTo(diagnosticsBefore.DroppedCount));
+            Assert.That(diagnosticsAfter.CoalescedCount, Is.EqualTo(diagnosticsBefore.CoalescedCount));
+
             using var readback = await graphicsDevice.ReadbackTextureAsync(
                 targetTexture,
                 new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);

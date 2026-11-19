@@ -16,6 +16,7 @@ public abstract class RenderSnapshot : IDisposable
     private readonly Lock _assetPinGate = new();
     private readonly ImmutableArray<Guid> _cameraIds;
     private readonly ImmutableArray<CameraSnapshot> _cameras;
+    private WorldDiagnosticAttributionAccount? _diagnosticAttributionAccount;
     private readonly ImmutableArray<Guid> _directionalLightIds;
     private readonly ImmutableArray<RenderDirectionalLightSnapshot> _directionalLights;
     private int _isDisposed;
@@ -41,11 +42,19 @@ public abstract class RenderSnapshot : IDisposable
         ImmutableArray<RenderSpriteSnapshot> spriteDraws,
         ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
         RenderSnapshotAssetPins? assetPins,
+        WorldDiagnosticAttributionAccount diagnosticAttributionAccount,
         PixelSize targetExtent)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(snapshotId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(tickIndex);
+        ArgumentNullException.ThrowIfNull(diagnosticAttributionAccount);
+
+        if (diagnosticAttributionAccount.WorldGuid != worldGuid
+            || (diagnosticAttributionAccount.WorldOwnerId == 0))
+        {
+            throw new ArgumentException("The diagnostic attribution account must identify this exact source World.", nameof(diagnosticAttributionAccount));
+        }
 
         if (cameraIds.IsDefault
             || cameras.IsDefault
@@ -255,6 +264,7 @@ public abstract class RenderSnapshot : IDisposable
         _spriteDraws = [.. spriteDraws];
         _spriteCameraOrders = [.. spriteCameraOrders];
         _assetPins = assetPins;
+        _diagnosticAttributionAccount = diagnosticAttributionAccount;
         TargetExtent = targetExtent;
     }
 
@@ -327,6 +337,16 @@ public abstract class RenderSnapshot : IDisposable
         }
     }
 
+    internal WorldDiagnosticAttributionAccount RetainDiagnosticAttributionAccount()
+    {
+        lock (_assetPinGate)
+        {
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
+            return _diagnosticAttributionAccount
+                ?? throw new InvalidOperationException("The render snapshot lost its source diagnostic attribution account.");
+        }
+    }
+
     /// <summary>Releases managed snapshot ownership.</summary>
     /// <param name="disposing">Whether managed ownership should be released.</param>
     protected virtual void Dispose(bool disposing)
@@ -343,6 +363,7 @@ public abstract class RenderSnapshot : IDisposable
                 }
 
                 assetPins = Interlocked.Exchange(ref _assetPins, null);
+                _ = Interlocked.Exchange(ref _diagnosticAttributionAccount, null);
             }
 
             assetPins?.Dispose();
