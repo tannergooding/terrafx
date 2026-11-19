@@ -1793,7 +1793,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw;
             }
 
-            var cleanupExceptions = new List<Exception>(2);
+            Exception? stopException = null;
+            Exception? releaseException = null;
 
             if (hasStartedRecording)
             {
@@ -1801,10 +1802,10 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     StopRecording();
                 }
-                catch (Exception stopException)
+                catch (Exception caughtStopException)
                 {
                     MarkUncertainWsiOperation();
-                    cleanupExceptions.Add(stopException);
+                    stopException = caughtStopException;
                 }
             }
 
@@ -1815,16 +1816,25 @@ internal sealed unsafe partial class VulkanBackendDevice
                     surface.ReleaseAcquiredImage(availableGraphFrameSlotIndex, acquiredImageIndex);
                     hasAcquiredImage = false;
                 }
-                catch (Exception releaseException)
+                catch (Exception caughtReleaseException)
                 {
-                    cleanupExceptions.Add(releaseException);
+                    releaseException = caughtReleaseException;
                 }
             }
 
-            if (cleanupExceptions.Count != 0)
+            if (stopException is not null)
             {
-                cleanupExceptions.Insert(0, exception);
-                throw new AggregateException(cleanupExceptions);
+                if (releaseException is not null)
+                {
+                    throw new AggregateException(exception, stopException, releaseException);
+                }
+
+                throw new AggregateException(exception, stopException);
+            }
+
+            if (releaseException is not null)
+            {
+                throw new AggregateException(exception, releaseException);
             }
 
             throw;
