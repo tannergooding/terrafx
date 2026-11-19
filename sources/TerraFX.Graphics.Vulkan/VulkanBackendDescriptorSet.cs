@@ -12,6 +12,7 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
     private VkDescriptorSet _descriptorSet;
     private readonly VkImageView[] _imageViews;
     private bool _isDisposed;
+    private bool _isInitialized;
     private readonly VulkanBackendDevice _owner;
     private readonly VulkanBackendPipeline _pipeline;
     private readonly VulkanBackendSampler[] _samplers;
@@ -25,7 +26,8 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
         VulkanBackendBuffer[] buffers,
         VulkanBackendTexture[] textures,
         VulkanBackendSampler[] samplers,
-        VkImageView[] imageViews)
+        VkImageView[] imageViews,
+        bool isInitialized = true)
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(pipeline);
@@ -41,6 +43,7 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
         _textures = textures;
         _samplers = samplers;
         _imageViews = imageViews;
+        _isInitialized = isInitialized;
     }
 
     internal ReadOnlySpan<VulkanBackendBuffer> Buffers => _buffers;
@@ -63,10 +66,26 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
 
     public void Dispose()
     {
-        if (!_isDisposed)
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        if (!_isInitialized)
+        {
+            MarkDisposed();
+        }
+        else
         {
             _owner.DestroyDescriptorSet(this);
         }
+    }
+
+    internal void InitializeNativeHandles(VkDescriptorPool descriptorPool, VkDescriptorSet descriptorSet)
+    {
+        _descriptorPool = descriptorPool;
+        _descriptorSet = descriptorSet;
+        _isInitialized = true;
     }
 
     internal void MarkDisposed()
@@ -77,6 +96,7 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
         Array.Clear(_imageViews);
         _descriptorPool = default;
         _descriptorSet = default;
+        _isInitialized = false;
         _isDisposed = true;
     }
 }

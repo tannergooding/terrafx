@@ -163,7 +163,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         VulkanBackendSampledImageBinding[] imageBindings,
         VulkanBackendStorageImageBinding[] storageImageBindings,
         VulkanBackendSamplerBinding[] samplerBindings,
-        ShaderBindingGroup group)
+        ShaderBindingGroup group,
+        IDisposable? constructionStorage = null)
     {
         ValidateGraphDescriptorSetOwner(pipeline, group);
         ArgumentNullException.ThrowIfNull(uniformBufferBindings);
@@ -187,7 +188,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             storageImageBindings,
             samplerBindings,
             group,
-            setIndex);
+            setIndex,
+            constructionStorage);
     }
 
     internal VulkanBackendDescriptorSet CreateGraphDescriptorSetCore(
@@ -198,15 +200,31 @@ internal sealed unsafe partial class VulkanBackendDevice
         VulkanBackendStorageImageBinding[] storageImageBindings,
         VulkanBackendSamplerBinding[] samplerBindings,
         ShaderBindingGroup group,
-        int setIndex)
+        int setIndex,
+        IDisposable? constructionStorage = null)
     {
         var resources = pipeline.Resources;
+        var descriptorConstructionStorage = constructionStorage as VulkanGraphDescriptorConstructionStorage;
+
+        if ((constructionStorage is not null) && (descriptorConstructionStorage is null))
+        {
+            throw new InvalidOperationException("The graph descriptor group has incompatible Vulkan construction storage.");
+        }
+
+        if ((descriptorConstructionStorage is not null)
+            && !ReferenceEquals(descriptorConstructionStorage.Pipeline, pipeline))
+        {
+            throw new InvalidOperationException("The Vulkan descriptor-construction storage belongs to another pipeline.");
+        }
 
         var sortedUniformBufferBindings = uniformBufferBindings;
         Array.Sort(sortedUniformBufferBindings, static (left, right) => left.Binding.CompareTo(right.Binding));
-        var retainedBuffers = new VulkanBackendBuffer[sortedUniformBufferBindings.Length];
-        var bufferInfos = new VkDescriptorBufferInfo[sortedUniformBufferBindings.Length];
-        var bufferWrites = new VkWriteDescriptorSet[sortedUniformBufferBindings.Length];
+        var retainedBuffers = descriptorConstructionStorage?.RetainedUniformBuffers
+            ?? new VulkanBackendBuffer[sortedUniformBufferBindings.Length];
+        var bufferInfos = descriptorConstructionStorage?.BufferInfos
+            ?? new VkDescriptorBufferInfo[sortedUniformBufferBindings.Length];
+        var bufferWrites = descriptorConstructionStorage?.BufferWrites
+            ?? new VkWriteDescriptorSet[sortedUniformBufferBindings.Length];
 
         for (var index = 0; index < sortedUniformBufferBindings.Length; index++)
         {
@@ -275,9 +293,12 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         var sortedStorageBufferBindings = storageBufferBindings;
         Array.Sort(sortedStorageBufferBindings, static (left, right) => left.Binding.CompareTo(right.Binding));
-        var retainedStorageBuffers = new VulkanBackendBuffer[sortedStorageBufferBindings.Length];
-        var storageBufferInfos = new VkDescriptorBufferInfo[sortedStorageBufferBindings.Length];
-        var storageBufferWrites = new VkWriteDescriptorSet[sortedStorageBufferBindings.Length];
+        var retainedStorageBuffers = descriptorConstructionStorage?.RetainedStorageBuffers
+            ?? new VulkanBackendBuffer[sortedStorageBufferBindings.Length];
+        var storageBufferInfos = descriptorConstructionStorage?.StorageBufferInfos
+            ?? new VkDescriptorBufferInfo[sortedStorageBufferBindings.Length];
+        var storageBufferWrites = descriptorConstructionStorage?.StorageBufferWrites
+            ?? new VkWriteDescriptorSet[sortedStorageBufferBindings.Length];
         var maximumStorageBufferRange = sortedStorageBufferBindings.Length == 0
             ? 0
             : GetMaximumStorageBufferRangeBytes();
@@ -347,15 +368,19 @@ internal sealed unsafe partial class VulkanBackendDevice
             storageBufferInfos[index].range = checked((ulong)binding.Range);
         }
 
-        var allRetainedBuffers = new VulkanBackendBuffer[retainedBuffers.Length + retainedStorageBuffers.Length];
+        var allRetainedBuffers = descriptorConstructionStorage?.RetainedBuffers
+            ?? new VulkanBackendBuffer[retainedBuffers.Length + retainedStorageBuffers.Length];
         Array.Copy(retainedBuffers, 0, allRetainedBuffers, 0, retainedBuffers.Length);
         Array.Copy(retainedStorageBuffers, 0, allRetainedBuffers, retainedBuffers.Length, retainedStorageBuffers.Length);
 
         var sortedImageBindings = imageBindings;
         Array.Sort(sortedImageBindings, static (left, right) => left.Binding.CompareTo(right.Binding));
-        var retainedSampledTextures = new VulkanBackendTexture[sortedImageBindings.Length];
-        var imageInfos = new VkDescriptorImageInfo[sortedImageBindings.Length];
-        var imageWrites = new VkWriteDescriptorSet[sortedImageBindings.Length];
+        var retainedSampledTextures = descriptorConstructionStorage?.RetainedSampledTextures
+            ?? new VulkanBackendTexture[sortedImageBindings.Length];
+        var imageInfos = descriptorConstructionStorage?.ImageInfos
+            ?? new VkDescriptorImageInfo[sortedImageBindings.Length];
+        var imageWrites = descriptorConstructionStorage?.ImageWrites
+            ?? new VkWriteDescriptorSet[sortedImageBindings.Length];
 
         for (var index = 0; index < sortedImageBindings.Length; index++)
         {
@@ -407,9 +432,12 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         var sortedStorageImageBindings = storageImageBindings;
         Array.Sort(sortedStorageImageBindings, static (left, right) => left.Binding.CompareTo(right.Binding));
-        var retainedStorageTextures = new VulkanBackendTexture[sortedStorageImageBindings.Length];
-        var storageImageInfos = new VkDescriptorImageInfo[sortedStorageImageBindings.Length];
-        var storageImageWrites = new VkWriteDescriptorSet[sortedStorageImageBindings.Length];
+        var retainedStorageTextures = descriptorConstructionStorage?.RetainedStorageTextures
+            ?? new VulkanBackendTexture[sortedStorageImageBindings.Length];
+        var storageImageInfos = descriptorConstructionStorage?.StorageImageInfos
+            ?? new VkDescriptorImageInfo[sortedStorageImageBindings.Length];
+        var storageImageWrites = descriptorConstructionStorage?.StorageImageWrites
+            ?? new VkWriteDescriptorSet[sortedStorageImageBindings.Length];
 
         for (var index = 0; index < sortedStorageImageBindings.Length; index++)
         {
@@ -455,16 +483,44 @@ internal sealed unsafe partial class VulkanBackendDevice
             storageImageWrites[index] = write;
         }
 
-        var retainedTextures = new VulkanBackendTexture[retainedSampledTextures.Length + retainedStorageTextures.Length];
+        var retainedTextures = descriptorConstructionStorage?.RetainedTextures
+            ?? new VulkanBackendTexture[retainedSampledTextures.Length + retainedStorageTextures.Length];
         Array.Copy(retainedSampledTextures, 0, retainedTextures, 0, retainedSampledTextures.Length);
         Array.Copy(retainedStorageTextures, 0, retainedTextures, retainedSampledTextures.Length, retainedStorageTextures.Length);
-        var imageViews = new VkImageView[retainedTextures.Length];
+        var imageViews = descriptorConstructionStorage?.ImageViews
+            ?? new VkImageView[retainedTextures.Length];
 
         var sortedSamplerBindings = samplerBindings;
         Array.Sort(sortedSamplerBindings, static (left, right) => left.Binding.CompareTo(right.Binding));
-        var retainedSamplers = new VulkanBackendSampler[sortedSamplerBindings.Length];
-        var samplerInfos = new VkDescriptorImageInfo[sortedSamplerBindings.Length];
-        var samplerWrites = new VkWriteDescriptorSet[sortedSamplerBindings.Length];
+        var retainedSamplers = descriptorConstructionStorage?.RetainedSamplers
+            ?? new VulkanBackendSampler[sortedSamplerBindings.Length];
+        var samplerInfos = descriptorConstructionStorage?.SamplerInfos
+            ?? new VkDescriptorImageInfo[sortedSamplerBindings.Length];
+        var samplerWrites = descriptorConstructionStorage?.SamplerWrites
+            ?? new VkWriteDescriptorSet[sortedSamplerBindings.Length];
+
+        if ((descriptorConstructionStorage is not null)
+            && ((retainedBuffers.Length != sortedUniformBufferBindings.Length)
+                || (bufferInfos.Length != sortedUniformBufferBindings.Length)
+                || (bufferWrites.Length != sortedUniformBufferBindings.Length)
+                || (retainedStorageBuffers.Length != sortedStorageBufferBindings.Length)
+                || (storageBufferInfos.Length != sortedStorageBufferBindings.Length)
+                || (storageBufferWrites.Length != sortedStorageBufferBindings.Length)
+                || (allRetainedBuffers.Length != checked(sortedUniformBufferBindings.Length + sortedStorageBufferBindings.Length))
+                || (retainedSampledTextures.Length != sortedImageBindings.Length)
+                || (imageInfos.Length != sortedImageBindings.Length)
+                || (imageWrites.Length != sortedImageBindings.Length)
+                || (retainedStorageTextures.Length != sortedStorageImageBindings.Length)
+                || (storageImageInfos.Length != sortedStorageImageBindings.Length)
+                || (storageImageWrites.Length != sortedStorageImageBindings.Length)
+                || (retainedSamplers.Length != sortedSamplerBindings.Length)
+                || (samplerInfos.Length != sortedSamplerBindings.Length)
+                || (samplerWrites.Length != sortedSamplerBindings.Length)
+                || (retainedTextures.Length != checked(retainedSampledTextures.Length + retainedStorageTextures.Length))
+                || (imageViews.Length != retainedTextures.Length)))
+        {
+            throw new InvalidOperationException("The Vulkan descriptor-construction arrays do not match binding emission.");
+        }
 
         for (var index = 0; index < sortedSamplerBindings.Length; index++)
         {
@@ -509,12 +565,14 @@ internal sealed unsafe partial class VulkanBackendDevice
             samplerWrites[index] = write;
         }
 
-        var poolSizes = new VkDescriptorPoolSize[
-            (bufferInfos.Length == 0 ? 0 : 1)
-            + (storageBufferInfos.Length == 0 ? 0 : 1)
-            + (imageInfos.Length == 0 ? 0 : 1)
-            + (storageImageInfos.Length == 0 ? 0 : 1)
-            + (samplerInfos.Length == 0 ? 0 : 1)];
+        var poolSizes = descriptorConstructionStorage?.PoolSizes
+            ?? new VkDescriptorPoolSize[
+                (bufferInfos.Length == 0 ? 0 : 1)
+                + (storageBufferInfos.Length == 0 ? 0 : 1)
+                + (imageInfos.Length == 0 ? 0 : 1)
+                + (storageImageInfos.Length == 0 ? 0 : 1)
+                + (samplerInfos.Length == 0 ? 0 : 1)];
+        Array.Clear(poolSizes);
         var poolSizeCount = 0;
 
         if (bufferInfos.Length != 0)
@@ -555,6 +613,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             poolSize.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLER;
             poolSize.descriptorCount = checked((uint)samplerInfos.Length);
             poolSizes[poolSizeCount++] = poolSize;
+        }
+
+        if (poolSizeCount != poolSizes.Length)
+        {
+            throw new InvalidOperationException("The Vulkan descriptor-pool storage does not match populated descriptor kinds.");
         }
 
         var poolCreateInfo = default(VkDescriptorPoolCreateInfo);
@@ -706,15 +769,16 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
-            var result = new VulkanBackendDescriptorSet(
-                this,
-                pipeline,
-                descriptorPool,
-                descriptorSet,
-                allRetainedBuffers,
-                retainedTextures,
-                retainedSamplers,
-                imageViews);
+            var result = descriptorConstructionStorage?.DescriptorSet
+                ?? new VulkanBackendDescriptorSet(
+                    this,
+                    pipeline,
+                    descriptorPool,
+                    descriptorSet,
+                    allRetainedBuffers,
+                    retainedTextures,
+                    retainedSamplers,
+                    imageViews);
             pipeline.RetainDescriptorSet();
             var retainedBufferCount = 0;
             var retainedTextureCount = 0;
@@ -738,6 +802,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
 
                 _liveDescriptorSetCount = checked(_liveDescriptorSetCount + 1);
+
+                if (descriptorConstructionStorage is not null)
+                {
+                    result.InitializeNativeHandles(descriptorPool, descriptorSet);
+                }
             }
             catch
             {
