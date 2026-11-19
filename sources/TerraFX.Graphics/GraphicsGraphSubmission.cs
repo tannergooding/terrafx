@@ -1368,6 +1368,12 @@ internal sealed class GraphicsGraphSubmission
             ?? throw new InvalidOperationException("The imported buffer lost its backend resource.");
     }
 
+    internal int GetBufferImportIndex(ulong resourceId)
+    {
+        var index = FindFirstBufferImportIndex(resourceId);
+        return (index >= 0) ? index : throw new KeyNotFoundException("The buffer is not in the graph import index.");
+    }
+
     internal ulong GetColorAttachmentResourceId(int index)
         => _colorAttachmentResourceIndex[_colorAttachmentResourceOrder[index]].ResourceId;
 

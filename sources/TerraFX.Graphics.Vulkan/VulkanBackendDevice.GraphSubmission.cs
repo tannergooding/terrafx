@@ -415,21 +415,21 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
         }
 
-        var graphBufferScopes = new List<(
+        var graphBufferScopes = new (
             VulkanBackendBuffer Buffer,
             VkPipelineStageFlags2 StageMask,
-            VkAccessFlags2 AccessMask)>(submission.BufferImports.Length);
-        var currentBufferScopes = new Dictionary<ulong, (
+            VkAccessFlags2 AccessMask)[submission.BufferImports.Length];
+        var graphBufferScopeCount = 0;
+        var currentBufferScopes = new (
             VkPipelineStageFlags2 StageMask,
-            VkAccessFlags2 AccessMask)>(submission.BufferImports.Length);
+            VkAccessFlags2 AccessMask)[submission.BufferImports.Length];
 
-        foreach (var import in submission.BufferImports)
+        for (var index = 0; index < submission.BufferImports.Length; index++)
         {
+            var import = submission.BufferImports[index];
             var buffer = submission.GetBuffer(import.Version.ResourceId) as VulkanBackendBuffer
                 ?? throw new InvalidOperationException("The graph buffer import is not a Vulkan buffer.");
-            currentBufferScopes.Add(
-                import.Version.ResourceId,
-                (buffer.LastStageMask, buffer.LastAccessMask));
+            currentBufferScopes[index] = (buffer.LastStageMask, buffer.LastAccessMask);
         }
 
         for (var index = 0; index < submission.TextureImports.Length; index++)
@@ -565,7 +565,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 var graphBufferAccessMask = VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
                 var existingScopeIndex = -1;
 
-                for (var index = 0; index < graphBufferScopes.Count; index++)
+                for (var index = 0; index < graphBufferScopeCount; index++)
                 {
                     if (ReferenceEquals(graphBufferScopes[index].Buffer, graphBuffer))
                     {
@@ -576,7 +576,11 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (existingScopeIndex < 0)
                 {
-                    graphBufferScopes.Add((graphBuffer, graphBufferStageMask, graphBufferAccessMask));
+                    graphBufferScopes[graphBufferScopeCount] = (
+                        graphBuffer,
+                        graphBufferStageMask,
+                        graphBufferAccessMask);
+                    graphBufferScopeCount++;
                 }
                 else
                 {
@@ -782,7 +786,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                         sourceAccess,
                         shaderStages,
                         storageAccess);
-                    currentBufferScopes[resourceId] = (shaderStages, storageAccess);
+                    currentBufferScopes[submission.GetBufferImportIndex(resourceId)] = (shaderStages, storageAccess);
                 }
 
                 for (var importIndex = 1; importIndex < submission.TextureImports.Length; importIndex++)
@@ -927,8 +931,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                     {
                         var buffer = submission.GetBuffer(transition.ResourceId) as VulkanBackendBuffer
                             ?? throw new InvalidOperationException("The graph transition lost its Vulkan buffer.");
-                        var (bufferScopeStageMask, bufferScopeAccessMask) = currentBufferScopes[transition.ResourceId];
-                        currentBufferScopes[transition.ResourceId] = RecordGraphBufferBarrier(
+                        var bufferImportIndex = submission.GetBufferImportIndex(transition.ResourceId);
+                        var (bufferScopeStageMask, bufferScopeAccessMask) = currentBufferScopes[bufferImportIndex];
+                        currentBufferScopes[bufferImportIndex] = RecordGraphBufferBarrier(
                             commands,
                             buffer,
                             transition,
@@ -1743,8 +1748,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
-            foreach (var graphBufferScope in graphBufferScopes)
+            for (var index = 0; index < graphBufferScopeCount; index++)
             {
+                var graphBufferScope = graphBufferScopes[index];
                 graphBufferScope.Buffer.SetLastAccessScope(
                     graphBufferScope.StageMask,
                     graphBufferScope.AccessMask);

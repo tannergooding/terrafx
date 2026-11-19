@@ -1065,6 +1065,7 @@ internal sealed class GraphicsBufferTransferTests
 
                 Assert.That(submission.TryGetIndexedBufferImport(identities[index], out var observed), Is.True);
                 Assert.That(observed, Is.SameAs(frozenImports[expectedIndices[index]]));
+                Assert.That(submission.GetBufferImportIndex(identities[index]), Is.EqualTo(expectedIndices[index]));
             }
 
             var before = GC.GetAllocatedBytesForCurrentThread();
