@@ -105,7 +105,7 @@ These are working-tree inputs, not an accepted executable profile. Source paths 
 | `docs\proposals\m05-owner-contract-closure-runtime-ports.md` | `605CF1D92DC362A8B73EA9BDA3A5467757942C268712F484AF53D9A9159D53E3` |
 | `docs\proposals\m05-cosmetic-particle-budget-return-addendum.md` | `1574E6D573BDFE2AF45A3E44EE3BAB5FE52131A02547C8610294F8BBF3C4B119` |
 | `docs\proposals\m05-cosmetic-particle-credit-handback-addendum.md` | `6FF6EA4E6BA175558C492155FC95E08B936C1171B6747CA6E499166A2F8CB19C` |
-| `docs\proposals\m05-cosmetic-particle-credit-layout-evidence-addendum.md` | `6A0C5BBD63D61DEC8EFB7D768496A7E8FC017FCD32DE95507497CA352DFF3835` |
+| `docs\proposals\m05-cosmetic-particle-credit-layout-evidence-addendum.md` | `BFAFB74AA1570308830BB95C92058963101588419D196E4929EC5E8B786FDC50` |
 | `tests\TerraFX.Runtime.Tests\Entities\WorldLifetimeControlQuarantineTests.cs` | `F52196A4EA7F99AB47931B436CF7CE9512D7A10F8ADA80860D6928DA90F552AE` |
 | `artifacts\log\particle-credit-layout\results.json` | `04EA2D33084973DE93A43EE6565CAEBE35CB17D34AAF674A3458CA0B572046D0` |
 
