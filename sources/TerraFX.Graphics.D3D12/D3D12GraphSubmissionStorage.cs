@@ -13,6 +13,12 @@ internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmiss
         BindingArrays = bindingArrays;
         DescriptorSets =
             new D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet[bindingArrays.Length];
+
+        for (var index = 0; index < bindingArrays.Length; index++)
+        {
+            DescriptorSets[index] = bindingArrays[index].DescriptorSet;
+        }
+
         RenderTargetViews = new D3D12_CPU_DESCRIPTOR_HANDLE[renderTargetViewCapacity];
     }
 
@@ -24,6 +30,11 @@ internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmiss
 
     public void Dispose()
     {
+        foreach (var bindingArray in BindingArrays)
+        {
+            bindingArray.ConstructionStorage.Dispose();
+        }
+
         Array.Clear(BindingArrays);
         Array.Clear(DescriptorSets);
         Array.Clear(RenderTargetViews);
@@ -31,6 +42,8 @@ internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmiss
 
     internal readonly struct DescriptorBindingArrays
     {
+        internal readonly IDisposable ConstructionStorage;
+        internal readonly D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet DescriptorSet;
         internal readonly D3D12BackendSampledImageBinding[] SampledImages;
         internal readonly D3D12BackendSamplerBinding[] Samplers;
         internal readonly D3D12BackendStorageBufferBinding[] StorageBuffers;
@@ -38,12 +51,18 @@ internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmiss
         internal readonly D3D12BackendUniformBufferBinding[] UniformBuffers;
 
         internal DescriptorBindingArrays(
+            IDisposable constructionStorage,
+            D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet descriptorSet,
             int uniformBufferCount,
             int sampledImageCount,
             int storageBufferCount,
             int storageImageCount,
             int samplerCount)
         {
+            ArgumentNullException.ThrowIfNull(constructionStorage);
+            ConstructionStorage = constructionStorage;
+            ArgumentNullException.ThrowIfNull(descriptorSet);
+            DescriptorSet = descriptorSet;
             UniformBuffers = new D3D12BackendUniformBufferBinding[uniformBufferCount];
             SampledImages = new D3D12BackendSampledImageBinding[sampledImageCount];
             StorageBuffers = new D3D12BackendStorageBufferBinding[storageBufferCount];
