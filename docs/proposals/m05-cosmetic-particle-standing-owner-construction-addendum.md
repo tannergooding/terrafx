@@ -201,8 +201,8 @@ The current Runtime and Runtime.Tests binaries were rehashed after those validat
 | `.dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148\coreclr.dll` | `46A09D97AD8DD30D400A86C90AF707BEE7593B585D3CCB8586C4FFFCA404D1E2` |
 | `artifacts\bin\sources\TerraFX.Runtime\Debug\net11.0\TerraFX.Runtime.dll` | `E4A0FD705E48C0A34806BDAA440797C1D22DD0126D50CB624FB403F4BC2E88F9` |
 | `artifacts\bin\sources\TerraFX.Runtime\Release\net11.0\TerraFX.Runtime.dll` | `9A19F6C7EAC63E8926FA38FD9E0F1236BC4C0F6F4E3C5216FE6492ECE52D966A` |
-| `artifacts\bin\tests\TerraFX.Runtime.Tests\Debug\net11.0\TerraFX.Runtime.Tests.dll` | `3E7A36B61EE50C509423C6AD608214F1F8961C01BA572F8791DA3735765352C0` |
-| `artifacts\bin\tests\TerraFX.Runtime.Tests\Release\net11.0\TerraFX.Runtime.Tests.dll` | `F25B7A1708417F880DC906E1F228467553825008BDE260CA30C1F57139E3FAAE` |
+| `artifacts\bin\tests\TerraFX.Runtime.Tests\Debug\net11.0\TerraFX.Runtime.Tests.dll` | `6D89DE04ADDB94142CEEFBC922E2E658BA699483B737EFDB9B7181E2633A6087` |
+| `artifacts\bin\tests\TerraFX.Runtime.Tests\Release\net11.0\TerraFX.Runtime.Tests.dll` | `0B9EF8BFE83F8A0E9EB82DD053D37F48B49BCE6261283D59C006E5640C02452C` |
 | `artifacts\tst\Debug\cosmetic-credit-selection-debug.trx` | `F48F5091AA3AA35D75947EA8E95AC4E411089BF194CEF567A76A3B2772D28FE2` |
 | `artifacts\tst\Release\cosmetic-credit-selection-release.trx` | `FC6DD7E49D015F946BB30AB3EB655455929BF8E1A48D3302E18464A9CF9E4CD9` |
 | `artifacts\tst\Debug\particle-credit-cell-layout-current-debug.trx` | `952D95D0C2A7D598B200DF007CF8275BADE42C03AED4414EB8099F5937B8247C` |
