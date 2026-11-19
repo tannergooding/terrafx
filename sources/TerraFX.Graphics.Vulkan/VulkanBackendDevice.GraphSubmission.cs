@@ -1780,11 +1780,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             if (graphSubmissionAccepted)
             {
-                if (hasAcquiredImage)
-                {
-                    MarkUncertainWsiOperation();
-                }
-
+                MarkUncertainWsiOperation();
                 throw;
             }
 

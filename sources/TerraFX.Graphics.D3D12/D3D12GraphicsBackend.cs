@@ -2805,6 +2805,7 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     if (graphSubmissionAccepted)
                     {
+                        transferQueue.MarkUncertainSubmission();
                         throw;
                     }
 
