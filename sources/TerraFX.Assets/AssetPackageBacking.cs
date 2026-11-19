@@ -12,8 +12,12 @@ namespace TerraFX.Assets;
 
 internal sealed class AssetPackageBacking
 {
+    private static AssetPackageBacking? s_failedReleaseRoot;
+    private static readonly Lock s_failedReleaseRootGate = new();
     private readonly AssetPackageBackingToken _backingToken = new();
     private readonly Lock _gate = new();
+    private bool _isFailedReleaseRooted;
+    private AssetPackageBacking? _nextFailedRelease;
     private bool _ownerReleased;
     private readonly EbinReadLimits _readLimits;
     private Exception? _releaseFailure;
@@ -228,6 +232,7 @@ internal sealed class AssetPackageBacking
                 _releaseState = 3;
             }
 
+            RetainFailedReleaseRoot();
             throw;
         }
 
@@ -243,6 +248,21 @@ internal sealed class AssetPackageBacking
             _stream = null;
             _referenceCount = 0;
             _releaseState = 2;
+        }
+    }
+
+    private void RetainFailedReleaseRoot()
+    {
+        lock (s_failedReleaseRootGate)
+        {
+            if (_isFailedReleaseRooted)
+            {
+                return;
+            }
+
+            _nextFailedRelease = s_failedReleaseRoot;
+            s_failedReleaseRoot = this;
+            _isFailedReleaseRooted = true;
         }
     }
 

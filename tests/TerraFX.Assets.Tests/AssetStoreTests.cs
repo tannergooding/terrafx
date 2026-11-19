@@ -3,11 +3,13 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -123,6 +125,22 @@ internal sealed class AssetStoreTests
                     ContentAuthoring.None,
                     null),
             ]);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<AssetPackageBacking> CreateBackingWithFailedClose(string path)
+    {
+        using var stream = new ThrowingFileStream(path);
+        var backing = new AssetPackageBacking(
+            stream,
+            [],
+            default,
+            default,
+            CreateOptions(path, [], CreateRegistration()),
+            packageByteLength: 0);
+        var weakBacking = new WeakReference<AssetPackageBacking>(backing);
+        _ = Assert.Throws<IOException>(backing.ReleaseOwner);
+        return weakBacking;
+    }
 
     private static AssetStoreOptions CreateOptions(
         string path,
@@ -246,6 +264,26 @@ internal sealed class AssetStoreTests
             await store.DisposeAsync().ConfigureAwait(false);
             File.Delete(firstPath);
             File.Delete(secondPath);
+        }
+    }
+
+    [Test]
+    public void AssetPackageBackingFailedFinalStreamReleaseRootsBackingForProcessLifetime()
+    {
+        var path = Path.GetTempFileName();
+
+        try
+        {
+            var weakBacking = CreateBackingWithFailedClose(path);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            Assert.That(weakBacking.TryGetTarget(out _), Is.True);
+        }
+        finally
+        {
+            File.Delete(path);
         }
     }
 
@@ -1546,4 +1584,24 @@ internal sealed class AssetStoreTests
     }
 
     private readonly record struct TestAssetValue(uint Marker);
+
+    private sealed class ThrowingFileStream : FileStream
+    {
+        private int _throwOnDispose = 1;
+
+        internal ThrowingFileStream(string path)
+            : base(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete)
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && (Interlocked.Exchange(ref _throwOnDispose, 0) != 0))
+            {
+                throw new IOException("The test stream failed during disposal.");
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 }
