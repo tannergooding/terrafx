@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 using NUnit.Framework;
 using TerraFX.Entities;
 
@@ -121,6 +122,74 @@ internal sealed class WorldLifetimeControlQuarantineTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (long First, long Steady) MeasureArrayAllocation(Type elementType, int length)
+    {
+        const int InstanceCount = 128;
+        var warmArrays = new Array[InstanceCount];
+
+        for (var index = 0; index < warmArrays.Length; index++)
+        {
+            warmArrays[index] = Array.CreateInstance(elementType, length);
+        }
+
+        GC.KeepAlive(warmArrays);
+        CollectGarbage();
+        var arrays = new Array[InstanceCount * 2];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < InstanceCount; index++)
+        {
+            arrays[index] = Array.CreateInstance(elementType, length);
+        }
+
+        var firstAllocationBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        var steadyAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = InstanceCount; index < arrays.Length; index++)
+        {
+            arrays[index] = Array.CreateInstance(elementType, length);
+        }
+
+        var steadyAllocationBytes = GC.GetAllocatedBytesForCurrentThread() - steadyAllocationStart;
+        GC.KeepAlive(arrays);
+        return (firstAllocationBytes / InstanceCount, steadyAllocationBytes / InstanceCount);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (long First, long Steady) MeasureLockAllocation()
+    {
+        const int InstanceCount = 128;
+        var warmLocks = new Lock[InstanceCount];
+
+        for (var index = 0; index < warmLocks.Length; index++)
+        {
+            warmLocks[index] = new Lock();
+        }
+
+        GC.KeepAlive(warmLocks);
+        CollectGarbage();
+        var locks = new Lock[InstanceCount * 2];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < InstanceCount; index++)
+        {
+            locks[index] = new Lock();
+        }
+
+        var firstAllocationBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        var steadyAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = InstanceCount; index < locks.Length; index++)
+        {
+            locks[index] = new Lock();
+        }
+
+        var steadyAllocationBytes = GC.GetAllocatedBytesForCurrentThread() - steadyAllocationStart;
+        GC.KeepAlive(locks);
+        return (firstAllocationBytes / InstanceCount, steadyAllocationBytes / InstanceCount);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static (long First, long Steady) MeasureUninitializedClassAllocation(Type type)
     {
         const int InstanceCount = 128;
@@ -226,6 +295,7 @@ internal sealed class WorldLifetimeControlQuarantineTests
             ?? throw new InvalidOperationException("The World array accounting rule is missing.");
         var accountingCharge = (long)(arrayBytes.Invoke(null, [observedCapacity, observedStride])
             ?? throw new InvalidOperationException("The World array accounting rule returned no result."));
+        var (arrayFirstBytes, arraySteadyBytes) = MeasureArrayAllocation(cellType, observedCapacity);
 
         // The fixed scalar blocks introduce no padding beyond aligning the three
         // references and the final extent to the managed pointer alignment.
@@ -237,10 +307,13 @@ internal sealed class WorldLifetimeControlQuarantineTests
         Assert.Multiple(() => {
             Assert.That(observedStride, Is.EqualTo(expectedStride));
             Assert.That(accountingCharge, Is.EqualTo(expectedCharge));
+            Assert.That(arraySteadyBytes, Is.GreaterThan(0));
+            Assert.That(arraySteadyBytes % IntPtr.Size, Is.Zero);
         });
 
         TestContext.Out.WriteLine(
             $"CellStride={observedStride}; Capacity={observedCapacity}; WorldArrayAccountingCharge={accountingCharge}; "
+            + $"CellArrayFirst={arrayFirstBytes}; CellArraySteady={arraySteadyBytes}; "
             + $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}; "
             + $"CoreLib={typeof(object).Assembly.GetName().Version}; RuntimeModule={ownerType.Module.ModuleVersionId}");
     }
@@ -315,14 +388,22 @@ internal sealed class WorldLifetimeControlQuarantineTests
     {
         var (lifetimeFirstBytes, lifetimeSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldLifetimeControl));
         var (ownerFirstBytes, ownerSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldCosmeticCreditOwner));
+        var (permitFirstBytes, permitSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldGuidRetirementPermit));
+        var (lockFirstBytes, lockSteadyBytes) = MeasureLockAllocation();
 
         Assert.That(lifetimeSteadyBytes, Is.GreaterThan(0));
         Assert.That(ownerSteadyBytes, Is.GreaterThan(0));
+        Assert.That(permitSteadyBytes, Is.GreaterThan(0));
+        Assert.That(lockSteadyBytes, Is.GreaterThan(0));
         Assert.That(lifetimeSteadyBytes % IntPtr.Size, Is.Zero);
         Assert.That(ownerSteadyBytes % IntPtr.Size, Is.Zero);
+        Assert.That(permitSteadyBytes % IntPtr.Size, Is.Zero);
+        Assert.That(lockSteadyBytes % IntPtr.Size, Is.Zero);
         TestContext.Out.WriteLine(
             $"WorldLifetimeControlFirst={lifetimeFirstBytes}; WorldLifetimeControlSteady={lifetimeSteadyBytes}; "
             + $"CosmeticCreditOwnerFirst={ownerFirstBytes}; CosmeticCreditOwnerSteady={ownerSteadyBytes}; "
+            + $"RetirementPermitFirst={permitFirstBytes}; RetirementPermitSteady={permitSteadyBytes}; "
+            + $"LockFirst={lockFirstBytes}; LockSteady={lockSteadyBytes}; "
             + $"Framework={RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}; "
             + $"RuntimeModule={typeof(WorldLifetimeControl).Module.ModuleVersionId}");
     }
