@@ -6,8 +6,10 @@ using TerraFX.Interop.DirectX;
 
 namespace TerraFX.Graphics.D3D12;
 
-internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmissionStorage
+internal sealed unsafe class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmissionStorage
 {
+    private nint _retainedRenderTargetHeap;
+
     internal D3D12GraphSubmissionStorage(DescriptorBindingArrays[] bindingArrays, int renderTargetViewCapacity)
     {
         BindingArrays = bindingArrays;
@@ -38,6 +40,20 @@ internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmiss
         Array.Clear(BindingArrays);
         Array.Clear(DescriptorSets);
         Array.Clear(RenderTargetViews);
+
+        var retainedRenderTargetHeap = _retainedRenderTargetHeap;
+        _retainedRenderTargetHeap = 0;
+
+        if (retainedRenderTargetHeap != 0)
+        {
+            _ = ((ID3D12DescriptorHeap*)retainedRenderTargetHeap)->Release();
+        }
+    }
+
+    internal void RetainRenderTargetHeap(nint renderTargetHeap)
+    {
+        ArgumentOutOfRangeException.ThrowIfZero(renderTargetHeap);
+        _retainedRenderTargetHeap = renderTargetHeap;
     }
 
     internal readonly struct DescriptorBindingArrays

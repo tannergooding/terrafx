@@ -2052,6 +2052,11 @@ public static unsafe class D3D12GraphicsBackend
                     throw new InvalidOperationException("The diagnostic graph has no preallocated D3D12 storage batch.");
                 }
 
+                if ((graphStorage is not null) && !submission.WasAdmittedWithGraphRetentionCell)
+                {
+                    throw new InvalidOperationException("The diagnostic graph storage has no retained Graphics request cell.");
+                }
+
                 _graphSubmissionObserver?.Invoke(submission);
                 var target = submission.OutputColorTarget.ResourceOwner.BackendResource as D3D12BackendTexture
                     ?? throw new ArgumentException("The graph output target is not a D3D12 texture.", nameof(submission));
@@ -2097,10 +2102,15 @@ public static unsafe class D3D12GraphicsBackend
                 var descriptorSets = graphStorage?.DescriptorSets ?? new D3D12BackendDescriptorSet[descriptorSetCapacity];
                 var descriptorSetCount = 0;
                 var descriptorBindingIndex = 0;
-                _ = _uncertainGraphDescriptorSets.EnsureCapacity(
-                    checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
-                _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
-                    checked(_uncertainGraphRenderTargetHeaps.Count + 1));
+
+                if (graphStorage is null)
+                {
+                    _ = _uncertainGraphDescriptorSets.EnsureCapacity(
+                        checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
+                    _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
+                        checked(_uncertainGraphRenderTargetHeaps.Count + 1));
+                }
+
                 var renderTargetResourceCount = submission.ColorAttachmentResourceCount;
 
                 var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
@@ -3038,7 +3048,15 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         if (transferQueue.HasUncertainSubmission && (renderTargetHeap is not null))
                         {
-                            _uncertainGraphRenderTargetHeaps.Add((nint)renderTargetHeap);
+                            if (graphStorage is null)
+                            {
+                                _uncertainGraphRenderTargetHeaps.Add((nint)renderTargetHeap);
+                            }
+                            else
+                            {
+                                graphStorage.RetainRenderTargetHeap((nint)renderTargetHeap);
+                            }
+
                             renderTargetHeap = null;
                         }
 
@@ -3047,7 +3065,15 @@ public static unsafe class D3D12GraphicsBackend
 
                     if (transferQueue.HasUncertainSubmission)
                     {
-                        _uncertainGraphRenderTargetHeaps.Add((nint)renderTargetHeap);
+                        if (graphStorage is null)
+                        {
+                            _uncertainGraphRenderTargetHeaps.Add((nint)renderTargetHeap);
+                        }
+                        else
+                        {
+                            graphStorage.RetainRenderTargetHeap((nint)renderTargetHeap);
+                        }
+
                         renderTargetHeap = null;
                     }
 
@@ -3059,9 +3085,12 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         if (transferQueue.HasUncertainSubmission)
                         {
-                            for (var index = 0; index < descriptorSetCount; index++)
+                            if (graphStorage is null)
                             {
-                                _uncertainGraphDescriptorSets.Add(descriptorSets[index]);
+                                for (var index = 0; index < descriptorSetCount; index++)
+                                {
+                                    _uncertainGraphDescriptorSets.Add(descriptorSets[index]);
+                                }
                             }
                         }
                         else if (!graphSubmissionAccepted)

@@ -2601,6 +2601,67 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphRetentionCellAdmissionIsRecordedOnSubmission()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var device = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        using var target = await device.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        using var storage = new TestGraphSubmissionStorage();
+        var submission = CreateBufferImportIndexSubmission(device, target, [], long.MaxValue);
+        submission.AttachBackendStorage(storage);
+        using var frameSlotReservation = await device.AcquireGraphFrameSlotAsync(CancellationToken.None).ConfigureAwait(false);
+        var requestType = typeof(GraphicsDevice).GetNestedType("SubmitGraphRequest", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The graph submission request type was not found.");
+        var request = Activator.CreateInstance(
+            requestType,
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [
+                device,
+                submission,
+                new List<GraphicsResourceOwner.UseLease>(),
+                frameSlotReservation,
+            ],
+            culture: null)
+            ?? throw new InvalidOperationException("The graph submission request could not be constructed.");
+        var retentionWork = request as IGraphicsGraphRetentionCellWork
+            ?? throw new InvalidOperationException("The graph submission request has no retention-cell contract.");
+        var retentionCellClaimed = false;
+
+        try
+        {
+            Assert.That(submission.WasAdmittedWithGraphRetentionCell, Is.False);
+            Assert.That(retentionWork.TryClaimRetentionCell(), Is.True);
+            retentionCellClaimed = true;
+            Assert.That(submission.WasAdmittedWithGraphRetentionCell, Is.True);
+
+            submission.DisposeBackendStorage();
+            Assert.That(storage.DisposeCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            if (retentionCellClaimed)
+            {
+                try
+                {
+                    retentionWork.ReleaseRetentionCell();
+                }
+                finally
+                {
+                    frameSlotReservation.ReleaseFromRequest();
+                }
+            }
+            else
+            {
+                submission.DisposeBackendStorage();
+                frameSlotReservation.Dispose();
+            }
+
+            await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task GraphTextureAndPassIndicesUseExactOwnedCapacity()
     {
         var device = await CreateGraphicsDeviceAsync(new FakeBackendDevice()).ConfigureAwait(false);
@@ -5049,5 +5110,21 @@ internal sealed class GraphicsBufferTransferTests
 
         public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
             => argument.CopyTo(_destination);
+    }
+
+    private sealed class TestGraphSubmissionStorage : IGraphicsBackendGraphSubmissionStorage
+    {
+        private int _disposeCount;
+        private int _isDisposed;
+
+        internal int DisposeCount => Volatile.Read(ref _disposeCount);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            {
+                _ = Interlocked.Increment(ref _disposeCount);
+            }
+        }
     }
 }

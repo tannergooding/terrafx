@@ -770,6 +770,7 @@ public sealed partial class GraphicsDevice
 
             if (_device.TryClaimGraphSubmissionRetentionCell(this, out _retentionCellIndex))
             {
+                _submission.MarkGraphRetentionCellClaimed();
                 return true;
             }
 

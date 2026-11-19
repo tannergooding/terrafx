@@ -59,6 +59,7 @@ internal sealed class GraphicsGraphSubmission
     private int _recordingOwnershipState;
     private readonly int[] _textureAliasingAfterIndex;
     private readonly int[] _textureImportIndex;
+    private int _wasAdmittedWithGraphRetentionCell;
 
     internal GraphicsGraphSubmission(
         uint deviceEpoch,
@@ -293,6 +294,9 @@ internal sealed class GraphicsGraphSubmission
     internal int TextureImportIndexStorageCapacity => _textureImportIndex.Length;
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
+
+    internal bool WasAdmittedWithGraphRetentionCell
+        => Volatile.Read(ref _wasAdmittedWithGraphRetentionCell) != 0;
 
     internal static long CalculateAccessPairIndexBackingByteCharge(long capacity)
         => CalculateIndexBackingByteCharge(capacity);
@@ -1523,6 +1527,9 @@ internal sealed class GraphicsGraphSubmission
 
         return false;
     }
+
+    internal void MarkGraphRetentionCellClaimed()
+        => Volatile.Write(ref _wasAdmittedWithGraphRetentionCell, 1);
 
     internal void RecordSubmittedOwnerStates()
     {

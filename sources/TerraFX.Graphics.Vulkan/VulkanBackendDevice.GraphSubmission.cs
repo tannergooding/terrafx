@@ -421,6 +421,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new InvalidOperationException("The diagnostic graph has no preallocated Vulkan storage batch.");
         }
 
+        if ((graphStorage is not null) && !submission.WasAdmittedWithGraphRetentionCell)
+        {
+            throw new InvalidOperationException("The diagnostic graph storage has no retained Graphics request cell.");
+        }
+
         _graphSubmissionObserver?.Invoke(submission);
         var surfaceTarget = submission.SurfaceTarget;
         VulkanBackendSurface? surface = null;
@@ -485,8 +490,13 @@ internal sealed unsafe partial class VulkanBackendDevice
         var descriptorSets = graphStorage?.DescriptorSets ?? new VulkanBackendDescriptorSet[descriptorSetCapacity];
         var descriptorSetCount = 0;
         var descriptorBindingCommandCount = 0;
-        _ = _uncertainGraphDescriptorSets.EnsureCapacity(
-            checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
+
+        if (graphStorage is null)
+        {
+            _ = _uncertainGraphDescriptorSets.EnsureCapacity(
+                checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
+        }
+
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
         var textureScopes = graphStorage?.TextureScopes
             ?? new VulkanGraphTextureScope[submission.TextureImports.Length];
@@ -906,9 +916,12 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         try
         {
-            _ = _uncertainGraphImageViews.EnsureCapacity(
-                checked(_uncertainGraphImageViews.Count + colorAttachmentResourceCount));
-            _ = _uncertainTextureOwners.EnsureCapacity(checked(_uncertainTextureOwners.Count + 1));
+            if (graphStorage is null)
+            {
+                _ = _uncertainGraphImageViews.EnsureCapacity(
+                    checked(_uncertainGraphImageViews.Count + colorAttachmentResourceCount));
+                _ = _uncertainTextureOwners.EnsureCapacity(checked(_uncertainTextureOwners.Count + 1));
+            }
 
             if (surface is not null)
             {
@@ -2140,19 +2153,22 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (_hasUncertainSubmission)
                 {
-                    RetainUncertainTexture(target);
-
-                    for (var index = 0; index < graphImageViewCount; index++)
+                    if (graphStorage is null)
                     {
-                        _uncertainGraphImageViews.Add(graphImageViews[index]);
+                        RetainUncertainTexture(target);
+
+                        for (var index = 0; index < graphImageViewCount; index++)
+                        {
+                            _uncertainGraphImageViews.Add(graphImageViews[index]);
+                        }
+
+                        for (var index = 0; index < descriptorSetCount; index++)
+                        {
+                            _uncertainGraphDescriptorSets.Add(descriptorSets[index]);
+                        }
                     }
 
                     ownsImageViews = false;
-
-                    for (var index = 0; index < descriptorSetCount; index++)
-                    {
-                        _uncertainGraphDescriptorSets.Add(descriptorSets[index]);
-                    }
                 }
                 else if (!graphSubmissionAccepted)
                 {
