@@ -194,6 +194,11 @@ internal sealed class AssetPackageReaderTests
         var options = new AssetStoreOptions(path, new byte[32], CreateRegistration()) {
             CpuAssetBudgetBytes = 0,
         };
+        using var cancellationSource = new CancellationTokenSource();
+        await cancellationSource.CancelAsync().ConfigureAwait(false);
+
+        _ = Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await AssetPackageReader.OpenAsync(options, cancellationSource.Token).ConfigureAwait(false));
 
         var exception = Assert.ThrowsAsync<InvalidOperationException>(
             async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
