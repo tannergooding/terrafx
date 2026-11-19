@@ -517,6 +517,11 @@ public sealed partial class World : IDisposable
             resolvedOptions = resolvedOptions with { CpuWorkerCount = sharedWorkerPool.WorkerCount };
         }
 
+        if (options.Registration.CosmeticCreditStorageSelected)
+        {
+            throw new InvalidOperationException(WorldRegistration.CosmeticCreditStorageUnavailableMessage);
+        }
+
         var ownsWorkerPool = sharedWorkerPool is null;
         var worldGuid = options.WorldGuid ?? Guid.NewGuid();
 

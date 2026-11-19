@@ -304,6 +304,11 @@ internal sealed class WorldConstructionPlan
 
     internal void ValidateForConstruction()
     {
+        if (Options.Registration.CosmeticCreditStorageSelected)
+        {
+            throw new InvalidOperationException(WorldRegistration.CosmeticCreditStorageUnavailableMessage);
+        }
+
         var expectedIssuanceNamespace = _restoreIdentityState?.IssuanceNamespace ?? _worldGuid;
         var hasRestoreEntityRows = (_restoreIdentityState?.EntitySlots.LiveEntityCount ?? 0) != 0;
         var hasRestoreAttachments = _restoreAttachmentCount != 0;

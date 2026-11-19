@@ -10,8 +10,12 @@ namespace TerraFX.Entities;
 /// <summary>Contains the immutable component, tag, resource, and optional Scene registrations selected before World construction.</summary>
 public sealed partial class WorldRegistration
 {
+    internal const string CosmeticCreditStorageUnavailableMessage
+        = "The selected cosmetic credit storage has no qualified World-lifetime construction profile.";
+
     private readonly ImmutableArray<IWorldAttachmentRegistration> _attachments;
     private readonly ImmutableArray<IComponentRegistration> _components;
+    private readonly bool _cosmeticCreditStorageSelected;
     private readonly CpuExtractionSupportRegistration? _cpuExtractionSupport;
     private readonly ImmutableArray<IWorldResourceRegistration> _resources;
     private readonly SceneSupportRegistration? _sceneSupport;
@@ -28,7 +32,8 @@ public sealed partial class WorldRegistration
         SystemExecutionSchedule? schedule = null,
         ImmutableArray<IWorldAttachmentRegistration> attachments = default,
         SceneSupportRegistration? sceneSupport = null,
-        CpuExtractionSupportRegistration? cpuExtractionSupport = null)
+        CpuExtractionSupportRegistration? cpuExtractionSupport = null,
+        bool cosmeticCreditStorageSelected = false)
     {
         ArgumentNullException.ThrowIfNull(schemas);
 
@@ -118,6 +123,7 @@ public sealed partial class WorldRegistration
         _systems = [.. sortedSystems];
         _attachments = [.. sortedAttachments];
         _cpuExtractionSupport = cpuExtractionSupport;
+        _cosmeticCreditStorageSelected = cosmeticCreditStorageSelected;
         _sceneSupport = sceneSupport;
         _schedule = schedule ?? SystemExecutionSchedule.Compile(
             [],
@@ -135,6 +141,8 @@ public sealed partial class WorldRegistration
     internal ImmutableArray<IWorldAttachmentRegistration> Attachments => _attachments;
 
     internal ImmutableArray<IComponentRegistration> Components => _components;
+
+    internal bool CosmeticCreditStorageSelected => _cosmeticCreditStorageSelected;
 
     internal CpuExtractionSupportRegistration? CpuExtractionSupport => _cpuExtractionSupport;
 

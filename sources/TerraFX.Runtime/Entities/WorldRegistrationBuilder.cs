@@ -11,6 +11,8 @@ public sealed class WorldRegistrationBuilder
 {
     private readonly List<IWorldAttachmentRegistration> _attachments = [];
     private readonly List<IComponentRegistration> _components = [];
+    private readonly bool _allowCosmeticCreditStorage;
+    private bool _cosmeticCreditStorageSelected;
     private CpuExtractionSupportRegistration? _cpuExtractionSupport;
     private bool _isBuilt;
     private readonly List<IWorldResourceRegistration> _resources = [];
@@ -23,9 +25,17 @@ public sealed class WorldRegistrationBuilder
     /// <param name="schemas">The immutable compiled schema metadata.</param>
     /// <exception cref="ArgumentNullException"><paramref name="schemas"/> is null.</exception>
     public WorldRegistrationBuilder(CompiledContentSchemaRegistry schemas)
+        : this(schemas, allowCosmeticCreditStorage: true)
+    {
+    }
+
+    internal WorldRegistrationBuilder(
+        CompiledContentSchemaRegistry schemas,
+        bool allowCosmeticCreditStorage)
     {
         ArgumentNullException.ThrowIfNull(schemas);
         _schemas = schemas;
+        _allowCosmeticCreditStorage = allowCosmeticCreditStorage;
     }
 
     /// <summary>Freezes the registered components, tags, resources, and optional Scene support.</summary>
@@ -84,7 +94,8 @@ public sealed class WorldRegistrationBuilder
             schedule,
             [.. _attachments],
             sceneSupport: _sceneSupport,
-            cpuExtractionSupport: _cpuExtractionSupport);
+            cpuExtractionSupport: _cpuExtractionSupport,
+            cosmeticCreditStorageSelected: _cosmeticCreditStorageSelected);
         _isBuilt = true;
         return registration;
     }
@@ -199,14 +210,15 @@ public sealed class WorldRegistrationBuilder
             throw new ArgumentException("CPU extraction support can be registered only once.", nameof(support));
         }
 
-        var staging = new WorldRegistrationBuilder(_schemas);
+        var staging = new WorldRegistrationBuilder(_schemas, allowCosmeticCreditStorage: false);
         support.RegisterComponents(staging, _schemas);
 
         if ((staging._components.Count == 0)
             || (staging._attachments.Count != 0)
             || (staging._resources.Count != 0)
             || (staging._systems.Count != 0)
-            || (staging._tags.Count != 0))
+            || (staging._tags.Count != 0)
+            || staging._cosmeticCreditStorageSelected)
         {
             throw new InvalidOperationException("CPU extraction support must register a nonempty component set only.");
         }
@@ -339,14 +351,15 @@ public sealed class WorldRegistrationBuilder
             throw new ArgumentException("Scene support can be registered only once.", nameof(support));
         }
 
-        var staging = new WorldRegistrationBuilder(_schemas);
+        var staging = new WorldRegistrationBuilder(_schemas, allowCosmeticCreditStorage: false);
         support.RegisterComponents(staging, _schemas);
 
         if ((staging._components.Count == 0)
             || (staging._attachments.Count != 0)
             || (staging._resources.Count != 0)
             || (staging._systems.Count != 0)
-            || (staging._tags.Count != 0))
+            || (staging._tags.Count != 0)
+            || staging._cosmeticCreditStorageSelected)
         {
             throw new InvalidOperationException("Scene support must register a nonempty component set only.");
         }
@@ -465,6 +478,24 @@ public sealed class WorldRegistrationBuilder
         }
 
         _tags.Add(schema);
+        return this;
+    }
+
+    internal WorldRegistrationBuilder RegisterCosmeticCreditStorage()
+    {
+        EnsureMutable();
+
+        if (!_allowCosmeticCreditStorage)
+        {
+            throw new InvalidOperationException("Staged component support cannot select World cosmetic credit storage.");
+        }
+
+        if (_cosmeticCreditStorageSelected)
+        {
+            throw new ArgumentException("Cosmetic credit storage can be selected only once.", nameof(WorldRegistrationBuilder));
+        }
+
+        _cosmeticCreditStorageSelected = true;
         return this;
     }
 

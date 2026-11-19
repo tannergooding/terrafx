@@ -4,12 +4,55 @@ using System;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
+using TerraFX.Rendering;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
 [TestFixture]
 internal sealed class WorldOptionsTests
 {
+    [Test]
+    public void ComponentOnlySupportCannotSelectWorldCosmeticCreditStorage()
+    {
+        var schemas = new CompiledContentSchemaRegistry([]);
+
+        Assert.Multiple(() => {
+            var cpuBuilder = new WorldRegistrationBuilder(schemas);
+            _ = Assert.Throws<InvalidOperationException>(() =>
+                cpuBuilder.RegisterCpuExtractionSupport(
+                    new CpuExtractionSupportRegistration(new CosmeticCreditSelectionSupport())));
+
+            var sceneBuilder = new WorldRegistrationBuilder(schemas);
+            _ = Assert.Throws<InvalidOperationException>(() =>
+                sceneBuilder.RegisterSceneSupport(
+                    new SceneSupportRegistration(new CosmeticCreditSelectionSupport())));
+        });
+    }
+
+    [Test]
+    public void CosmeticCreditStorageSelectionRemainsExplicitAndFailsBeforeWorldAdmission()
+    {
+        var schemas = new CompiledContentSchemaRegistry([]);
+        var defaultRegistration = new WorldRegistrationBuilder(schemas).Build();
+        Assert.That(defaultRegistration.CosmeticCreditStorageSelected, Is.False);
+
+        var builder = new WorldRegistrationBuilder(schemas);
+        Assert.That(builder.RegisterCosmeticCreditStorage(), Is.SameAs(builder));
+        _ = Assert.Throws<ArgumentException>(() => builder.RegisterCosmeticCreditStorage());
+
+        var selectedRegistration = builder.Build();
+        Assert.That(selectedRegistration.CosmeticCreditStorageSelected, Is.True);
+        _ = Assert.Throws<InvalidOperationException>(() => builder.RegisterCosmeticCreditStorage());
+
+        var worldGuid = Guid.NewGuid();
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            World.Create(new WorldOptions(selectedRegistration) { WorldGuid = worldGuid }));
+        Assert.That(exception!.Message, Is.EqualTo(WorldRegistration.CosmeticCreditStorageUnavailableMessage));
+
+        using var unselectedWorld = World.Create(new WorldOptions(defaultRegistration) { WorldGuid = worldGuid });
+        Assert.That(unselectedWorld.WorldGuid, Is.EqualTo(worldGuid));
+    }
+
     [Test]
     public void CpuWorkerCountDefaultsToTheDocumentedBoundedPoolSize()
     {
@@ -101,5 +144,25 @@ internal sealed class WorldOptionsTests
 
         Assert.That(world.MaximumSnapshotBytes, Is.EqualTo(1024));
         Assert.That(world.MaximumPersistenceAdmissionBytes, Is.EqualTo(8192));
+    }
+
+    private sealed class CosmeticCreditSelectionSupport :
+        IWorldCpuExtractionSupportRegistration,
+        IWorldSceneSupportRegistration
+    {
+        public IWorldCpuExtractionParticipant CreateParticipant(
+            World world,
+            WorldOptions options,
+            IWorldSceneParticipant sceneParticipant)
+            => throw new NotSupportedException();
+
+        public IWorldSceneParticipant CreateParticipant(World world, WorldOptions options)
+            => throw new NotSupportedException();
+
+        public long GetWorldStorageByteReservation(WorldOptions options)
+            => throw new NotSupportedException();
+
+        public void RegisterComponents(WorldRegistrationBuilder builder, CompiledContentSchemaRegistry schemas)
+            => _ = builder.RegisterCosmeticCreditStorage();
     }
 }
