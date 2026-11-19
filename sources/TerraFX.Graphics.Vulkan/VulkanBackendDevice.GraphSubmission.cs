@@ -191,10 +191,90 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    private static bool TryCreateGraphDescriptorGroupStorage(
+        BindingSet bindings,
+        ShaderBindingGroup group,
+        out VulkanGraphDescriptorGroupStorage storage)
+    {
+        var uniformBufferBindingCount = 0;
+        var storageBufferBindingCount = 0;
+        var imageBindingCount = 0;
+        var storageImageBindingCount = 0;
+        var samplerBindingCount = 0;
+
+        foreach (var binding in bindings.Buffers)
+        {
+            if (binding.Group != group)
+            {
+                continue;
+            }
+
+            if (binding.Kind == ShaderResourceKind.UniformBuffer)
+            {
+                uniformBufferBindingCount++;
+            }
+            else if (binding.Kind == ShaderResourceKind.StorageBuffer)
+            {
+                storageBufferBindingCount++;
+            }
+        }
+
+        foreach (var binding in bindings.Textures)
+        {
+            if (binding.Group != group)
+            {
+                continue;
+            }
+
+            if (binding.Kind == ShaderResourceKind.SampledImage)
+            {
+                imageBindingCount++;
+            }
+            else if (binding.Kind == ShaderResourceKind.StorageImage)
+            {
+                storageImageBindingCount++;
+            }
+        }
+
+        foreach (var binding in bindings.Samplers)
+        {
+            if (binding.Group == group)
+            {
+                samplerBindingCount++;
+            }
+        }
+
+        if ((uniformBufferBindingCount == 0)
+            && (storageBufferBindingCount == 0)
+            && (imageBindingCount == 0)
+            && (storageImageBindingCount == 0)
+            && (samplerBindingCount == 0))
+        {
+            storage = default;
+            return false;
+        }
+
+        storage = new VulkanGraphDescriptorGroupStorage(
+            group,
+            uniformBufferBindingCount,
+            storageBufferBindingCount,
+            imageBindingCount,
+            storageImageBindingCount,
+            samplerBindingCount);
+        return true;
+    }
+
     public IGraphicsBackendGraphSubmissionStorage CreateGraphSubmissionStorage(GraphicsGraphSubmission submission)
     {
         ArgumentNullException.ThrowIfNull(submission);
-        var descriptorSetCapacity = 0;
+        ReadOnlySpan<ShaderBindingGroup> groups = [
+            ShaderBindingGroup.Frame,
+            ShaderBindingGroup.Material,
+            ShaderBindingGroup.ObjectData,
+            ShaderBindingGroup.Pass,
+        ];
+        var descriptorCommandCapacity = 0;
+        var descriptorGroupCapacity = 0;
 
         foreach (var pass in submission.Passes)
         {
@@ -207,14 +287,97 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     var bindings = command.Bindings
                         ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                    descriptorSetCapacity = checked(
-                        descriptorSetCapacity + CountGraphDescriptorSets(bindings));
+                    descriptorCommandCapacity = checked(descriptorCommandCapacity + 1);
+                    descriptorGroupCapacity = checked(
+                        descriptorGroupCapacity + CountGraphDescriptorSets(bindings));
                 }
             }
         }
 
+        var descriptorCommands = new VulkanGraphDescriptorCommandStorage[descriptorCommandCapacity];
+        var descriptorGroups = new VulkanGraphDescriptorGroupStorage[descriptorGroupCapacity];
+        var descriptorCommandIndex = 0;
+        var descriptorGroupIndex = 0;
+
+        foreach (var pass in submission.Passes)
+        {
+            var commandReadState = 0;
+            using var commandRead = pass.ReadCommands(ref commandReadState);
+
+            foreach (var command in commandRead.Commands)
+            {
+                if (command.Kind != GraphicsCommandKind.SetBindings)
+                {
+                    continue;
+                }
+
+                var bindings = command.Bindings
+                    ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                var firstGroupIndex = descriptorGroupIndex;
+                var groupCount = 0;
+                var uniformBufferBindingCount = 0;
+                var storageBufferBindingCount = 0;
+                var imageBindingCount = 0;
+                var storageImageBindingCount = 0;
+
+                foreach (var binding in bindings.Buffers)
+                {
+                    if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                    {
+                        uniformBufferBindingCount++;
+                    }
+                    else if (binding.Kind == ShaderResourceKind.StorageBuffer)
+                    {
+                        storageBufferBindingCount++;
+                    }
+                }
+
+                foreach (var binding in bindings.Textures)
+                {
+                    if (binding.Kind == ShaderResourceKind.SampledImage)
+                    {
+                        imageBindingCount++;
+                    }
+                    else if (binding.Kind == ShaderResourceKind.StorageImage)
+                    {
+                        storageImageBindingCount++;
+                    }
+                }
+
+                foreach (var group in groups)
+                {
+                    if (!TryCreateGraphDescriptorGroupStorage(bindings, group, out var descriptorGroup))
+                    {
+                        continue;
+                    }
+
+                    descriptorGroups[descriptorGroupIndex] = descriptorGroup;
+                    descriptorGroupIndex++;
+                    groupCount++;
+                }
+
+                descriptorCommands[descriptorCommandIndex] =
+                    new VulkanGraphDescriptorCommandStorage(
+                        firstGroupIndex,
+                        groupCount,
+                        uniformBufferBindingCount,
+                        storageBufferBindingCount,
+                        imageBindingCount,
+                        storageImageBindingCount,
+                        bindings.Samplers.Length);
+                descriptorCommandIndex++;
+            }
+        }
+
+        if ((descriptorCommandIndex != descriptorCommands.Length)
+            || (descriptorGroupIndex != descriptorGroups.Length))
+        {
+            throw new InvalidOperationException("The graph descriptor-storage preflight did not match its binding commands.");
+        }
+
         return new VulkanGraphSubmissionStorage(
-            descriptorSetCapacity,
+            descriptorCommands,
+            descriptorGroups,
             submission.TextureImports.Length,
             submission.BufferImports.Length,
             submission.ColorAttachmentResourceCount);
@@ -301,6 +464,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         var descriptorSets = graphStorage?.DescriptorSets ?? new VulkanBackendDescriptorSet[descriptorSetCapacity];
         var descriptorSetCount = 0;
+        var descriptorBindingCommandCount = 0;
         _ = _uncertainGraphDescriptorSets.EnsureCapacity(
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
@@ -1125,10 +1289,19 @@ internal sealed unsafe partial class VulkanBackendDevice
                                     ?? throw new InvalidOperationException("A recorded binding set has no preceding Vulkan compute pipeline.");
                                 var bindings = command.Bindings
                                     ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                                var storageBufferBindings =
-                                    ImmutableArray.CreateBuilder<VulkanBackendStorageBufferBinding>(bindings.Buffers.Length);
-                                var storageImageBindings =
-                                    ImmutableArray.CreateBuilder<VulkanBackendStorageImageBinding>(bindings.Textures.Length);
+                                VulkanGraphDescriptorCommandStorage? descriptorCommandStorage = null;
+
+                                if (graphStorage is not null)
+                                {
+                                    descriptorCommandStorage = graphStorage.DescriptorCommands[descriptorBindingCommandCount];
+                                }
+
+                                var storageBufferBindings = descriptorCommandStorage?.StorageBufferBindings
+                                    ?? new VulkanBackendStorageBufferBinding[bindings.Buffers.Length];
+                                var storageImageBindings = descriptorCommandStorage?.StorageImageBindings
+                                    ?? new VulkanBackendStorageImageBinding[bindings.Textures.Length];
+                                var storageBufferBindingIndex = 0;
+                                var storageImageBindingIndex = 0;
 
                                 foreach (var binding in bindings.Buffers)
                                 {
@@ -1139,12 +1312,13 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                                     var buffer = submission.GetBuffer(binding.Resource.ResourceId) as VulkanBackendBuffer
                                         ?? throw new InvalidOperationException("A compute graph storage-buffer binding is not a Vulkan buffer.");
-                                    storageBufferBindings.Add(new VulkanBackendStorageBufferBinding(
+                                    storageBufferBindings[storageBufferBindingIndex] = new VulkanBackendStorageBufferBinding(
                                         binding.Group,
                                         binding.Binding,
                                         buffer,
                                         binding.Range.ByteOffset,
-                                        binding.Range.ByteLength));
+                                        binding.Range.ByteLength);
+                                    storageBufferBindingIndex++;
                                 }
 
                                 foreach (var binding in bindings.Textures)
@@ -1156,24 +1330,28 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                                     var texture = submission.GetTexture(binding.Resource.ResourceId) as VulkanBackendTexture
                                         ?? throw new InvalidOperationException("A compute graph storage-image binding is not a Vulkan texture.");
-                                    storageImageBindings.Add(new VulkanBackendStorageImageBinding(
+                                    storageImageBindings[storageImageBindingIndex] = new VulkanBackendStorageImageBinding(
                                         binding.Group,
                                         binding.Binding,
                                         texture,
                                         binding.Range,
-                                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
+                                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
+                                    storageImageBindingIndex++;
                                 }
 
                                 BindGraphDescriptorSets(
                                     pipeline,
                                     VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE,
                                     [],
-                                    storageBufferBindings.ToImmutable(),
+                                    storageBufferBindings,
                                     [],
-                                    storageImageBindings.ToImmutable(),
+                                    storageImageBindings,
                                     [],
                                     descriptorSets,
-                                    ref descriptorSetCount);
+                                    ref descriptorSetCount,
+                                    graphStorage,
+                                    descriptorBindingCommandCount);
+                                descriptorBindingCommandCount++;
                                 break;
                             }
 
@@ -1340,10 +1518,37 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 ?? throw new InvalidOperationException("A recorded binding set has no preceding Vulkan pipeline.");
                             var bindings = command.Bindings
                                 ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                            var uniformBufferBindings =
-                                ImmutableArray.CreateBuilder<VulkanBackendUniformBufferBinding>(bindings.Buffers.Length);
-                            var storageBufferBindings =
-                                ImmutableArray.CreateBuilder<VulkanBackendStorageBufferBinding>(bindings.Buffers.Length);
+                            VulkanGraphDescriptorCommandStorage? descriptorCommandStorage = null;
+
+                            if (graphStorage is not null)
+                            {
+                                descriptorCommandStorage = graphStorage.DescriptorCommands[descriptorBindingCommandCount];
+                            }
+
+                            var uniformBufferBindingCount = 0;
+                            var storageBufferBindingCount = 0;
+
+                            if (descriptorCommandStorage is null)
+                            {
+                                foreach (var binding in bindings.Buffers)
+                                {
+                                    if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                                    {
+                                        uniformBufferBindingCount++;
+                                    }
+                                    else
+                                    {
+                                        storageBufferBindingCount++;
+                                    }
+                                }
+                            }
+
+                            var uniformBufferBindings = descriptorCommandStorage?.UniformBufferBindings
+                                ?? new VulkanBackendUniformBufferBinding[uniformBufferBindingCount];
+                            var storageBufferBindings = descriptorCommandStorage?.StorageBufferBindings
+                                ?? new VulkanBackendStorageBufferBinding[storageBufferBindingCount];
+                            var uniformBufferBindingIndex = 0;
+                            var storageBufferBindingIndex = 0;
 
                             foreach (var binding in bindings.Buffers)
                             {
@@ -1352,28 +1557,50 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                                 if (binding.Kind == ShaderResourceKind.UniformBuffer)
                                 {
-                                    uniformBufferBindings.Add(new VulkanBackendUniformBufferBinding(
+                                    uniformBufferBindings[uniformBufferBindingIndex] = new VulkanBackendUniformBufferBinding(
                                         binding.Group,
                                         binding.Binding,
                                         buffer,
                                         binding.Range.ByteOffset,
-                                        binding.Range.ByteLength));
+                                        binding.Range.ByteLength);
+                                    uniformBufferBindingIndex++;
                                 }
                                 else
                                 {
-                                    storageBufferBindings.Add(new VulkanBackendStorageBufferBinding(
+                                    storageBufferBindings[storageBufferBindingIndex] = new VulkanBackendStorageBufferBinding(
                                         binding.Group,
                                         binding.Binding,
                                         buffer,
                                         binding.Range.ByteOffset,
-                                        binding.Range.ByteLength));
+                                        binding.Range.ByteLength);
+                                    storageBufferBindingIndex++;
                                 }
                             }
 
-                            var sampledImageBindings =
-                                ImmutableArray.CreateBuilder<VulkanBackendSampledImageBinding>(bindings.Textures.Length);
-                            var storageImageBindings =
-                                ImmutableArray.CreateBuilder<VulkanBackendStorageImageBinding>(bindings.Textures.Length);
+                            var imageBindingCount = 0;
+                            var storageImageBindingCount = 0;
+
+                            if (descriptorCommandStorage is null)
+                            {
+                                foreach (var binding in bindings.Textures)
+                                {
+                                    if (binding.Kind == ShaderResourceKind.SampledImage)
+                                    {
+                                        imageBindingCount++;
+                                    }
+                                    else
+                                    {
+                                        storageImageBindingCount++;
+                                    }
+                                }
+                            }
+
+                            var imageBindings = descriptorCommandStorage?.ImageBindings
+                                ?? new VulkanBackendSampledImageBinding[imageBindingCount];
+                            var storageImageBindings = descriptorCommandStorage?.StorageImageBindings
+                                ?? new VulkanBackendStorageImageBinding[storageImageBindingCount];
+                            var imageBindingIndex = 0;
+                            var storageImageBindingIndex = 0;
 
                             foreach (var binding in bindings.Textures)
                             {
@@ -1382,7 +1609,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                                 if (binding.Kind == ShaderResourceKind.SampledImage)
                                 {
-                                    sampledImageBindings.Add(new VulkanBackendSampledImageBinding(
+                                    imageBindings[imageBindingIndex] = new VulkanBackendSampledImageBinding(
                                         binding.Group,
                                         binding.Binding,
                                         texture,
@@ -1394,42 +1621,49 @@ internal sealed unsafe partial class VulkanBackendDevice
                                         VulkanGraphResourceStateMapper.GetTextureImageLayout(
                                             GraphResourceState.ShaderSampledRead,
                                             texture.Description.Format,
-                                            binding.Range.Aspect)));
+                                            binding.Range.Aspect));
+                                    imageBindingIndex++;
                                 }
                                 else
                                 {
-                                    storageImageBindings.Add(new VulkanBackendStorageImageBinding(
+                                    storageImageBindings[storageImageBindingIndex] = new VulkanBackendStorageImageBinding(
                                         binding.Group,
                                         binding.Binding,
                                         texture,
                                         binding.Range,
-                                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
+                                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
+                                    storageImageBindingIndex++;
                                 }
                             }
 
-                            var samplerBindings =
-                                ImmutableArray.CreateBuilder<VulkanBackendSamplerBinding>(bindings.Samplers.Length);
+                            var samplerBindings = descriptorCommandStorage?.SamplerBindings
+                                ?? new VulkanBackendSamplerBinding[bindings.Samplers.Length];
+                            var samplerBindingIndex = 0;
 
                             foreach (var binding in bindings.Samplers)
                             {
                                 var sampler = binding.Sampler.ResourceOwner.BackendResource as VulkanBackendSampler
                                     ?? throw new InvalidOperationException("A graph sampler lost its Vulkan backend resource.");
-                                samplerBindings.Add(new VulkanBackendSamplerBinding(
+                                samplerBindings[samplerBindingIndex] = new VulkanBackendSamplerBinding(
                                     binding.Group,
                                     binding.Binding,
-                                    sampler));
+                                    sampler);
+                                samplerBindingIndex++;
                             }
 
                             BindGraphDescriptorSets(
                                 pipeline,
                                 VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                uniformBufferBindings.ToImmutable(),
-                                storageBufferBindings.ToImmutable(),
-                                sampledImageBindings.ToImmutable(),
-                                storageImageBindings.ToImmutable(),
-                                samplerBindings.ToImmutable(),
+                                uniformBufferBindings,
+                                storageBufferBindings,
+                                imageBindings,
+                                storageImageBindings,
+                                samplerBindings,
                                 descriptorSets,
-                                ref descriptorSetCount);
+                                ref descriptorSetCount,
+                                graphStorage,
+                                descriptorBindingCommandCount);
+                            descriptorBindingCommandCount++;
                             break;
                         }
 
@@ -1632,9 +1866,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
-            if (descriptorSetCount != descriptorSetCapacity)
+            if ((descriptorSetCount != descriptorSetCapacity)
+                || (graphStorage is not null
+                    && (descriptorBindingCommandCount != graphStorage.DescriptorCommands.Length)))
             {
-                throw new InvalidOperationException("The graph descriptor-set preflight count did not match binding emission.");
+                throw new InvalidOperationException("The graph descriptor-storage preflight count did not match binding emission.");
             }
 
             var submittedFence = (surface is null)
@@ -1924,13 +2160,15 @@ internal sealed unsafe partial class VulkanBackendDevice
     private void BindGraphDescriptorSets(
         VulkanBackendPipeline pipeline,
         VkPipelineBindPoint bindPoint,
-        ImmutableArray<VulkanBackendUniformBufferBinding> uniformBufferBindings,
-        ImmutableArray<VulkanBackendStorageBufferBinding> storageBufferBindings,
-        ImmutableArray<VulkanBackendSampledImageBinding> imageBindings,
-        ImmutableArray<VulkanBackendStorageImageBinding> storageImageBindings,
-        ImmutableArray<VulkanBackendSamplerBinding> samplerBindings,
+        VulkanBackendUniformBufferBinding[] uniformBufferBindings,
+        VulkanBackendStorageBufferBinding[] storageBufferBindings,
+        VulkanBackendSampledImageBinding[] imageBindings,
+        VulkanBackendStorageImageBinding[] storageImageBindings,
+        VulkanBackendSamplerBinding[] samplerBindings,
         VulkanBackendDescriptorSet[] descriptorSets,
-        ref int descriptorSetCount)
+        ref int descriptorSetCount,
+        VulkanGraphSubmissionStorage? graphStorage,
+        int descriptorCommandIndex)
     {
         ReadOnlySpan<ShaderBindingGroup> groups = [
             ShaderBindingGroup.Frame,
@@ -1939,68 +2177,100 @@ internal sealed unsafe partial class VulkanBackendDevice
             ShaderBindingGroup.Pass,
         ];
 
+        var descriptorCommandStorage = (graphStorage is null)
+            ? default
+            : graphStorage.DescriptorCommands[descriptorCommandIndex];
+        var descriptorGroupIndex = descriptorCommandStorage.FirstGroupIndex;
+        var descriptorGroupEnd = descriptorGroupIndex + descriptorCommandStorage.GroupCount;
+
         foreach (var group in groups)
         {
-            var groupUniformBufferBindingCount = 0;
-            var groupStorageBufferBindingCount = 0;
-            var groupImageBindingCount = 0;
-            var groupStorageImageBindingCount = 0;
-            var groupSamplerBindingCount = 0;
+            VulkanBackendUniformBufferBinding[] groupUniformBufferBindings;
+            VulkanBackendStorageBufferBinding[] groupStorageBufferBindings;
+            VulkanBackendSampledImageBinding[] groupImageBindings;
+            VulkanBackendStorageImageBinding[] groupStorageImageBindings;
+            VulkanBackendSamplerBinding[] groupSamplerBindings;
 
-            foreach (var binding in uniformBufferBindings)
+            if (graphStorage is not null)
             {
-                if (binding.Group == group)
+                if ((descriptorGroupIndex >= descriptorGroupEnd)
+                    || (graphStorage.DescriptorGroups[descriptorGroupIndex].Group != group))
                 {
-                    groupUniformBufferBindingCount++;
+                    continue;
                 }
-            }
 
-            foreach (var binding in storageBufferBindings)
+                var descriptorGroupStorage = graphStorage.DescriptorGroups[descriptorGroupIndex];
+                descriptorGroupIndex++;
+                groupUniformBufferBindings = descriptorGroupStorage.UniformBufferBindings;
+                groupStorageBufferBindings = descriptorGroupStorage.StorageBufferBindings;
+                groupImageBindings = descriptorGroupStorage.ImageBindings;
+                groupStorageImageBindings = descriptorGroupStorage.StorageImageBindings;
+                groupSamplerBindings = descriptorGroupStorage.SamplerBindings;
+            }
+            else
             {
-                if (binding.Group == group)
+                var groupUniformBufferBindingCount = 0;
+                var groupStorageBufferBindingCount = 0;
+                var groupImageBindingCount = 0;
+                var groupStorageImageBindingCount = 0;
+                var groupSamplerBindingCount = 0;
+
+                foreach (var binding in uniformBufferBindings)
                 {
-                    groupStorageBufferBindingCount++;
+                    if (binding.Group == group)
+                    {
+                        groupUniformBufferBindingCount++;
+                    }
                 }
-            }
 
-            foreach (var binding in imageBindings)
-            {
-                if (binding.Group == group)
+                foreach (var binding in storageBufferBindings)
                 {
-                    groupImageBindingCount++;
+                    if (binding.Group == group)
+                    {
+                        groupStorageBufferBindingCount++;
+                    }
                 }
-            }
 
-            foreach (var binding in storageImageBindings)
-            {
-                if (binding.Group == group)
+                foreach (var binding in imageBindings)
                 {
-                    groupStorageImageBindingCount++;
+                    if (binding.Group == group)
+                    {
+                        groupImageBindingCount++;
+                    }
                 }
-            }
 
-            foreach (var binding in samplerBindings)
-            {
-                if (binding.Group == group)
+                foreach (var binding in storageImageBindings)
                 {
-                    groupSamplerBindingCount++;
+                    if (binding.Group == group)
+                    {
+                        groupStorageImageBindingCount++;
+                    }
                 }
+
+                foreach (var binding in samplerBindings)
+                {
+                    if (binding.Group == group)
+                    {
+                        groupSamplerBindingCount++;
+                    }
+                }
+
+                if ((groupUniformBufferBindingCount == 0)
+                    && (groupStorageBufferBindingCount == 0)
+                    && (groupImageBindingCount == 0)
+                    && (groupStorageImageBindingCount == 0)
+                    && (groupSamplerBindingCount == 0))
+                {
+                    continue;
+                }
+
+                groupUniformBufferBindings = new VulkanBackendUniformBufferBinding[groupUniformBufferBindingCount];
+                groupStorageBufferBindings = new VulkanBackendStorageBufferBinding[groupStorageBufferBindingCount];
+                groupImageBindings = new VulkanBackendSampledImageBinding[groupImageBindingCount];
+                groupStorageImageBindings = new VulkanBackendStorageImageBinding[groupStorageImageBindingCount];
+                groupSamplerBindings = new VulkanBackendSamplerBinding[groupSamplerBindingCount];
             }
 
-            if ((groupUniformBufferBindingCount == 0)
-                && (groupStorageBufferBindingCount == 0)
-                && (groupImageBindingCount == 0)
-                && (groupStorageImageBindingCount == 0)
-                && (groupSamplerBindingCount == 0))
-            {
-                continue;
-            }
-
-            var groupUniformBufferBindings = new VulkanBackendUniformBufferBinding[groupUniformBufferBindingCount];
-            var groupStorageBufferBindings = new VulkanBackendStorageBufferBinding[groupStorageBufferBindingCount];
-            var groupImageBindings = new VulkanBackendSampledImageBinding[groupImageBindingCount];
-            var groupStorageImageBindings = new VulkanBackendStorageImageBinding[groupStorageImageBindingCount];
-            var groupSamplerBindings = new VulkanBackendSamplerBinding[groupSamplerBindingCount];
             var groupUniformBufferBindingIndex = 0;
             var groupStorageBufferBindingIndex = 0;
             var groupImageBindingIndex = 0;
@@ -2016,21 +2286,21 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
-            foreach (var binding in storageBufferBindings)
-            {
-                if (binding.Group == group)
-                {
-                    groupStorageBufferBindings[groupStorageBufferBindingIndex] = binding;
-                    groupStorageBufferBindingIndex++;
-                }
-            }
-
             foreach (var binding in imageBindings)
             {
                 if (binding.Group == group)
                 {
                     groupImageBindings[groupImageBindingIndex] = binding;
                     groupImageBindingIndex++;
+                }
+            }
+
+            foreach (var binding in storageBufferBindings)
+            {
+                if (binding.Group == group)
+                {
+                    groupStorageBufferBindings[groupStorageBufferBindingIndex] = binding;
+                    groupStorageBufferBindingIndex++;
                 }
             }
 
@@ -2076,6 +2346,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 &nativeDescriptorSet,
                 0,
                 null);
+        }
+
+        if (graphStorage is not null && (descriptorGroupIndex != descriptorGroupEnd))
+        {
+            throw new InvalidOperationException("The graph descriptor-group storage did not match binding emission.");
         }
     }
 
@@ -2468,15 +2743,73 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    private readonly struct VulkanGraphDescriptorCommandStorage
+    {
+        internal readonly int FirstGroupIndex;
+        internal readonly int GroupCount;
+        internal readonly VulkanBackendSampledImageBinding[] ImageBindings;
+        internal readonly VulkanBackendSamplerBinding[] SamplerBindings;
+        internal readonly VulkanBackendStorageBufferBinding[] StorageBufferBindings;
+        internal readonly VulkanBackendStorageImageBinding[] StorageImageBindings;
+        internal readonly VulkanBackendUniformBufferBinding[] UniformBufferBindings;
+
+        internal VulkanGraphDescriptorCommandStorage(
+            int firstGroupIndex,
+            int groupCount,
+            int uniformBufferBindingCount,
+            int storageBufferBindingCount,
+            int imageBindingCount,
+            int storageImageBindingCount,
+            int samplerBindingCount)
+        {
+            FirstGroupIndex = firstGroupIndex;
+            GroupCount = groupCount;
+            UniformBufferBindings = new VulkanBackendUniformBufferBinding[uniformBufferBindingCount];
+            StorageBufferBindings = new VulkanBackendStorageBufferBinding[storageBufferBindingCount];
+            ImageBindings = new VulkanBackendSampledImageBinding[imageBindingCount];
+            StorageImageBindings = new VulkanBackendStorageImageBinding[storageImageBindingCount];
+            SamplerBindings = new VulkanBackendSamplerBinding[samplerBindingCount];
+        }
+    }
+
+    private readonly struct VulkanGraphDescriptorGroupStorage
+    {
+        internal readonly ShaderBindingGroup Group;
+        internal readonly VulkanBackendSampledImageBinding[] ImageBindings;
+        internal readonly VulkanBackendSamplerBinding[] SamplerBindings;
+        internal readonly VulkanBackendStorageBufferBinding[] StorageBufferBindings;
+        internal readonly VulkanBackendStorageImageBinding[] StorageImageBindings;
+        internal readonly VulkanBackendUniformBufferBinding[] UniformBufferBindings;
+
+        internal VulkanGraphDescriptorGroupStorage(
+            ShaderBindingGroup group,
+            int uniformBufferBindingCount,
+            int storageBufferBindingCount,
+            int imageBindingCount,
+            int storageImageBindingCount,
+            int samplerBindingCount)
+        {
+            Group = group;
+            UniformBufferBindings = new VulkanBackendUniformBufferBinding[uniformBufferBindingCount];
+            StorageBufferBindings = new VulkanBackendStorageBufferBinding[storageBufferBindingCount];
+            ImageBindings = new VulkanBackendSampledImageBinding[imageBindingCount];
+            StorageImageBindings = new VulkanBackendStorageImageBinding[storageImageBindingCount];
+            SamplerBindings = new VulkanBackendSamplerBinding[samplerBindingCount];
+        }
+    }
+
     private sealed class VulkanGraphSubmissionStorage : IGraphicsBackendGraphSubmissionStorage
     {
         internal VulkanGraphSubmissionStorage(
-            int descriptorSetCapacity,
+            VulkanGraphDescriptorCommandStorage[] descriptorCommands,
+            VulkanGraphDescriptorGroupStorage[] descriptorGroups,
             int textureImportCapacity,
             int bufferImportCapacity,
             int colorAttachmentCapacity)
         {
-            DescriptorSets = new VulkanBackendDescriptorSet[descriptorSetCapacity];
+            DescriptorSets = new VulkanBackendDescriptorSet[descriptorGroups.Length];
+            DescriptorCommands = descriptorCommands;
+            DescriptorGroups = descriptorGroups;
             TextureScopes = new VulkanGraphTextureScope[textureImportCapacity];
             GraphBufferScopes = new (VulkanBackendBuffer Buffer, VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[bufferImportCapacity];
             CurrentBufferScopes = new (VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[bufferImportCapacity];
@@ -2485,6 +2818,10 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         internal (VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[] CurrentBufferScopes { get; }
+
+        internal VulkanGraphDescriptorCommandStorage[] DescriptorCommands { get; }
+
+        internal VulkanGraphDescriptorGroupStorage[] DescriptorGroups { get; }
 
         internal VulkanBackendDescriptorSet[] DescriptorSets { get; }
 
@@ -2499,6 +2836,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         public void Dispose()
         {
             Array.Clear(DescriptorSets);
+            Array.Clear(DescriptorCommands);
+            Array.Clear(DescriptorGroups);
             Array.Clear(TextureScopes);
             Array.Clear(GraphBufferScopes);
             Array.Clear(CurrentBufferScopes);

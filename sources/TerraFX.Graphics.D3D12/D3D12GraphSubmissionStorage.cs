@@ -8,12 +8,15 @@ namespace TerraFX.Graphics.D3D12;
 
 internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmissionStorage
 {
-    internal D3D12GraphSubmissionStorage(int descriptorSetCapacity, int renderTargetViewCapacity)
+    internal D3D12GraphSubmissionStorage(DescriptorBindingArrays[] bindingArrays, int renderTargetViewCapacity)
     {
+        BindingArrays = bindingArrays;
         DescriptorSets =
-            new D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet[descriptorSetCapacity];
+            new D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet[bindingArrays.Length];
         RenderTargetViews = new D3D12_CPU_DESCRIPTOR_HANDLE[renderTargetViewCapacity];
     }
+
+    internal DescriptorBindingArrays[] BindingArrays { get; }
 
     internal D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet[] DescriptorSets { get; }
 
@@ -21,7 +24,31 @@ internal sealed class D3D12GraphSubmissionStorage : IGraphicsBackendGraphSubmiss
 
     public void Dispose()
     {
+        Array.Clear(BindingArrays);
         Array.Clear(DescriptorSets);
         Array.Clear(RenderTargetViews);
+    }
+
+    internal readonly struct DescriptorBindingArrays
+    {
+        internal readonly D3D12BackendSampledImageBinding[] SampledImages;
+        internal readonly D3D12BackendSamplerBinding[] Samplers;
+        internal readonly D3D12BackendStorageBufferBinding[] StorageBuffers;
+        internal readonly D3D12BackendStorageImageBinding[] StorageImages;
+        internal readonly D3D12BackendUniformBufferBinding[] UniformBuffers;
+
+        internal DescriptorBindingArrays(
+            int uniformBufferCount,
+            int sampledImageCount,
+            int storageBufferCount,
+            int storageImageCount,
+            int samplerCount)
+        {
+            UniformBuffers = new D3D12BackendUniformBufferBinding[uniformBufferCount];
+            SampledImages = new D3D12BackendSampledImageBinding[sampledImageCount];
+            StorageBuffers = new D3D12BackendStorageBufferBinding[storageBufferCount];
+            StorageImages = new D3D12BackendStorageImageBinding[storageImageCount];
+            Samplers = new D3D12BackendSamplerBinding[samplerCount];
+        }
     }
 }

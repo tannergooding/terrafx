@@ -1439,8 +1439,82 @@ public static unsafe class D3D12GraphicsBackend
                     }
                 }
 
+                var descriptorBindingArrays =
+                    new D3D12GraphSubmissionStorage.DescriptorBindingArrays[descriptorSetCapacity];
+                var descriptorBindingIndex = 0;
+
+                foreach (var pass in submission.Passes)
+                {
+                    var commandReadState = 0;
+                    using var commandRead = pass.ReadCommands(ref commandReadState);
+
+                    foreach (var command in commandRead.Commands)
+                    {
+                        if (command.Kind != GraphicsCommandKind.SetBindings)
+                        {
+                            continue;
+                        }
+
+                        var bindings = command.Bindings
+                            ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                        var uniformBufferCount = 0;
+                        var sampledImageCount = 0;
+                        var storageBufferCount = 0;
+                        var storageImageCount = 0;
+                        var samplerCount = 0;
+
+                        if (pass.Kind == CommandRecorderPassKind.Compute)
+                        {
+                            storageBufferCount = bindings.Buffers.Length;
+                            storageImageCount = bindings.Textures.Length;
+                        }
+                        else
+                        {
+                            foreach (var binding in bindings.Buffers)
+                            {
+                                if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                                {
+                                    uniformBufferCount++;
+                                }
+                                else
+                                {
+                                    storageBufferCount++;
+                                }
+                            }
+
+                            foreach (var binding in bindings.Textures)
+                            {
+                                if (binding.Kind == ShaderResourceKind.SampledImage)
+                                {
+                                    sampledImageCount++;
+                                }
+                                else
+                                {
+                                    storageImageCount++;
+                                }
+                            }
+
+                            samplerCount = bindings.Samplers.Length;
+                        }
+
+                        descriptorBindingArrays[descriptorBindingIndex] =
+                            new D3D12GraphSubmissionStorage.DescriptorBindingArrays(
+                                uniformBufferCount,
+                                sampledImageCount,
+                                storageBufferCount,
+                                storageImageCount,
+                                samplerCount);
+                        descriptorBindingIndex++;
+                    }
+                }
+
+                if (descriptorBindingIndex != descriptorBindingArrays.Length)
+                {
+                    throw new InvalidOperationException("The graph descriptor-storage preflight did not match binding commands.");
+                }
+
                 return new D3D12GraphSubmissionStorage(
-                    descriptorSetCapacity,
+                    descriptorBindingArrays,
                     submission.ColorAttachmentResourceCount);
             }
 
@@ -1962,6 +2036,7 @@ public static unsafe class D3D12GraphicsBackend
 
                 var descriptorSets = graphStorage?.DescriptorSets ?? new D3D12BackendDescriptorSet[descriptorSetCapacity];
                 var descriptorSetCount = 0;
+                var descriptorBindingIndex = 0;
                 _ = _uncertainGraphDescriptorSets.EnsureCapacity(
                     checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
                 _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
@@ -2357,10 +2432,18 @@ public static unsafe class D3D12GraphicsBackend
                                             ?? throw new InvalidOperationException("A recorded binding set has no preceding D3D12 compute pipeline.");
                                         var bindings = command.Bindings
                                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                                        var storageBufferBindings =
-                                            new D3D12BackendStorageBufferBinding[bindings.Buffers.Length];
-                                        var storageImageBindings =
-                                            new D3D12BackendStorageImageBinding[bindings.Textures.Length];
+                                        D3D12GraphSubmissionStorage.DescriptorBindingArrays? bindingStorage = null;
+
+                                        if (graphStorage is not null)
+                                        {
+                                            bindingStorage = graphStorage.BindingArrays[descriptorBindingIndex];
+                                            descriptorBindingIndex++;
+                                        }
+
+                                        var storageBufferBindings = bindingStorage?.StorageBuffers
+                                            ?? new D3D12BackendStorageBufferBinding[bindings.Buffers.Length];
+                                        var storageImageBindings = bindingStorage?.StorageImages
+                                            ?? new D3D12BackendStorageImageBinding[bindings.Textures.Length];
                                         var storageBufferBindingCount = 0;
                                         var storageImageBindingCount = 0;
 
@@ -2534,23 +2617,36 @@ public static unsafe class D3D12GraphicsBackend
                                             ?? throw new InvalidOperationException("A recorded binding set has no preceding D3D12 pipeline.");
                                         var bindings = command.Bindings
                                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                                        D3D12GraphSubmissionStorage.DescriptorBindingArrays? bindingStorage = null;
+
+                                        if (graphStorage is not null)
+                                        {
+                                            bindingStorage = graphStorage.BindingArrays[descriptorBindingIndex];
+                                            descriptorBindingIndex++;
+                                        }
+
                                         var uniformBufferBindingCount = 0;
                                         var storageBufferBindingCount = 0;
 
-                                        foreach (var binding in bindings.Buffers)
+                                        if (bindingStorage is null)
                                         {
-                                            if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                                            foreach (var binding in bindings.Buffers)
                                             {
-                                                uniformBufferBindingCount++;
-                                            }
-                                            else
-                                            {
-                                                storageBufferBindingCount++;
+                                                if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                                                {
+                                                    uniformBufferBindingCount++;
+                                                }
+                                                else
+                                                {
+                                                    storageBufferBindingCount++;
+                                                }
                                             }
                                         }
 
-                                        var uniformBufferBindings = new D3D12BackendUniformBufferBinding[uniformBufferBindingCount];
-                                        var storageBufferBindings = new D3D12BackendStorageBufferBinding[storageBufferBindingCount];
+                                        var uniformBufferBindings = bindingStorage?.UniformBuffers
+                                            ?? new D3D12BackendUniformBufferBinding[uniformBufferBindingCount];
+                                        var storageBufferBindings = bindingStorage?.StorageBuffers
+                                            ?? new D3D12BackendStorageBufferBinding[storageBufferBindingCount];
                                         var uniformBufferBindingIndex = 0;
                                         var storageBufferBindingIndex = 0;
 
@@ -2583,20 +2679,25 @@ public static unsafe class D3D12GraphicsBackend
                                         var sampledImageBindingCount = 0;
                                         var storageImageBindingCount = 0;
 
-                                        foreach (var binding in bindings.Textures)
+                                        if (bindingStorage is null)
                                         {
-                                            if (binding.Kind == ShaderResourceKind.SampledImage)
+                                            foreach (var binding in bindings.Textures)
                                             {
-                                                sampledImageBindingCount++;
-                                            }
-                                            else
-                                            {
-                                                storageImageBindingCount++;
+                                                if (binding.Kind == ShaderResourceKind.SampledImage)
+                                                {
+                                                    sampledImageBindingCount++;
+                                                }
+                                                else
+                                                {
+                                                    storageImageBindingCount++;
+                                                }
                                             }
                                         }
 
-                                        var sampledImageBindings = new D3D12BackendSampledImageBinding[sampledImageBindingCount];
-                                        var storageImageBindings = new D3D12BackendStorageImageBinding[storageImageBindingCount];
+                                        var sampledImageBindings = bindingStorage?.SampledImages
+                                            ?? new D3D12BackendSampledImageBinding[sampledImageBindingCount];
+                                        var storageImageBindings = bindingStorage?.StorageImages
+                                            ?? new D3D12BackendStorageImageBinding[storageImageBindingCount];
                                         var sampledImageBindingIndex = 0;
                                         var storageImageBindingIndex = 0;
 
@@ -2628,7 +2729,8 @@ public static unsafe class D3D12GraphicsBackend
                                             }
                                         }
 
-                                        var samplerBindings = new D3D12BackendSamplerBinding[bindings.Samplers.Length];
+                                        var samplerBindings = bindingStorage?.Samplers
+                                            ?? new D3D12BackendSamplerBinding[bindings.Samplers.Length];
                                         var samplerBindingIndex = 0;
 
                                         foreach (var binding in bindings.Samplers)
@@ -2801,6 +2903,12 @@ public static unsafe class D3D12GraphicsBackend
                     if (descriptorSetCount != descriptorSetCapacity)
                     {
                         throw new InvalidOperationException("The graph descriptor-set preflight count did not match binding emission.");
+                    }
+
+                    if ((graphStorage is not null)
+                        && (descriptorBindingIndex != graphStorage.BindingArrays.Length))
+                    {
+                        throw new InvalidOperationException("The graph descriptor-binding storage preflight count did not match binding emission.");
                     }
 
                     var submittedFence = transferQueue.SubmitGraphAndSignal();
