@@ -188,6 +188,21 @@ internal sealed class AssetPackageReaderTests
     }
 
     [Test]
+    public async Task PackageAdmissionRejectsZeroCpuBudgetBeforeOpeningThePackage()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"terrafx-missing-{Guid.NewGuid():N}.epkg");
+        var options = new AssetStoreOptions(path, new byte[32], CreateRegistration()) {
+            CpuAssetBudgetBytes = 0,
+        };
+
+        var exception = Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
+
+        Assert.That(exception!.Message, Is.EqualTo("The CPU asset budget cannot fund package opening."));
+        Assert.That(File.Exists(path), Is.False);
+    }
+
+    [Test]
     public async Task PackageAdmissionRetainsValidatedEmptyBacking()
     {
         Assert.That(

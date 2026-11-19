@@ -28,6 +28,11 @@ internal static class AssetPackageReader
         options.Validate();
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (options.CpuAssetBudgetBytes == 0)
+        {
+            throw new InvalidOperationException("The CPU asset budget cannot fund package opening.");
+        }
+
         var stream = new FileStream(
             options.AbsolutePackagePath,
             FileMode.Open,
