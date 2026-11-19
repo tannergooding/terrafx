@@ -2,7 +2,7 @@
 
 ## 1. Decision
 
-**Tentative internal implementation direction for user review, not a byte-profile qualification result.**
+**Tentatively approved as implementation guidance per user direction; not a finalized owner contract or byte-profile qualification result.**
 
 Add one checked Core admission ledger covering complete retained payloads and construction/replacement peaks, using the existing service gate and the [route proposal](m05-skinned-normal-diagnostic-telemetry-route-closure.md)'s exact source-World account. Apply it to every service admission, not only Rendering. Keep positive-only, noncoalescing `DegenerateSkinnedNormal` and existing ordinary warning keys/first-payload semantics.
 
