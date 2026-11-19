@@ -1466,11 +1466,17 @@ internal sealed class GraphicsBufferTransferTests
                     .ConfigureAwait(false);
             }
 
+            var transferredReservation = reservations[0]
+                ?? throw new InvalidOperationException("The initial graph-frame reservation was not acquired.");
+            Assert.That(transferredReservation.TryTransferToRequest(), Is.True);
+            Assert.That(transferredReservation.TryTransferToRequest(), Is.False);
+            transferredReservation.Dispose();
+
             var waitingReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None);
             Assert.That(waitingReservation.IsCompleted, Is.False);
             Assert.That(graphicsDevice.PendingGraphSubmissionBackingByteCharge, Is.EqualTo(retainedBackingCharge));
 
-            reservations[0]?.Dispose();
+            transferredReservation.ReleaseFromRequest();
             reservations[0] = null;
             using var recoveredReservation = await waitingReservation
                 .WaitAsync(TimeSpan.FromSeconds(5))
