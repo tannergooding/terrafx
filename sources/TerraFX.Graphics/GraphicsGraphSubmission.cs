@@ -1406,6 +1406,12 @@ internal sealed class GraphicsGraphSubmission
             ?? throw new InvalidOperationException("The imported texture lost its backend resource.");
     }
 
+    internal int GetTextureImportIndex(ulong resourceId)
+    {
+        var index = FindFirstTextureImportIndex(resourceId);
+        return (index >= 0) ? index : throw new KeyNotFoundException("The texture is not in the graph import index.");
+    }
+
     internal bool HasFirstStorageUse(RenderPassId passId, ulong resourceId)
     {
         var hasPriorStorageWrite = false;
