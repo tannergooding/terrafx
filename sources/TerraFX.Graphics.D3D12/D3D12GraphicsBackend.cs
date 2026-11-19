@@ -2483,7 +2483,7 @@ public static unsafe class D3D12GraphicsBackend
                                             throw new InvalidOperationException("The graph descriptor-set preflight capacity was exceeded.");
                                         }
 
-                                        var descriptorSet = CreateDescriptorSet(
+                                        var descriptorSet = CreateDescriptorSetFromArrays(
                                             pipeline,
                                             [],
                                             [],
@@ -2749,7 +2749,7 @@ public static unsafe class D3D12GraphicsBackend
                                             throw new InvalidOperationException("The graph descriptor-set preflight capacity was exceeded.");
                                         }
 
-                                        var descriptorSet = CreateDescriptorSet(
+                                        var descriptorSet = CreateDescriptorSetFromArrays(
                                             pipeline,
                                             uniformBufferBindings,
                                             sampledImageBindings,
@@ -3439,6 +3439,21 @@ public static unsafe class D3D12GraphicsBackend
             }
 
             internal D3D12BackendDescriptorSet CreateDescriptorSet(
+                IGraphicsBackendPipeline pipeline,
+                ImmutableArray<D3D12BackendUniformBufferBinding> uniformBufferBindings,
+                ImmutableArray<D3D12BackendSampledImageBinding> sampledImageBindings,
+                ImmutableArray<D3D12BackendStorageBufferBinding> storageBufferBindings,
+                ImmutableArray<D3D12BackendStorageImageBinding> storageImageBindings,
+                ImmutableArray<D3D12BackendSamplerBinding> samplerBindings)
+                => CreateDescriptorSetFromArrays(
+                    pipeline,
+                    [.. uniformBufferBindings],
+                    [.. sampledImageBindings],
+                    [.. storageBufferBindings],
+                    [.. storageImageBindings],
+                    [.. samplerBindings]);
+
+            internal D3D12BackendDescriptorSet CreateDescriptorSetFromArrays(
                 IGraphicsBackendPipeline pipeline,
                 D3D12BackendUniformBufferBinding[] uniformBufferBindings,
                 D3D12BackendSampledImageBinding[] sampledImageBindings,
