@@ -1405,6 +1405,12 @@ internal sealed class GraphicsGraphSubmission
         throw new KeyNotFoundException("The graph color attachment is not in the color resource index.");
     }
 
+    internal int GetSubmissionPassIndex(RenderPassId passId)
+    {
+        var index = FindPassValidationIndex(Passes, _passValidationIndex, passId, out var passIndex);
+        return (index >= 0) ? passIndex : throw new KeyNotFoundException("The pass is not in the graph submission.");
+    }
+
     internal IGraphicsBackendTexture GetTexture(ulong resourceId)
     {
         var texture = GetTextureImport(resourceId).Texture;

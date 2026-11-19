@@ -1786,6 +1786,7 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(submission.ColorAttachmentResourceOrderStorageCapacity, Is.EqualTo(3));
             Assert.That(submission.ColorAttachmentResourceIndexBackingByteCharge, Is.EqualTo(192));
             Assert.That(submission.ColorAttachmentResourceCount, Is.EqualTo(2));
+            Assert.That(submission.GetSubmissionPassIndex(passId), Is.Zero);
             Assert.That(submission.GetColorAttachmentResourceId(0), Is.EqualTo(otherColorVersion.ResourceId));
             Assert.That(submission.GetColorAttachmentResourceId(1), Is.EqualTo(targetVersion.ResourceId));
             Assert.That(submission.GetColorAttachmentResourceIndex(otherColorVersion.ResourceId), Is.Zero);

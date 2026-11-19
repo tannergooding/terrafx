@@ -624,24 +624,31 @@ internal sealed unsafe partial class VulkanBackendDevice
         var hasAcquiredImage = false;
         var hasStartedRecording = false;
         var graphSubmissionAccepted = false;
-        var colorAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(colorAttachmentResourceCount);
-        var depthAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(submission.TextureImports.Length - 1);
-        var passIndices = new Dictionary<RenderPassId, int>(submission.Passes.Length);
-        var textureContentsAfterSubmission = new Dictionary<ulong, (int PassIndex, bool IsValid)>(
-            submission.TextureImports.Length - 1);
 
         for (var passIndex = 0; passIndex < submission.Passes.Length; passIndex++)
         {
             var pass = submission.Passes[passIndex];
-            passIndices.Add(pass.PassId, passIndex);
 
             foreach (var attachment in pass.Attachments)
             {
-                var storeActions = attachment.IsDepth ? depthAttachmentStoreActions : colorAttachmentStoreActions;
-                storeActions[attachment.Version.ResourceId] = attachment.StoreAction;
-                textureContentsAfterSubmission[attachment.Version.ResourceId] = (
-                    passIndex,
-                    attachment.StoreAction == AttachmentStoreAction.Store);
+                var textureIndex = submission.GetTextureImportIndex(attachment.Version.ResourceId);
+                var textureScope = textureScopes[textureIndex];
+
+                if (attachment.IsDepth)
+                {
+                    textureScope.DepthStoreAction = attachment.StoreAction;
+                    textureScope.HasDepthAttachmentStoreAction = true;
+                }
+                else
+                {
+                    textureScope.ColorStoreAction = attachment.StoreAction;
+                    textureScope.HasColorAttachmentStoreAction = true;
+                }
+
+                textureScope.HasContentsState = true;
+                textureScope.ContentsPassIndex = passIndex;
+                textureScope.ContentsValid = attachment.StoreAction == AttachmentStoreAction.Store;
+                textureScopes[textureIndex] = textureScope;
             }
         }
 
@@ -654,12 +661,16 @@ internal sealed unsafe partial class VulkanBackendDevice
                 continue;
             }
 
-            var passIndex = passIndices[access.PassId];
+            var passIndex = submission.GetSubmissionPassIndex(access.PassId);
+            var textureIndex = submission.GetTextureImportIndex(access.ResourceId);
+            var contentsScope = textureScopes[textureIndex];
 
-            if (!textureContentsAfterSubmission.TryGetValue(access.ResourceId, out var contentsState)
-                || (passIndex >= contentsState.PassIndex))
+            if (!contentsScope.HasContentsState || (passIndex >= contentsScope.ContentsPassIndex))
             {
-                textureContentsAfterSubmission[access.ResourceId] = (passIndex, true);
+                contentsScope.HasContentsState = true;
+                contentsScope.ContentsPassIndex = passIndex;
+                contentsScope.ContentsValid = true;
+                textureScopes[textureIndex] = contentsScope;
             }
         }
 
@@ -1596,8 +1607,10 @@ internal sealed unsafe partial class VulkanBackendDevice
             target.SetLayout(subresource, currentLayout);
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
 
-            if (colorAttachmentStoreActions.TryGetValue(targetResourceId, out var targetStoreAction)
-                && (targetStoreAction == AttachmentStoreAction.Store))
+            var targetContentsScope = textureScopes[submission.GetTextureImportIndex(targetResourceId)];
+
+            if (targetContentsScope.HasColorAttachmentStoreAction
+                && (targetContentsScope.ColorStoreAction == AttachmentStoreAction.Store))
             {
                 target.MarkInitialized(subresource);
             }
@@ -1615,7 +1628,6 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
-                var resourceId = submission.TextureImports[index].Version.ResourceId;
                 var texture = textureScope.Texture
                     ?? throw new InvalidOperationException("The graph color scope lost its Vulkan texture.");
                 texture.SetLayout(textureScope.Subresource, textureScope.Layout);
@@ -1624,8 +1636,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                     textureScope.StageMask,
                     textureScope.AccessMask);
 
-                if (colorAttachmentStoreActions.TryGetValue(resourceId, out var colorStoreAction)
-                    && (colorStoreAction == AttachmentStoreAction.Store))
+                if (textureScope.HasColorAttachmentStoreAction
+                    && (textureScope.ColorStoreAction == AttachmentStoreAction.Store))
                 {
                     texture.MarkInitialized(textureScope.Subresource);
                 }
@@ -1644,7 +1656,6 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
-                var resourceId = submission.TextureImports[index].Version.ResourceId;
                 var texture = textureScope.Texture
                     ?? throw new InvalidOperationException("The graph depth scope lost its Vulkan texture.");
                 texture.SetLayout(textureScope.Subresource, textureScope.Layout);
@@ -1653,8 +1664,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                     textureScope.StageMask,
                     textureScope.AccessMask);
 
-                if (depthAttachmentStoreActions.TryGetValue(resourceId, out var depthStoreAction)
-                    && (depthStoreAction == AttachmentStoreAction.Store))
+                if (textureScope.HasDepthAttachmentStoreAction
+                    && (textureScope.DepthStoreAction == AttachmentStoreAction.Store))
                 {
                     texture.MarkInitialized(textureScope.Subresource);
                 }
@@ -1710,7 +1721,6 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
-                var resourceId = submission.TextureImports[index].Version.ResourceId;
                 var texture = textureScope.Texture
                     ?? throw new InvalidOperationException("The graph copy texture scope lost its Vulkan texture.");
                 texture.SetLayout(textureScope.CopySubresource, textureScope.CopyLayout);
@@ -1721,10 +1731,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (textureScope.IsCopyDestination)
                 {
-                    if (textureContentsAfterSubmission.TryGetValue(
-                        resourceId,
-                        out var finalContentsState)
-                        && !finalContentsState.IsValid)
+                    if (textureScope.HasContentsState && !textureScope.ContentsValid)
                     {
                         texture.MarkUninitialized(textureScope.CopySubresource);
                     }
@@ -1733,11 +1740,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                         texture.MarkInitialized(textureScope.CopySubresource);
                     }
                 }
-                else if (colorAttachmentStoreActions.TryGetValue(
-                    resourceId,
-                    out var copySourceStoreAction))
+                else if (textureScope.HasColorAttachmentStoreAction)
                 {
-                    if (copySourceStoreAction == AttachmentStoreAction.Store)
+                    if (textureScope.ColorStoreAction == AttachmentStoreAction.Store)
                     {
                         texture.MarkInitialized(textureScope.CopySubresource);
                     }
@@ -2357,11 +2362,18 @@ internal sealed unsafe partial class VulkanBackendDevice
     private struct VulkanGraphTextureScope
     {
         internal VkAccessFlags2 AccessMask;
+        internal AttachmentStoreAction ColorStoreAction;
+        internal int ContentsPassIndex;
+        internal bool ContentsValid;
         internal VkAccessFlags2 CopyAccessMask;
         internal VkImageLayout CopyLayout;
         internal VkPipelineStageFlags2 CopyStageMask;
         internal TextureSubresource CopySubresource;
+        internal AttachmentStoreAction DepthStoreAction;
+        internal bool HasColorAttachmentStoreAction;
+        internal bool HasContentsState;
         internal bool HasCopyScope;
+        internal bool HasDepthAttachmentStoreAction;
         internal bool HasSampledAccess;
         internal bool IsCopyDestination;
         internal VulkanGraphTextureScopeKind Kind;
