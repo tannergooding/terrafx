@@ -815,7 +815,8 @@ public static unsafe class D3D12GraphicsBackend
             private IDXGIAdapter3* _adapter;
             private readonly Func<long, long>? _completedFenceValueOverride;
             private ID3D12Device* _device;
-            private readonly List<D3D12BackendDescriptorSet>?[] _graphFrameDescriptorSets;
+            private readonly int[] _graphFrameDescriptorSetCounts;
+            private readonly D3D12BackendDescriptorSet[]?[] _graphFrameDescriptorSets;
             private readonly long[] _graphFrameFenceValues;
             private readonly nint[] _graphFrameRenderTargetHeaps;
             private readonly int _graphFrameSlotCount;
@@ -865,7 +866,8 @@ public static unsafe class D3D12GraphicsBackend
                 _device = device;
                 Capabilities = capabilities;
                 _graphFrameSlotCount = frameSlotCount;
-                _graphFrameDescriptorSets = new List<D3D12BackendDescriptorSet>?[frameSlotCount];
+                _graphFrameDescriptorSetCounts = new int[frameSlotCount];
+                _graphFrameDescriptorSets = new D3D12BackendDescriptorSet[]?[frameSlotCount];
                 _graphFrameFenceValues = new long[frameSlotCount];
                 _graphFrameRenderTargetHeaps = new nint[frameSlotCount];
                 _completedFenceValueOverride = completedFenceValueOverride;
@@ -1713,15 +1715,16 @@ public static unsafe class D3D12GraphicsBackend
                         continue;
                     }
 
-                    if (_graphFrameDescriptorSets[index] is List<D3D12BackendDescriptorSet> descriptorSets)
+                    if (_graphFrameDescriptorSets[index] is D3D12BackendDescriptorSet[] descriptorSets)
                     {
-                        for (var descriptorIndex = descriptorSets.Count - 1; descriptorIndex >= 0; descriptorIndex--)
+                        for (var descriptorIndex = _graphFrameDescriptorSetCounts[index] - 1; descriptorIndex >= 0; descriptorIndex--)
                         {
                             descriptorSets[descriptorIndex].Dispose();
                         }
 
-                        descriptorSets.Clear();
+                        Array.Clear(descriptorSets, 0, _graphFrameDescriptorSetCounts[index]);
                         _graphFrameDescriptorSets[index] = null;
+                        _graphFrameDescriptorSetCounts[index] = 0;
                     }
 
                     if (_graphFrameRenderTargetHeaps[index] != 0)
@@ -1923,7 +1926,8 @@ public static unsafe class D3D12GraphicsBackend
                     }
                 }
 
-                var descriptorSets = new List<D3D12BackendDescriptorSet>(descriptorSetCapacity);
+                var descriptorSets = new D3D12BackendDescriptorSet[descriptorSetCapacity];
+                var descriptorSetCount = 0;
                 _ = _uncertainGraphDescriptorSets.EnsureCapacity(
                     checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
                 _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
@@ -2352,6 +2356,11 @@ public static unsafe class D3D12GraphicsBackend
                                                 binding.Range));
                                         }
 
+                                        if (descriptorSetCount >= descriptorSets.Length)
+                                        {
+                                            throw new InvalidOperationException("The graph descriptor-set preflight capacity was exceeded.");
+                                        }
+
                                         var descriptorSet = CreateDescriptorSet(
                                             pipeline,
                                             [],
@@ -2359,7 +2368,8 @@ public static unsafe class D3D12GraphicsBackend
                                             storageBufferBindings.ToImmutable(),
                                             storageImageBindings.ToImmutable(),
                                             []);
-                                        descriptorSets.Add(descriptorSet);
+                                        descriptorSets[descriptorSetCount] = descriptorSet;
+                                        descriptorSetCount++;
 
                                         if ((descriptorSet.DescriptorTableCount == 0)
                                             || !descriptorSet.AreDescriptorTableHandlesValid)
@@ -2558,6 +2568,11 @@ public static unsafe class D3D12GraphicsBackend
                                                 sampler));
                                         }
 
+                                        if (descriptorSetCount >= descriptorSets.Length)
+                                        {
+                                            throw new InvalidOperationException("The graph descriptor-set preflight capacity was exceeded.");
+                                        }
+
                                         var descriptorSet = CreateDescriptorSet(
                                             pipeline,
                                             uniformBufferBindings.ToImmutable(),
@@ -2565,7 +2580,8 @@ public static unsafe class D3D12GraphicsBackend
                                             storageBufferBindings.ToImmutable(),
                                             storageImageBindings.ToImmutable(),
                                             samplerBindings.ToImmutable());
-                                        descriptorSets.Add(descriptorSet);
+                                        descriptorSets[descriptorSetCount] = descriptorSet;
+                                        descriptorSetCount++;
 
                                         if ((descriptorSet.DescriptorTableCount == 0)
                                             || !descriptorSet.AreDescriptorTableHandlesValid)
@@ -2708,9 +2724,15 @@ public static unsafe class D3D12GraphicsBackend
                         }
                     }
 
+                    if (descriptorSetCount != descriptorSetCapacity)
+                    {
+                        throw new InvalidOperationException("The graph descriptor-set preflight count did not match binding emission.");
+                    }
+
                     var submittedFence = transferQueue.SubmitGraphAndSignal();
                     _graphFrameFenceValues[graphFrameSlotIndex] = submittedFence;
                     _graphFrameDescriptorSets[graphFrameSlotIndex] = descriptorSets;
+                    _graphFrameDescriptorSetCounts[graphFrameSlotIndex] = descriptorSetCount;
                     _graphFrameRenderTargetHeaps[graphFrameSlotIndex] = (nint)renderTargetHeap;
                     renderTargetHeap = null;
                     graphSubmissionAccepted = true;
@@ -2776,14 +2798,14 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         if (transferQueue.HasUncertainSubmission)
                         {
-                            foreach (var descriptorSet in descriptorSets)
+                            for (var index = 0; index < descriptorSetCount; index++)
                             {
-                                _uncertainGraphDescriptorSets.Add(descriptorSet);
+                                _uncertainGraphDescriptorSets.Add(descriptorSets[index]);
                             }
                         }
                         else if (!graphSubmissionAccepted)
                         {
-                            for (var index = descriptorSets.Count - 1; index >= 0; index--)
+                            for (var index = descriptorSetCount - 1; index >= 0; index--)
                             {
                                 descriptorSets[index].Dispose();
                             }

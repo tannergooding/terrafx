@@ -259,7 +259,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
         }
 
-        var descriptorSets = new List<VulkanBackendDescriptorSet>(descriptorSetCapacity);
+        var descriptorSets = new VulkanBackendDescriptorSet[descriptorSetCapacity];
+        var descriptorSetCount = 0;
         _ = _uncertainGraphDescriptorSets.EnsureCapacity(
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
@@ -718,7 +719,6 @@ internal sealed unsafe partial class VulkanBackendDevice
             _ = _uncertainGraphImageViews.EnsureCapacity(
                 checked(_uncertainGraphImageViews.Count + colorAttachmentResourceCount));
             _ = _uncertainTextureOwners.EnsureCapacity(checked(_uncertainTextureOwners.Count + 1));
-            _ = descriptorSets.EnsureCapacity(descriptorSetCapacity);
 
             if (surface is not null)
             {
@@ -1242,7 +1242,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                                     [],
                                     storageImageBindings.ToImmutable(),
                                     [],
-                                    descriptorSets);
+                                    descriptorSets,
+                                    ref descriptorSetCount);
                                 break;
                             }
 
@@ -1497,7 +1498,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 sampledImageBindings.ToImmutable(),
                                 storageImageBindings.ToImmutable(),
                                 samplerBindings.ToImmutable(),
-                                descriptorSets);
+                                descriptorSets,
+                                ref descriptorSetCount);
                             break;
                         }
 
@@ -1679,6 +1681,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
+            if (descriptorSetCount != descriptorSetCapacity)
+            {
+                throw new InvalidOperationException("The graph descriptor-set preflight count did not match binding emission.");
+            }
+
             var submittedFence = (surface is null)
                 ? SubmitGraphWithoutWait()
                 : SubmitGraphWithoutWait(
@@ -1688,6 +1695,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             selectedGraphFrameSlot.FenceValue = checked((ulong)submittedFence);
             selectedGraphFrameSlot.ImageViews = graphImageViews;
             selectedGraphFrameSlot.DescriptorSets = descriptorSets;
+            selectedGraphFrameSlot.DescriptorSetCount = descriptorSetCount;
             ownsImageViews = false;
             graphSubmissionAccepted = true;
             target.SetLayout(subresource, currentLayout);
@@ -1926,14 +1934,14 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                     ownsImageViews = false;
 
-                    foreach (var descriptorSet in descriptorSets)
+                    for (var index = 0; index < descriptorSetCount; index++)
                     {
-                        _uncertainGraphDescriptorSets.Add(descriptorSet);
+                        _uncertainGraphDescriptorSets.Add(descriptorSets[index]);
                     }
                 }
                 else if (!graphSubmissionAccepted)
                 {
-                    for (var index = descriptorSets.Count - 1; index >= 0; index--)
+                    for (var index = descriptorSetCount - 1; index >= 0; index--)
                     {
                         descriptorSets[index].Dispose();
                     }
@@ -1962,7 +1970,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         ImmutableArray<VulkanBackendSampledImageBinding> imageBindings,
         ImmutableArray<VulkanBackendStorageImageBinding> storageImageBindings,
         ImmutableArray<VulkanBackendSamplerBinding> samplerBindings,
-        List<VulkanBackendDescriptorSet> descriptorSets)
+        VulkanBackendDescriptorSet[] descriptorSets,
+        ref int descriptorSetCount)
     {
         ReadOnlySpan<ShaderBindingGroup> groups = [
             ShaderBindingGroup.Frame,
@@ -2028,6 +2037,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 continue;
             }
 
+            if (descriptorSetCount >= descriptorSets.Length)
+            {
+                throw new InvalidOperationException("The graph descriptor-set preflight capacity was exceeded.");
+            }
+
             var descriptorSet = CreateGraphDescriptorSet(
                 pipeline,
                 groupUniformBufferBindings.ToImmutable(),
@@ -2036,7 +2050,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 groupStorageImageBindings.ToImmutable(),
                 groupSamplerBindings.ToImmutable(),
                 group);
-            descriptorSets.Add(descriptorSet);
+            descriptorSets[descriptorSetCount++] = descriptorSet;
             var nativeDescriptorSet = descriptorSet.DescriptorSet;
             VulkanApi.vkCmdBindDescriptorSets(
                 _commandBuffer,
@@ -2411,15 +2425,16 @@ internal sealed unsafe partial class VulkanBackendDevice
                 continue;
             }
 
-            if (graphFrameSlot.DescriptorSets is List<VulkanBackendDescriptorSet> descriptorSets)
+            if (graphFrameSlot.DescriptorSets is VulkanBackendDescriptorSet[] descriptorSets)
             {
-                for (var index = descriptorSets.Count - 1; index >= 0; index--)
+                for (var index = graphFrameSlot.DescriptorSetCount - 1; index >= 0; index--)
                 {
                     descriptorSets[index].Dispose();
                 }
 
-                descriptorSets.Clear();
+                Array.Clear(descriptorSets, 0, graphFrameSlot.DescriptorSetCount);
                 graphFrameSlot.DescriptorSets = null;
+                graphFrameSlot.DescriptorSetCount = 0;
             }
 
             if (graphFrameSlot.ImageViews is List<VkImageView> imageViews)
