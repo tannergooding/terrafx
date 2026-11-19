@@ -359,6 +359,36 @@ internal sealed class DiagnosticsServiceTests
     [Test]
     public void MeasuresBoundedWarningRecordAllocationTraffic()
     {
+        static long MeasureCoalescedUpdateAllocation(Diagnostic diagnostic)
+        {
+            const int WarmupCount = 8;
+            const int IterationCount = 1024;
+            var service = new DiagnosticsService(4);
+            service.Write(diagnostic, null, null);
+
+            for (var index = 0; index < WarmupCount; index++)
+            {
+                service.Write(diagnostic, null, null);
+            }
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+            for (var index = 0; index < IterationCount; index++)
+            {
+                service.Write(diagnostic, null, null);
+            }
+
+            var allocatedBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / IterationCount;
+            var snapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+            Assert.That(snapshot.Records, Has.Length.EqualTo(1));
+            Assert.That(snapshot.Records[0].Context[^1].Value, Is.EqualTo("1033"));
+            service.Close();
+            return allocatedBytes;
+        }
+
         const int diagnosticCapacity = 8192;
         var service = new DiagnosticsService(4);
         var ownedByteReservation = DiagnosticsService.GetOwnedByteReservation(diagnosticCapacity);
@@ -425,9 +455,19 @@ internal sealed class DiagnosticsServiceTests
 
         Assert.That(commandIdentity, Has.Length.EqualTo(110));
         Assert.That(context, Has.Length.EqualTo(6));
+        var coalescingDiagnostic = CreateDiagnostic(
+            "coalesced-allocation",
+            DiagnosticSeverity.Warning,
+            1,
+            context: [
+                new DiagnosticContextEntry("First", "1"),
+                new DiagnosticContextEntry("Second", "2"),
+            ]);
+        var coalescedUpdateBytes = MeasureCoalescedUpdateAllocation(coalescingDiagnostic);
         TestContext.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}");
         TestContext.WriteLine(
             $"DiagnosticsService full-ring reservation: capacity={diagnosticCapacity}, bytes={ownedByteReservation}, entry-stride={diagnosticEntryStride}");
+        TestContext.WriteLine($"DiagnosticsService coalesced warning update: {coalescedUpdateBytes} B/call (two context entries).");
         TestContext.WriteLine($"Producer formatting and Diagnostic construction: {producerAllocatedBytes} bytes");
         TestContext.WriteLine($"DiagnosticsService warning admission: {serviceAllocatedBytes} bytes");
         TestContext.WriteLine($"Total measured allocation traffic: {checked(producerAllocatedBytes + serviceAllocatedBytes)} bytes");

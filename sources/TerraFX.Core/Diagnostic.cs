@@ -126,6 +126,42 @@ public sealed class Diagnostic
         Context = [.. context];
     }
 
+    private Diagnostic(Diagnostic source, ImmutableArray<DiagnosticContextEntry> context)
+    {
+        if (context.IsDefault)
+        {
+            throw new ArgumentException("Diagnostic context must be initialized.", nameof(context));
+        }
+
+        foreach (var entry in context)
+        {
+            if (string.IsNullOrEmpty(entry.Key) || (entry.Value is null))
+            {
+                throw new ArgumentException("Diagnostic context entries must be valid.", nameof(context));
+            }
+        }
+
+        AssetId = source.AssetId;
+        Code = source.Code;
+        CommandIdentity = source.CommandIdentity;
+        Context = context;
+        DeviceEpoch = source.DeviceEpoch;
+        DeviceId = source.DeviceId;
+        HostId = source.HostId;
+        Message = source.Message;
+        MonotonicTimestamp = source.MonotonicTimestamp;
+        NativeResult = source.NativeResult;
+        Operation = source.Operation;
+        PassId = source.PassId;
+        Severity = source.Severity;
+        SurfaceEpoch = source.SurfaceEpoch;
+        SurfaceId = source.SurfaceId;
+        SwapchainEpoch = source.SwapchainEpoch;
+        SystemId = source.SystemId;
+        Tick = source.Tick;
+        WorldGuid = source.WorldGuid;
+    }
+
     /// <summary>Gets the optional content-set-scoped AssetId.</summary>
     public int? AssetId { get; }
 
@@ -198,4 +234,7 @@ public sealed class Diagnostic
             throw new ArgumentOutOfRangeException(parameterName);
         }
     }
+
+    internal Diagnostic WithOwnedContext(ImmutableArray<DiagnosticContextEntry> context)
+        => new(this, context);
 }

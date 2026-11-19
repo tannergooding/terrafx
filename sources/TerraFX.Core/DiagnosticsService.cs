@@ -166,7 +166,8 @@ public sealed class DiagnosticsService
             }
         }
 
-        return CopyDiagnostic(source, [.. source.Context, new DiagnosticContextEntry(OccurrenceCountKey, occurrenceCount.ToString(CultureInfo.InvariantCulture))]);
+        return source.WithOwnedContext(
+            [.. source.Context, new DiagnosticContextEntry(OccurrenceCountKey, occurrenceCount.ToString(CultureInfo.InvariantCulture))]);
     }
 
     private static long ArrayCharge(int capacity, int stride)
@@ -277,28 +278,6 @@ public sealed class DiagnosticsService
 
         return bytes;
     }
-
-    private static Diagnostic CopyDiagnostic(Diagnostic source, ImmutableArray<DiagnosticContextEntry> context)
-        => new(
-            source.Code,
-            source.Severity,
-            source.MonotonicTimestamp,
-            source.HostId,
-            source.WorldGuid,
-            source.DeviceId,
-            source.SurfaceId,
-            source.DeviceEpoch,
-            source.SurfaceEpoch,
-            source.SwapchainEpoch,
-            source.Tick,
-            source.SystemId,
-            source.PassId,
-            source.AssetId,
-            source.CommandIdentity,
-            source.Operation,
-            source.NativeResult,
-            source.Message,
-            context);
 
     private static int FindCoalescedIndex(
         DiagnosticEntry[] records,
@@ -417,7 +396,7 @@ public sealed class DiagnosticsService
         }
 
         context.Add(new DiagnosticContextEntry(OccurrenceCountKey, occurrenceCount.ToString(CultureInfo.InvariantCulture)));
-        return CopyDiagnostic(source, context.MoveToImmutable());
+        return source.WithOwnedContext(context.MoveToImmutable());
     }
 
     private static void ValidateAttributionAccount(
