@@ -201,7 +201,6 @@ internal sealed class WorldLifetimeControlQuarantineTests
         }
 
         GC.KeepAlive(warmInstances);
-        CollectGarbage();
         var instances = new object[InstanceCount * 2];
         var allocationStart = GC.GetAllocatedBytesForCurrentThread();
 
@@ -390,20 +389,31 @@ internal sealed class WorldLifetimeControlQuarantineTests
         var (ownerFirstBytes, ownerSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldCosmeticCreditOwner));
         var (permitFirstBytes, permitSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldGuidRetirementPermit));
         var (lockFirstBytes, lockSteadyBytes) = MeasureLockAllocation();
+        var operationCreditType = typeof(WorldDomainOperationCredit);
+        var operationUseLeaseType = operationCreditType.GetNestedType("UseLease", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The domain operation-credit use lease is missing.");
+        var (operationCreditFirstBytes, operationCreditSteadyBytes) = MeasureUninitializedClassAllocation(operationCreditType);
+        var (operationUseLeaseFirstBytes, operationUseLeaseSteadyBytes) = MeasureUninitializedClassAllocation(operationUseLeaseType);
 
         Assert.That(lifetimeSteadyBytes, Is.GreaterThan(0));
         Assert.That(ownerSteadyBytes, Is.GreaterThan(0));
         Assert.That(permitSteadyBytes, Is.GreaterThan(0));
         Assert.That(lockSteadyBytes, Is.GreaterThan(0));
+        Assert.That(operationCreditSteadyBytes, Is.GreaterThan(0));
+        Assert.That(operationUseLeaseSteadyBytes, Is.GreaterThan(0));
         Assert.That(lifetimeSteadyBytes % IntPtr.Size, Is.Zero);
         Assert.That(ownerSteadyBytes % IntPtr.Size, Is.Zero);
         Assert.That(permitSteadyBytes % IntPtr.Size, Is.Zero);
         Assert.That(lockSteadyBytes % IntPtr.Size, Is.Zero);
+        Assert.That(operationCreditSteadyBytes % IntPtr.Size, Is.Zero);
+        Assert.That(operationUseLeaseSteadyBytes % IntPtr.Size, Is.Zero);
         TestContext.Out.WriteLine(
             $"WorldLifetimeControlFirst={lifetimeFirstBytes}; WorldLifetimeControlSteady={lifetimeSteadyBytes}; "
             + $"CosmeticCreditOwnerFirst={ownerFirstBytes}; CosmeticCreditOwnerSteady={ownerSteadyBytes}; "
             + $"RetirementPermitFirst={permitFirstBytes}; RetirementPermitSteady={permitSteadyBytes}; "
             + $"LockFirst={lockFirstBytes}; LockSteady={lockSteadyBytes}; "
+            + $"OperationCreditFirst={operationCreditFirstBytes}; OperationCreditSteady={operationCreditSteadyBytes}; "
+            + $"OperationUseLeaseFirst={operationUseLeaseFirstBytes}; OperationUseLeaseSteady={operationUseLeaseSteadyBytes}; "
             + $"Framework={RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}; "
             + $"RuntimeModule={typeof(WorldLifetimeControl).Module.ModuleVersionId}");
     }
