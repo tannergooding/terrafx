@@ -245,7 +245,8 @@ owner and the supplied slot/generation. Its current exact source callers are
 `World.TryGetEntityFromSystem(WorldSystemInvocationDispatch, Guid, out Entity)`,
 `World.GetPersistenceEntityId(WorldPersistenceCaptureLease, int, uint)`,
 `World.DestroySceneEntitiesAtomically(Guid, uint, int, HierarchyDestroyMode, CancellationToken)`,
-`World.PreviewCandidateEntityHandles(int, scoped ReadOnlySpan<int>, int)`, and
+`World.PreviewCandidateEntityHandles(int, scoped ReadOnlySpan<int>, int)`,
+`World.ResolveRestoreEntity(Guid)`, and
 the local `AppendSceneSubtree(Entity)` function enclosed by
 `World.DestroySceneEntitiesAtomically(...)`, plus the local
 `GetFinalHierarchyDepth(Entity)`, `TryGetCurrentHierarchyParent(Entity, Entity)`,
@@ -255,8 +256,20 @@ functions enclosed by
 `World.CommitCommandBatch(WorldCommandStaging, IdentityAssignment?, uint?,
 ImmutableArray<WorldHierarchyParentMutation>, CancellationToken)`. The command-batch
 method also materializes prospective handles directly during preflight/projection.
-A restored candidate must use its own World-owned handle materialization route; it
-cannot call the `Entity` constructor directly or reuse handles from the target World.
+
+The existing candidate-only handle resolver is `Entity World.ResolveRestoreEntity(Guid stableId)`. It validates the stable identity against the complete unpublished candidate's admitted live-Entity map, then calls that same receiver's `CreateEntityHandle`; it does not allocate a slot, issue a stable identity, or reuse a target-World handle. Its exact direct callers are:
+
+| Exact direct caller | Contract |
+|---|---|
+| `void World.RestoreEcsRows(ReadOnlyMemory<byte>, WorldPersistenceEcsContents, long, ImmutableArray<IWorldPreparedResourceSource>, ImmutableArray<IWorldPreparedAttachmentSource>, CancellationToken)` | Materialize receiving Entities while restoring the already validated ECS projection. |
+| `Entity World+WorldComponentRestoreContext.ResolveEntity(ComponentFieldDescriptor, Guid)` | Resolve an exact declared component reference within the active candidate callback scope. |
+| `Entity? World+WorldComponentRestoreContext.ResolveOptionalEntity(ComponentFieldDescriptor, Guid)` | Resolve an existing optional target after its declared optional-reference check; its absent-target branch does not call the resolver. |
+| `Entity World+WorldSystemRestoreContext.ResolveEntity(WorldSystemFieldDescriptor, Guid)` | Resolve an exact declared system-state reference within that system's active candidate scope. |
+| `Entity World+WorldAttachmentRestoreContext.ResolveEntity(WorldAttachmentFieldDescriptor, Guid)` | Resolve an exact declared attachment reference within that attachment's active candidate scope. |
+| `static ImmutableArray<SceneExternalBinding> ScenePersistenceRestorer.ReadExternalBindings(World, EbinRecordReadView)` | Rebind validated saved external targets to the candidate before restored Scene preparation consumes them. |
+| `static void ScenePersistenceRestorer.RestoreHierarchy(World, SceneWorldRegistry?, EbinRecordReadView, int, CancellationToken)` | Rebind validated hierarchy nodes/parents before the candidate's existing hierarchy transaction. |
+
+These exact direct-call permissions do not authorize any other restore helper, provider, generated method, or World-type member to materialize handles. The selected Standard Branch candidate uses this route; it does not extend the current generation-1 implementation to StrictLocal or another restore intent.
 
 `CommitCommandBatch(...)` is World-owned preflight and commit, not an authority
 delegated to producers. Its exact source callers are
