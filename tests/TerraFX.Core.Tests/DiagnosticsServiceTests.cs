@@ -357,6 +357,43 @@ internal sealed class DiagnosticsServiceTests
     }
 
     [Test]
+    public void LocalAttributionRetentionTracksRingAndIndependentLatestFault()
+    {
+        var service = new DiagnosticsService(2);
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var firstWorldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var secondWorldGuid = new Guid("40112233-4455-4677-8899-aabbccddeeff");
+        var firstWorld = service.CreateBorrowedWorldCapability(firstWorldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        var secondWorld = service.CreateBorrowedWorldCapability(secondWorldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        firstWorld.BindOwner(17);
+        secondWorld.BindOwner(18);
+        var firstAccount = firstWorld.AttributionAccount;
+        var secondAccount = secondWorld.AttributionAccount;
+
+        Assert.That(service.RetainsAttributionAccount(firstAccount), Is.False);
+        service.Write(CreateDiagnostic("first", DiagnosticSeverity.Information, 1, firstWorldGuid), executionSessionId, 17, firstAccount);
+        service.Write(CreateDiagnostic("second", DiagnosticSeverity.Information, 2, secondWorldGuid), executionSessionId, 18, secondAccount);
+        Assert.That(service.RetainsAttributionAccount(firstAccount), Is.True);
+
+        service.Write(CreateDiagnostic("third", DiagnosticSeverity.Information, 3, secondWorldGuid), executionSessionId, 18, secondAccount);
+        Assert.That(service.RetainsAttributionAccount(firstAccount), Is.False);
+        Assert.That(service.RetainsAttributionAccount(secondAccount), Is.True);
+
+        service.Write(CreateDiagnostic("fault", DiagnosticSeverity.Critical, 4, firstWorldGuid), executionSessionId, 17, firstAccount);
+        service.Write(CreateDiagnostic("fourth", DiagnosticSeverity.Information, 5, secondWorldGuid), executionSessionId, 18, secondAccount);
+        service.Write(CreateDiagnostic("fifth", DiagnosticSeverity.Information, 6, secondWorldGuid), executionSessionId, 18, secondAccount);
+        Assert.That(service.TryGetLatestFault(out var latestFault), Is.True);
+        Assert.That(latestFault?.Code, Is.EqualTo("fault"));
+        Assert.That(service.RetainsAttributionAccount(firstAccount), Is.True);
+
+        service.Close();
+        Assert.That(service.RetainsAttributionAccount(firstAccount), Is.False);
+        Assert.That(service.RetainsAttributionAccount(secondAccount), Is.False);
+        firstWorld.Close();
+        secondWorld.Close();
+    }
+
+    [Test]
     public void MeasuresBoundedWarningRecordAllocationTraffic()
     {
         static long MeasureCoalescedUpdateAllocation(Diagnostic diagnostic)

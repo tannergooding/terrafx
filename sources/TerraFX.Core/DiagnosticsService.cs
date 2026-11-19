@@ -72,6 +72,8 @@ public sealed class DiagnosticsService
         _records = new DiagnosticEntry[maximumRecords];
     }
 
+    internal static long MaximumServiceByteCapacity => MaximumServiceBytes;
+
     private static long MinimumWarningPayloadBytes
         => checked(
             DiagnosticObjectBytes
@@ -80,6 +82,10 @@ public sealed class DiagnosticsService
             + (3 * StringCharge("x"))
             + StringCharge(OccurrenceCountKey)
             + StringCharge("1"));
+
+    internal int ConfiguredRecordCapacity => _maximumRecords;
+
+    internal long MaximumByteReservation => _maximumBytes;
 
     internal long OwnedByteReservation => GetOwnedByteReservation(_maximumRecords);
 
@@ -101,6 +107,9 @@ public sealed class DiagnosticsService
 
     internal static long GetMinimumServiceByteReservation()
         => GetMinimumServiceByteReservation(1);
+
+    internal static long GetMinimumServiceByteReservationForRecordCount(int maximumRecords)
+        => GetMinimumServiceByteReservation(maximumRecords);
 
     internal static long GetNoncoalescingWarningAdmissionBytes(
         int codeLength,
@@ -799,6 +808,33 @@ public sealed class DiagnosticsService
             }
 
             _preparingPayloadBytes -= reservedBytes;
+        }
+    }
+
+    internal bool RetainsAttributionAccount(WorldDiagnosticAttributionAccount account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            var records = _records;
+
+            if (records is null)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < _count; index++)
+            {
+                var retention = records[GetRingIndex(index)].Retention;
+
+                if (ReferenceEquals(retention?.Account, account))
+                {
+                    return true;
+                }
+            }
+
+            return ReferenceEquals(_latestFault?.Account, account);
         }
     }
 
