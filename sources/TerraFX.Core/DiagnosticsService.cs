@@ -12,14 +12,23 @@ namespace TerraFX;
 public sealed class DiagnosticsService
 {
     private const string ActiveSubscriptionsContextKey = "ActiveSubscriptions";
+    private const string CompletedFenceContextKey = "CompletedFence";
+    private const string DegenerateVertexCountContextKey = "DegenerateVertexCount";
+    private const string DiagnosticCode = "DegenerateSkinnedNormal";
+    private const string DiagnosticMessage = "Skinned mesh vertices required the dominant-bone normal fallback.";
     private const long DiagnosticObjectBytes = 64 + ((176 + (5 * 8) + 15) & ~15);
+    private const string DiagnosticOperation = "Renderer.SubmitAsync";
     private const long DiagnosticRetentionControlBytes = 128;
+    private const string DrawIdContextKey = "DrawId";
     private const int MaximumRecords = 8192;
     private const long MaximumServiceBytes = 8L * 1024 * 1024;
     private const string MaximumSubscriptionsContextKey = "MaximumSubscriptions";
     private const string OccurrenceCountKey = "OccurrenceCount";
     private const long ServiceControlBytes = 256;
+    private const string SnapshotIdContextKey = "SnapshotId";
+    private const string SubmissionSequenceContextKey = "SubmissionSequence";
     private const string SubscriptionCountText = "64";
+    private const string TestedVertexCountContextKey = "TestedVertexCount";
     private const string WorldSubscriptionCapacityCode = "WorldSubscriptionCapacityExceeded";
     private const string WorldSubscriptionCapacityMessage = "World subscription capacity (64) reached; subscription was not admitted.";
     private const string WorldSubscriptionCapacityOperation = "TerraFX.Entities.World.TrySubscribe";
@@ -430,6 +439,167 @@ public sealed class DiagnosticsService
         }
     }
 
+    private static void ValidateSkinnedNormalDiagnostic(
+        Diagnostic diagnostic,
+        WorldDiagnosticAttributionAccount account)
+    {
+        static bool IsCanonicalPositiveLong(string value)
+        {
+            if ((value.Length is < 1 or > 19) || (value[0] is < '1' or > '9'))
+            {
+                return false;
+            }
+
+            foreach (var character in value)
+            {
+                if (character is < '0' or > '9')
+                {
+                    return false;
+                }
+            }
+
+            return long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+                && (parsed > 0);
+        }
+
+        static bool IsCanonicalPositiveCount(string value, out int parsed)
+        {
+            if ((value.Length is < 1 or > 6) || (value[0] is < '1' or > '9'))
+            {
+                parsed = 0;
+                return false;
+            }
+
+            foreach (var character in value)
+            {
+                if (character is < '0' or > '9')
+                {
+                    parsed = 0;
+                    return false;
+                }
+            }
+
+            return int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed)
+                && (parsed is > 0 and <= 262144);
+        }
+
+        static bool IsLowercaseGuid32(string value)
+        {
+            if (value.Length != 32)
+            {
+                return false;
+            }
+
+            foreach (var character in value)
+            {
+                if (character is not ((>= '0' and <= '9') or (>= 'a' and <= 'f')))
+                {
+                    return false;
+                }
+            }
+
+            return Guid.TryParseExact(value, "N", out var parsed)
+                && (parsed != Guid.Empty);
+        }
+
+        static bool MatchesCommandIdentity(
+            string value,
+            string submissionSequence,
+            string snapshotId,
+            string drawId)
+        {
+            if (value.Length > 110)
+            {
+                return false;
+            }
+
+            var command = value.AsSpan();
+            ReadOnlySpan<char> submissionPrefix = "submission/";
+            ReadOnlySpan<char> snapshotSeparator = "/snapshot/";
+            ReadOnlySpan<char> drawSeparator = "/draw/";
+
+            if (!command.StartsWith(submissionPrefix, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var sequenceStart = submissionPrefix.Length;
+            var snapshotOffset = command[sequenceStart..].IndexOf(snapshotSeparator);
+
+            if ((snapshotOffset <= 0)
+                || !command.Slice(sequenceStart, snapshotOffset).SequenceEqual(submissionSequence.AsSpan()))
+            {
+                return false;
+            }
+
+            var snapshotStart = sequenceStart + snapshotOffset + snapshotSeparator.Length;
+
+            if ((command.Length < snapshotStart + 32)
+                || !command.Slice(snapshotStart, 32).SequenceEqual(snapshotId.AsSpan()))
+            {
+                return false;
+            }
+
+            var drawSeparatorStart = snapshotStart + 32;
+
+            if (!command[drawSeparatorStart..].StartsWith(drawSeparator, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var drawStart = drawSeparatorStart + drawSeparator.Length;
+            return (command.Length == (drawStart + 32))
+                && command[drawStart..].SequenceEqual(drawId.AsSpan());
+        }
+
+        if ((diagnostic.Code != DiagnosticCode)
+            || (diagnostic.Severity != DiagnosticSeverity.Warning)
+            || (diagnostic.Operation != DiagnosticOperation)
+            || (diagnostic.Message != DiagnosticMessage)
+            || (diagnostic.HostId is not uint hostId)
+            || (hostId == 0)
+            || (diagnostic.DeviceId is not uint deviceId)
+            || (deviceId == 0)
+            || !diagnostic.DeviceEpoch.HasValue
+            || !diagnostic.Tick.HasValue
+            || (diagnostic.WorldGuid != account.WorldGuid)
+            || diagnostic.SurfaceId.HasValue
+            || diagnostic.SystemId.HasValue
+            || diagnostic.PassId.HasValue
+            || diagnostic.AssetId.HasValue
+            || diagnostic.NativeResult.HasValue
+            || (diagnostic.CommandIdentity is null)
+            || (diagnostic.SurfaceEpoch.HasValue != diagnostic.SwapchainEpoch.HasValue)
+            || (diagnostic.Context.Length != 6))
+        {
+            throw new ArgumentException("The noncoalescing warning is outside the closed skinned-normal diagnostic format.", nameof(diagnostic));
+        }
+
+        var context = diagnostic.Context;
+
+        if (!StringComparer.Ordinal.Equals(context[0].Key, SnapshotIdContextKey)
+            || !IsLowercaseGuid32(context[0].Value)
+            || !StringComparer.Ordinal.Equals(context[1].Key, DrawIdContextKey)
+            || !IsLowercaseGuid32(context[1].Value)
+            || !StringComparer.Ordinal.Equals(context[2].Key, SubmissionSequenceContextKey)
+            || !IsCanonicalPositiveLong(context[2].Value)
+            || !StringComparer.Ordinal.Equals(context[3].Key, CompletedFenceContextKey)
+            || !IsCanonicalPositiveLong(context[3].Value)
+            || !StringComparer.Ordinal.Equals(context[4].Key, TestedVertexCountContextKey)
+            || !IsCanonicalPositiveCount(context[4].Value, out var testedVertexCount)
+            || !StringComparer.Ordinal.Equals(context[5].Key, DegenerateVertexCountContextKey)
+            || !IsCanonicalPositiveCount(context[5].Value, out var degenerateVertexCount)
+            || (degenerateVertexCount > testedVertexCount)
+            || !MatchesCommandIdentity(
+                diagnostic.CommandIdentity!,
+                context[2].Value,
+                context[0].Value,
+                context[1].Value))
+        {
+            throw new ArgumentException("The noncoalescing warning context or submission identity is invalid.", nameof(diagnostic));
+        }
+    }
+
     /// <summary>Gets a bounded, nondestructive snapshot of matching diagnostics.</summary>
     /// <param name="query">The explicit severity, World, tick, and record-count filters.</param>
     /// <returns>A copied immutable snapshot in stable admission order.</returns>
@@ -712,6 +882,8 @@ public sealed class DiagnosticsService
         {
             throw new ArgumentException("The diagnostic reservation does not match this service and source World.", nameof(reservation));
         }
+
+        ValidateSkinnedNormalDiagnostic(diagnostic, account);
 
         return WriteCore(
             diagnostic,

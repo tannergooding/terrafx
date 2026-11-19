@@ -43,6 +43,54 @@ internal sealed class DiagnosticsServiceTests
             message,
             context.IsDefault ? [] : context);
 
+    private static Diagnostic CreateSkinnedNormalDiagnostic(
+        Guid worldGuid,
+        long submissionSequence,
+        Guid drawId,
+        int degenerateVertexCount = 1,
+        int testedVertexCount = 3)
+    {
+        var snapshotId = new Guid("11112222-3333-4444-8555-66778899aabb");
+        var snapshotIdText = snapshotId.ToString("N");
+        var drawIdText = drawId.ToString("N");
+        var submissionSequenceText = submissionSequence.ToString(CultureInfo.InvariantCulture);
+        var commandIdentity = string.Concat(
+            "submission/",
+            submissionSequenceText,
+            "/snapshot/",
+            snapshotIdText,
+            "/draw/",
+            drawIdText);
+
+        return new Diagnostic(
+            "DegenerateSkinnedNormal",
+            DiagnosticSeverity.Warning,
+            submissionSequence,
+            1,
+            worldGuid,
+            2,
+            null,
+            1,
+            null,
+            null,
+            submissionSequence,
+            null,
+            null,
+            null,
+            commandIdentity,
+            "Renderer.SubmitAsync",
+            null,
+            "Skinned mesh vertices required the dominant-bone normal fallback.",
+            [
+                new DiagnosticContextEntry("SnapshotId", snapshotIdText),
+                new DiagnosticContextEntry("DrawId", drawIdText),
+                new DiagnosticContextEntry("SubmissionSequence", submissionSequenceText),
+                new DiagnosticContextEntry("CompletedFence", submissionSequenceText),
+                new DiagnosticContextEntry("TestedVertexCount", testedVertexCount.ToString(CultureInfo.InvariantCulture)),
+                new DiagnosticContextEntry("DegenerateVertexCount", degenerateVertexCount.ToString(CultureInfo.InvariantCulture)),
+            ]);
+    }
+
     [Test]
     public void AbandonedWarningPreclaimRefundsServiceAndWorldReservations()
     {
@@ -500,27 +548,97 @@ internal sealed class DiagnosticsServiceTests
     }
 
     [Test]
+    public void NoncoalescingWarningRejectsDiagnosticsOutsideSkinnedNormalFormat()
+    {
+        var service = new DiagnosticsService(4);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, Guid.NewGuid(), maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        Diagnostic[] invalidWarnings = [
+            CreateDiagnostic("other-warning", DiagnosticSeverity.Warning, 1, worldGuid),
+            CreateSkinnedNormalDiagnostic(
+                worldGuid,
+                1,
+                new Guid("01000000-0000-0000-0000-000000000001"),
+                degenerateVertexCount: 0),
+            CreateSkinnedNormalDiagnostic(
+                worldGuid,
+                1,
+                new Guid("02000000-0000-0000-0000-000000000002"),
+                testedVertexCount: 262145),
+        ];
+
+        foreach (var diagnostic in invalidWarnings)
+        {
+            Assert.That(service.TryReserveAttributionPayload(account, 1, out var reservation), Is.True);
+
+            var rejected = false;
+
+            try
+            {
+                _ = service.WriteNoncoalescingWarning(diagnostic, ref reservation);
+            }
+            catch (ArgumentException)
+            {
+                rejected = true;
+            }
+            finally
+            {
+                reservation.Dispose();
+            }
+
+            Assert.That(rejected, Is.True);
+            Assert.That(account.ReservedBytes, Is.Zero);
+        }
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+        Assert.That(snapshot.Records, Is.Empty);
+        Assert.That(snapshot.DroppedCount, Is.Zero);
+
+        capability.Close();
+        service.Close();
+    }
+
+    [Test]
     public void NoncoalescingWarningsRetainDistinctRowsAndRefundUnusedPreclaims()
     {
         var service = new DiagnosticsService(4);
         var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
         var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
-        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 16384);
         capability.BindOwner(17);
         var account = capability.AttributionAccount;
+        Span<int> contextStringLengths = [
+            "SnapshotId".Length, 32,
+            "DrawId".Length, 32,
+            "SubmissionSequence".Length, 19,
+            "CompletedFence".Length, 19,
+            "TestedVertexCount".Length, 6,
+            "DegenerateVertexCount".Length, 6,
+        ];
+        var admissionBytes = DiagnosticsService.GetNoncoalescingWarningAdmissionBytes(
+            codeLength: "DegenerateSkinnedNormal".Length,
+            operationLength: "Renderer.SubmitAsync".Length,
+            messageLength: "Skinned mesh vertices required the dominant-bone normal fallback.".Length,
+            commandIdentityLength: 110,
+            contextStringLengths);
 
         for (var index = 0; index < 2; index++)
         {
-            var availableBytes = account.MaximumRetainedBytes - account.ReservedBytes;
-            Assert.That(service.TryReserveAttributionPayload(account, availableBytes, out var reservation), Is.True);
+            var preclaimBytes = admissionBytes + 1024;
+            var reservedBytesBefore = account.ReservedBytes;
+            Assert.That(service.TryReserveAttributionPayload(account, preclaimBytes, out var reservation), Is.True);
+            var drawId = new Guid((index == 0) ? "01000000-0000-0000-0000-000000000001" : "02000000-0000-0000-0000-000000000002");
             Assert.That(
                 service.WriteNoncoalescingWarning(
-                    CreateDiagnostic("same-warning", DiagnosticSeverity.Warning, index, worldGuid),
+                    CreateSkinnedNormalDiagnostic(worldGuid, index + 1, drawId),
                     ref reservation),
                 Is.True);
-            Assert.That(account.ReservedBytes, Is.EqualTo(account.MaximumRetainedBytes));
+            Assert.That(account.ReservedBytes, Is.EqualTo(reservedBytesBefore + preclaimBytes));
             reservation.Dispose();
-            Assert.That(account.ReservedBytes, Is.LessThan(account.MaximumRetainedBytes));
+            Assert.That(account.ReservedBytes, Is.GreaterThan(reservedBytesBefore));
+            Assert.That(account.ReservedBytes, Is.LessThan(reservedBytesBefore + preclaimBytes));
         }
 
         var snapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
