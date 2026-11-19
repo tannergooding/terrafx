@@ -164,6 +164,35 @@ public sealed class WorldPersistence : IAsyncDisposable
             message: message,
             context: []);
 
+    private static WorldLoadReceipt CreateLoadCaptureRejectedReceipt(WorldGuidRefusal refusal, Guid worldGuid)
+    {
+        if (refusal.Code == WorldGuidRefusal.TargetBindingStale)
+        {
+            return CreateLoadRejectedReceipt(
+                "load-target-binding-stale",
+                "The prepared plan or its exact target binding is disposed, already captured, stale, or unavailable.",
+                worldGuid);
+        }
+
+        if (refusal.AdmissionRefusal is WorldAdmissionRefusal.DomainClosed)
+        {
+            return CreateLoadRejectedReceipt(
+                "load-domain-closed",
+                "The target World admission domain closed before commit capture.",
+                worldGuid);
+        }
+
+        if (refusal.AdmissionRefusal is WorldAdmissionRefusal.None)
+        {
+            throw new InvalidOperationException("A refused World load capture omitted its bounded refusal.");
+        }
+
+        return CreateLoadRejectedReceipt(
+            "load-commit-capture-rejected",
+            $"The target World refused commit capture with admission code {refusal.AdmissionRefusal}.",
+            worldGuid);
+    }
+
     private static EbinReadLimits CreateLoadLimits(WorldOptions options, long maximumSnapshotBytes)
     {
         var defaults = WorldPersistenceEbinLimits.Create(options);
@@ -619,52 +648,69 @@ public sealed class WorldPersistence : IAsyncDisposable
                 targetWorld.WorldGuid));
         }
 
+        var execution = plan.Execution;
         BeginLoad();
         WorldReplacementOperation? operation = null;
+        var isBound = false;
 
         try
         {
-            operation = new WorldReplacementOperation(this, plan);
+            execution.ValidateCaptureReady();
 
-            if (!operation.TryCapture(out var captureRejection))
+            if (!plan.PreparedReplacement.TryCaptureCommit(out operation, out var captureRefusal))
             {
-                operation.EndLoadOperation();
-                return Task.FromResult(captureRejection
-                    ?? throw new InvalidOperationException("A refused load capture omitted its rejection receipt."));
+                var rejection = CreateLoadCaptureRejectedReceipt(captureRefusal, targetWorld.WorldGuid);
+                EndLoad();
+                return Task.FromResult(rejection);
             }
+
+            var capturedOperation = operation
+                ?? throw new InvalidOperationException("A successful World load capture omitted its lower operation.");
+            operation = capturedOperation;
+            execution.BindCaptured(this, capturedOperation);
+            isBound = true;
 
             if (_host is null)
             {
                 try
                 {
-                    return Task.FromResult(operation.ExecuteAtOwnerBoundary());
+                    var receipt = CommitLoadAtOwnerBoundary(execution);
+                    execution.CompleteAfterOwnerBoundary(receipt);
+                    return execution.Completion;
                 }
-                finally
+                catch (Exception exception)
                 {
-                    operation.EndLoadOperation();
+                    execution.FailAfterOwnerBoundary(exception);
+                    throw;
                 }
             }
 
-            if (!_host.TryEnqueueWorldReplacement(operation, out var completion))
+            try
             {
-                var rejection = operation.RejectQueueFull();
-                operation.EndLoadOperation();
-                return Task.FromResult(rejection);
-            }
+                if (!_host.TryEnqueueWorldReplacement(execution, out var completion))
+                {
+                    _ = execution.RejectOwnerQueueFull();
+                    return execution.Completion;
+                }
 
-            return completion
-                ?? throw new InvalidOperationException("The EngineHost admitted a World replacement without its completion task.");
+                return completion
+                    ?? throw new InvalidOperationException("The EngineHost admitted a World replacement without its completion task.");
+            }
+            catch (Exception exception)
+            {
+                execution.FailBeforeOwnerBoundary(exception);
+                throw;
+            }
         }
-        catch
+        catch (Exception exception)
         {
             if (operation is null)
             {
                 EndLoad();
             }
-            else
+            else if (!isBound)
             {
-                operation.AbandonCapturedState();
-                operation.EndLoadOperation();
+                execution.FailUnboundCapture(this, operation, exception);
             }
 
             throw;
@@ -1033,6 +1079,18 @@ public sealed class WorldPersistence : IAsyncDisposable
                 EndSave();
             }
         }
+    }
+
+    internal WorldLoadReceipt CommitLoadAtOwnerBoundary(WorldLoadExecution execution)
+    {
+        ArgumentNullException.ThrowIfNull(execution);
+
+        if (!ReferenceEquals(execution.Persistence, this))
+        {
+            throw new InvalidOperationException("The World load execution is bound to a different persistence service.");
+        }
+
+        return execution.ExecuteAtOwnerBoundary();
     }
 
     internal void EndLoadOperation()
@@ -1602,6 +1660,8 @@ public sealed class WorldPersistence : IAsyncDisposable
                 return CreateLoadRejected("load-construction-admission-rejected", message, targetWorldGuid);
             }
 
+            replacementPreparation = null;
+
             combinedUse = new WorldPersistenceUseLease(
                 recoveryUse,
                 sourcePerWorldUse,
@@ -1621,15 +1681,12 @@ public sealed class WorldPersistence : IAsyncDisposable
             preparedState = new WorldLoadPreparedState(
                 _assets,
                 constructionPlan,
-                replacementPreparation,
                 packageLease,
                 historyControl,
                 options.RestoreIntent,
                 limits,
                 preparedSourceStorage);
             preparedSourceStorage = null;
-            constructionPlan = null;
-            replacementPreparation = null;
             packageLease = null;
             retainedHistoryControl = null;
             combinedUse = null;
@@ -1648,6 +1705,7 @@ public sealed class WorldPersistence : IAsyncDisposable
                 return new WorldLoadPreparation(WorldLoadPreparationStatus.Rejected, plan: null, assetDiagnostics);
             }
 
+            preparedState.SealReplacementInputs();
             var payloadDigest = SHA256.HashData(checkpointContents.WorldRecord.Span);
             loadPlan = new WorldLoadPlan(
                 targetWorld,
@@ -1660,6 +1718,7 @@ public sealed class WorldPersistence : IAsyncDisposable
                 checkpointContents.CheckpointDigest.Span,
                 payloadDigest);
             preparedState = null;
+            constructionPlan = null;
             var preparation = new WorldLoadPreparation(
                 WorldLoadPreparationStatus.Prepared,
                 loadPlan,

@@ -1376,24 +1376,36 @@ public sealed partial class EngineHost : IAsyncDisposable
 
     internal sealed class WorldReplacementAdoptionPlan
     {
+        private readonly EngineHost _host;
+        private readonly long _hostTimestamp;
         private readonly WorldInputTimelineAdapter.WorldReplacementAdoption[] _inputAdoptions;
+        private bool _isApplied;
+        private readonly World _previousWorld;
         private readonly World _replacementWorld;
         private readonly int _scheduleIndex;
         private readonly SimulationClockSegment _scheduleSegment;
         private readonly long _timeScaleSegmentSequenceAtPause;
 
         internal WorldReplacementAdoptionPlan(
+            EngineHost host,
             int scheduleIndex,
+            World previousWorld,
             World replacementWorld,
+            long hostTimestamp,
             long timeScaleSegmentSequenceAtPause,
             SimulationClockSegment scheduleSegment,
             WorldInputTimelineAdapter.WorldReplacementAdoption[] inputAdoptions)
         {
+            ArgumentNullException.ThrowIfNull(host);
             ArgumentOutOfRangeException.ThrowIfNegative(scheduleIndex);
+            ArgumentNullException.ThrowIfNull(previousWorld);
             ArgumentNullException.ThrowIfNull(replacementWorld);
             ArgumentNullException.ThrowIfNull(inputAdoptions);
+            _host = host;
             _scheduleIndex = scheduleIndex;
+            _previousWorld = previousWorld;
             _replacementWorld = replacementWorld;
+            _hostTimestamp = hostTimestamp;
             _timeScaleSegmentSequenceAtPause = timeScaleSegmentSequenceAtPause;
             _scheduleSegment = scheduleSegment;
             _inputAdoptions = inputAdoptions;
@@ -1401,6 +1413,19 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         internal void Apply(EngineHost host)
         {
+            ArgumentNullException.ThrowIfNull(host);
+
+            if (!ReferenceEquals(host, _host)
+                || _isApplied
+                || !_scheduleSegment.IsValid
+                || (_scheduleSegment.HostTimestampStartTicks != _hostTimestamp)
+                || ((uint)_scheduleIndex >= (uint)host._worlds.Count)
+                || !ReferenceEquals(host._worlds[_scheduleIndex].World, _previousWorld))
+            {
+                throw new InvalidOperationException("The prepared World replacement adoption no longer matches its exact host schedule.");
+            }
+
+            _isApplied = true;
             host._worlds[_scheduleIndex].ApplyWorldReplacementAdoption(
                 _replacementWorld,
                 _timeScaleSegmentSequenceAtPause,

@@ -14,6 +14,8 @@ internal sealed class WorldPreparedReplacement
         _control = control;
     }
 
+    internal bool IsCommitCaptured => _control.IsCommitCaptured;
+
     internal WorldRestoreSourceControl? PreparedSourceControl => _control.PreparedSourceControl;
 
     internal World TargetWorld => _control.TargetWorld;
@@ -27,14 +29,21 @@ internal sealed class WorldPreparedReplacement
     internal bool IsBoundTo(WorldConstructionPlan constructionPlan)
         => _control.IsBoundTo(constructionPlan);
 
+    internal bool IsCapturedOperation(WorldReplacementOperation operation)
+        => _control.IsCapturedOperation(operation);
+
+    internal void ReleaseUntransferredOperation()
+        => _control.ReleaseUntransferredOperation();
+
+    internal void SealInputs(
+        WorldRestoreSourceControl.SourceUse sourceUse,
+        ReadOnlyMemory<byte> validatedWorldRecord,
+        scoped ReadOnlySpan<byte> checkpointDigest,
+        scoped ReadOnlySpan<byte> payloadDigest)
+        => _control.SealInputs(sourceUse, validatedWorldRecord, checkpointDigest, payloadDigest);
+
     internal bool TryCaptureCommit(
-        out WorldDomainOperationCreditBundle? operationCredits,
-        out WorldDefaultDomainHandoff? defaultDomainHandoff,
-        out WorldGuidRefusal bindingRefusal,
-        out WorldAdmissionRefusal admissionRefusal)
-        => _control.TryCaptureCommit(
-            out operationCredits,
-            out defaultDomainHandoff,
-            out bindingRefusal,
-            out admissionRefusal);
+        out WorldReplacementOperation? operation,
+        out WorldGuidRefusal refusal)
+        => _control.TryCaptureCommit(out operation, out refusal);
 }

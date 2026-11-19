@@ -2,9 +2,8 @@
 
 using System;
 using TerraFX;
-using TerraFX.Entities;
 
-namespace TerraFX.Hosting;
+namespace TerraFX.Entities;
 
 internal static class WorldPersistenceRestoreValidator
 {

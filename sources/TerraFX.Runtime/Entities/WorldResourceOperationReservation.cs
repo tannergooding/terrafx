@@ -18,6 +18,8 @@ internal sealed class WorldResourceOperationReservation : IDisposable
         _ownsDomainCredit = ownsDomainCredit;
     }
 
+    internal long Bytes => _bytes;
+
     public void Dispose()
     {
         var bytes = _bytes;
@@ -38,4 +40,7 @@ internal sealed class WorldResourceOperationReservation : IDisposable
             world.CompleteOperationReturnPart();
         }
     }
+
+    internal bool IsBoundTo(World world)
+        => ReferenceEquals(_world, world);
 }

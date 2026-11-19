@@ -103,6 +103,7 @@ public sealed partial class World
         WorldGuidReplacementPreparation preparation,
         WorldDomainOperationCreditBundle operationCredits,
         WorldDefaultDomainHandoff? defaultDomainHandoff,
+        long comparedCanonicalMutationRevision,
         out WorldGuidRefusal bindingRefusal)
     {
         ArgumentNullException.ThrowIfNull(replacementWorld);
@@ -144,6 +145,11 @@ public sealed partial class World
                         throw new InvalidOperationException("The candidate, marker, or admission-domain handoff is not ready for replacement.");
                     }
 
+                    if (Volatile.Read(ref replacementWorld._canonicalMutationRevision) != comparedCanonicalMutationRevision)
+                    {
+                        throw new InvalidOperationException("The restore candidate changed after its canonical record was compared.");
+                    }
+
                     if (!_lifetimeControl.IsReadyToReplaceWith(
                             replacementWorld._lifetimeControl,
                             defaultDomainHandoff))
@@ -164,8 +170,7 @@ public sealed partial class World
                         replacementWorld._lifetimeControl,
                         defaultDomainHandoff);
 
-                    replacementWorld._committedMutationRevision =
-                        Volatile.Read(ref replacementWorld._canonicalMutationRevision);
+                    replacementWorld._committedMutationRevision = comparedCanonicalMutationRevision;
                     replacementWorld._committedOwnerRequests = replacementWorld._completedOwnerRequests;
                     Volatile.Write(ref replacementWorld._committedPublication, restoredPublication);
                     bindingRefusal = default;

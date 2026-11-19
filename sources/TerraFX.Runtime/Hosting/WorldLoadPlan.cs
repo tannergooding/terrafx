@@ -10,9 +10,12 @@ namespace TerraFX.Hosting;
 /// <summary>Owns one validated, target-bound World replacement plan.</summary>
 public sealed class WorldLoadPlan : IDisposable
 {
+    private WorldConstructionPlan? _constructionPlan;
+    private WorldLoadExecution? _execution;
     private readonly Lock _gate = new();
     private bool _isDisposed;
     private bool _isInitialized;
+    private WorldPreparedReplacement? _preparedReplacement;
     private byte[]? _sourceCheckpointDigest;
     private byte[]? _sourcePayloadDigest;
     private WorldLoadPreparedState? _state;
@@ -69,12 +72,20 @@ public sealed class WorldLoadPlan : IDisposable
     /// <summary>Gets the semantic World identity used by the target records.</summary>
     public Guid WorldGuid => TargetRecordWorldGuid;
 
+    internal WorldLoadExecution Execution
+        => _execution ?? throw new InvalidOperationException("The World load plan has not been initialized.");
+
+    internal WorldPreparedReplacement PreparedReplacement
+        => _preparedReplacement ?? throw new InvalidOperationException("The World load plan has not been initialized.");
+
     internal World TargetWorld => _targetWorld;
 
     /// <summary>Closes plan acquisition; an already captured commit retains independent ownership.</summary>
     public void Dispose()
     {
         WorldLoadPreparedState? state;
+        WorldPreparedReplacement? preparedReplacement;
+        WorldConstructionPlan? constructionPlan;
 
         lock (_gate)
         {
@@ -85,9 +96,28 @@ public sealed class WorldLoadPlan : IDisposable
 
             _isDisposed = true;
             state = _state;
+            preparedReplacement = _preparedReplacement;
+            constructionPlan = _constructionPlan;
         }
 
-        state?.CloseAcquisition();
+        if (preparedReplacement is not null)
+        {
+            preparedReplacement.CloseAcquisition();
+
+            if (preparedReplacement.IsCommitCaptured)
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            state?.Dispose();
+        }
+        finally
+        {
+            constructionPlan?.ReleaseUntransferredRestoreResources();
+        }
     }
 
     internal void Initialize(
@@ -118,6 +148,9 @@ public sealed class WorldLoadPlan : IDisposable
 
         var checkpointDigest = sourceCheckpointDigest.ToArray();
         var payloadDigest = sourcePayloadDigest.ToArray();
+        var preparedReplacement = state.ConstructionPlan.PreparedReplacement
+            ?? throw new InvalidOperationException("The prepared World load omitted its lower replacement capability.");
+        var execution = new WorldLoadExecution(this, state, preparedReplacement);
 
         lock (_gate)
         {
@@ -131,46 +164,10 @@ public sealed class WorldLoadPlan : IDisposable
             _sourceCheckpointDigest = checkpointDigest;
             _sourcePayloadDigest = payloadDigest;
             _state = state;
+            _constructionPlan = state.ConstructionPlan;
+            _preparedReplacement = preparedReplacement;
+            _execution = execution;
             _isInitialized = true;
-        }
-    }
-
-    internal bool TryCaptureCommit(
-        out WorldLoadPreparedState? state,
-        out WorldDomainOperationCreditBundle? operationCredits,
-        out WorldDefaultDomainHandoff? defaultDomainHandoff,
-        out WorldGuidRefusal bindingRefusal,
-        out WorldAdmissionRefusal admissionRefusal)
-    {
-        lock (_gate)
-        {
-            operationCredits = null;
-            defaultDomainHandoff = null;
-
-            if (_isDisposed || !_isInitialized)
-            {
-                state = null;
-                bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
-                admissionRefusal = WorldAdmissionRefusal.None;
-                return false;
-            }
-
-            var preparedState = _state
-                ?? throw new InvalidOperationException("The initialized World load plan omitted its prepared state.");
-
-            if (!preparedState.TryCaptureCommit(
-                    out operationCredits,
-                    out defaultDomainHandoff,
-                    out bindingRefusal,
-                    out admissionRefusal))
-            {
-                state = null;
-                preparedState.CloseAcquisition();
-                return false;
-            }
-
-            state = preparedState;
-            return true;
         }
     }
 }

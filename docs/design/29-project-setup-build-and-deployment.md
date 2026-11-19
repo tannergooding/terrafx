@@ -231,7 +231,8 @@ default-domain replacement transfers its existing close-owner credit exactly onc
 successful publication; ordinary interests do not grant close authority, and retiring
 the former World releases only its own interests.
 
-The host-owned `WorldPersistence.CommitLoadAsync` captures its exact
+The host-owned `WorldPersistence.CommitLoadAsync` first checks the exact execution's
+read-only source-failure/preparation readiness, captures its
 `WorldPreparedReplacement` synchronously and binds the returned lower operation to
 one preowned `WorldLoadExecution`. The same complete Hosting executor runs through
 `WorldPersistence.CommitLoadAtOwnerBoundary(WorldLoadExecution)` for standalone and
@@ -255,9 +256,18 @@ The exact phase callers are:
 
 | Member | Only caller |
 |---|---|
-| `WorldPreparedReplacement.TryCaptureCommit(out WorldReplacementOperation?, out WorldGuidRefusal)` | Public `WorldPersistence.CommitLoadAsync`, after its entry checks and pre-admission cancellation check. |
+| `WorldLoadExecution.ValidateCaptureReady()` | Public `WorldPersistence.CommitLoadAsync` before lower capture; checks sticky source failure and completed/sealed preparation without acquiring authority. |
+| `WorldLoadPreparedState.ValidateCommitCapture()` | The exact per-plan `WorldLoadExecution.ValidateCaptureReady()` only. |
+| `WorldPreparedReplacement.TryCaptureCommit(out WorldReplacementOperation?, out WorldGuidRefusal)` | Public `WorldPersistence.CommitLoadAsync`, after its entry checks, pre-admission cancellation check and execution readiness check. |
+| `WorldLoadExecution.FailUnboundCapture(WorldPersistence persistence, WorldReplacementOperation operation, Exception failure)` | Public `WorldPersistence.CommitLoadAsync` only, if lower capture succeeds but the exact operation cannot bind to its preowned context. |
+| `WorldLoadExecution.FailAfterOwnerBoundary(Exception failure)` | Standalone `WorldPersistence.CommitLoadAsync` or the typed host request only, after owner-boundary execution fails; postpublication failure preserves `Loaded` and faults old-World retirement. |
 | `WorldPreparedReplacement.CloseAcquisition()` | `WorldLoadPlan.Dispose()` only; a captured operation and its `WorldLoadExecution` survive wrapper closure. |
 | `void WorldConstructionPlanControl.SealInputs(WorldRestoreSourceControl.SourceUse sourceUse, ReadOnlyMemory<byte> validatedWorldRecord, scoped ReadOnlySpan<byte> checkpointDigest, scoped ReadOnlySpan<byte> payloadDigest)` | `WorldLoadPreparedState.SealReplacementInputs()` only, after source-dependent checks and preparation consumers join. |
+| `void WorldReplacementOperation.Capture(WorldDomainOperationCreditBundle operationCredits, WorldDefaultDomainHandoff? defaultDomainHandoff)` | `WorldConstructionPlanControl.TryCaptureCommit()` only, after exact-target admission succeeds; fills the preowned operation without allocating. |
+| `void WorldReplacementOperation.ReleaseUntransferred()` | `WorldConstructionPlanControl.ReleaseUntransferredOperation()` only, after higher prepared-state/source consumers close and before the lower plan releases its unused admission. |
+| `void WorldConstructionPlanControl.ReleaseUntransferredOperation()` | `WorldPreparedReplacement.ReleaseUntransferredOperation()` only. |
+| `void WorldPreparedReplacement.ReleaseUntransferredOperation()` | `WorldConstructionPlan.ReleaseUntransferredRestoreResources()` only, after higher prepared-state/source cleanup. It is a no-op for a captured operation. |
+| `void WorldRestoreSourceControl.ValidateReplacementInputs(WorldRestoreSourceControl.SourceUse sourceUse, ReadOnlyMemory<byte> worldRecord, scoped ReadOnlySpan<byte> checkpointDigest, scoped ReadOnlySpan<byte> payloadDigest)` | The exact lower `WorldReplacementOperation.SealInputs()` only; verifies the retained projection, source use and digest facts. |
 | `bool WorldReplacementOperation.TryCreateCandidateAtOwnerBoundary(out World? candidate, out WorldGuidRefusal refusal)` | `WorldLoadExecution.ExecuteAtOwnerBoundary()` only. |
 | `void WorldReplacementOperation.PreparePublicationAtOwnerBoundary(in WorldPersistenceCaptureLease captureLease, ReadOnlyMemory<byte> freshWorldRecord, ValidatedWorldIdentityHistory freshIdentityHistory)` | The same complete Hosting executor, after higher restoration and actual fresh capture. |
 | `WorldReplacementOutcome WorldReplacementOperation.PublishAtOwnerBoundary()` | The same executor only after successful comparison/marker/playback preparation; this is the sole terminal publisher. |

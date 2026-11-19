@@ -236,6 +236,7 @@ internal sealed class WorldConstructionPlan
         var cleanupSucceeded = false;
         var quarantineReturned = false;
         var capacityReturned = false;
+        _preparedReplacement?.ReleaseUntransferredOperation();
 
         try
         {

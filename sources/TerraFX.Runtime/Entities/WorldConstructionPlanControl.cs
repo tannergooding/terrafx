@@ -11,6 +11,8 @@ internal sealed class WorldConstructionPlanControl : IWorldGuidRetentionOwner
     private readonly Lock _gate = new();
     private bool _isAcquisitionClosed;
     private bool _isCaptured;
+    private bool _isInputsSealed;
+    private readonly WorldReplacementOperation _operation;
     private WorldRestoreSourceControl? _preparedSourceControl;
     private readonly WorldGuidReplacementPreparation _replacementPreparation;
     private readonly World _targetWorld;
@@ -26,6 +28,18 @@ internal sealed class WorldConstructionPlanControl : IWorldGuidRetentionOwner
         _constructionPlan = constructionPlan;
         _targetWorld = targetWorld;
         _replacementPreparation = replacementPreparation;
+        _operation = new WorldReplacementOperation(constructionPlan, targetWorld, replacementPreparation);
+    }
+
+    internal bool IsCommitCaptured
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _isCaptured;
+            }
+        }
     }
 
     internal WorldRestoreSourceControl? PreparedSourceControl => _preparedSourceControl;
@@ -70,31 +84,74 @@ internal sealed class WorldConstructionPlanControl : IWorldGuidRetentionOwner
         return ReferenceEquals(_constructionPlan, constructionPlan);
     }
 
-    internal bool TryCaptureCommit(
-        out WorldDomainOperationCreditBundle? operationCredits,
-        out WorldDefaultDomainHandoff? defaultDomainHandoff,
-        out WorldGuidRefusal bindingRefusal,
-        out WorldAdmissionRefusal admissionRefusal)
+    internal bool IsCapturedOperation(WorldReplacementOperation operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        lock (_gate)
+        {
+            return _isCaptured && ReferenceEquals(_operation, operation);
+        }
+    }
+
+    internal void ReleaseUntransferredOperation()
     {
         lock (_gate)
         {
-            operationCredits = null;
-            defaultDomainHandoff = null;
-
-            if (_isAcquisitionClosed || _isCaptured)
+            if (_isCaptured)
             {
-                bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
-                admissionRefusal = WorldAdmissionRefusal.None;
+                return;
+            }
+        }
+
+        _operation.ReleaseUntransferred();
+    }
+
+    internal void SealInputs(
+        WorldRestoreSourceControl.SourceUse sourceUse,
+        ReadOnlyMemory<byte> validatedWorldRecord,
+        scoped ReadOnlySpan<byte> checkpointDigest,
+        scoped ReadOnlySpan<byte> payloadDigest)
+    {
+        ArgumentNullException.ThrowIfNull(sourceUse);
+
+        lock (_gate)
+        {
+            if (_isAcquisitionClosed || _isCaptured || _isInputsSealed
+                || !ReferenceEquals(sourceUse.Control, _preparedSourceControl))
+            {
+                throw new InvalidOperationException("The prepared replacement cannot seal foreign, closed, captured, or previously sealed source inputs.");
+            }
+
+            _operation.SealInputs(sourceUse, validatedWorldRecord, checkpointDigest, payloadDigest);
+            _isInputsSealed = true;
+        }
+    }
+
+    internal bool TryCaptureCommit(
+        out WorldReplacementOperation? operation,
+        out WorldGuidRefusal refusal)
+    {
+        lock (_gate)
+        {
+            operation = null;
+
+            if (_isAcquisitionClosed || _isCaptured || !_isInputsSealed)
+            {
+                refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
                 return false;
             }
 
             if (!_targetWorld.TryCaptureLoadReplacement(
                     _replacementPreparation,
-                    out operationCredits,
-                    out defaultDomainHandoff,
-                    out bindingRefusal,
-                    out admissionRefusal))
+                    out var operationCredits,
+                    out var defaultDomainHandoff,
+                    out var bindingRefusal,
+                    out var admissionRefusal))
             {
+                refusal = (bindingRefusal.Code != WorldGuidRefusal.None)
+                    ? bindingRefusal
+                    : WorldGuidRefusal.ForAdmission(admissionRefusal);
                 return false;
             }
 
@@ -103,7 +160,10 @@ internal sealed class WorldConstructionPlanControl : IWorldGuidRetentionOwner
                 throw new InvalidOperationException("The captured World replacement omitted its operation credits.");
             }
 
+            _operation.Capture(operationCredits, defaultDomainHandoff);
             _isCaptured = true;
+            operation = _operation;
+            refusal = default;
             return true;
         }
     }

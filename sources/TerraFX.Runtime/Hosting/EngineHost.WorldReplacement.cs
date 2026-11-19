@@ -101,18 +101,21 @@ public sealed partial class EngineHost
         }
 
         return new WorldReplacementAdoptionPlan(
+            this,
             scheduleIndex,
+            previousWorld,
             replacementWorld,
+            hostTimestamp,
             replacementWorld.TimeScaleSegmentSequence,
             scheduleSegment,
             adapterAdoptions);
     }
 
     internal bool TryEnqueueWorldReplacement(
-        WorldReplacementOperation operation,
+        WorldLoadExecution execution,
         out Task<WorldLoadReceipt>? completion)
     {
-        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(execution);
         var workerPool = _workerPool
             ?? throw new InvalidOperationException("The EngineHost worker pool is not initialized.");
         var diagnostics = _diagnostics
@@ -120,12 +123,13 @@ public sealed partial class EngineHost
         var admissionDomain = _admissionDomain
             ?? throw new InvalidOperationException("The EngineHost admission domain is not initialized.");
 
-        if (!operation.TargetWorld.IsHostedBy(workerPool, diagnostics, admissionDomain))
+        if (!ReferenceEquals(execution.Persistence.Host, this)
+            || !execution.TargetWorld.IsHostedBy(workerPool, diagnostics, admissionDomain))
         {
-            throw new InvalidOperationException("The load target is not bound to this exact EngineHost.");
+            throw new InvalidOperationException("The World load execution is not bound to this exact EngineHost.");
         }
 
-        var request = new HostWorldReplacementRequest(operation);
+        var request = new HostWorldReplacementRequest(execution);
 
         if (!TryEnqueue(request))
         {
@@ -139,18 +143,17 @@ public sealed partial class EngineHost
 
     private sealed class HostWorldReplacementRequest : HostActionRequest
     {
-        private readonly TaskCompletionSource<WorldLoadReceipt> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly WorldReplacementOperation _operation;
+        private readonly WorldLoadExecution _execution;
 
-        internal HostWorldReplacementRequest(WorldReplacementOperation operation)
+        internal HostWorldReplacementRequest(WorldLoadExecution execution)
         {
-            ArgumentNullException.ThrowIfNull(operation);
-            _operation = operation;
+            ArgumentNullException.ThrowIfNull(execution);
+            _execution = execution;
         }
 
-        internal override Task Completion => _completion.Task;
+        internal override Task Completion => _execution.Completion;
 
-        internal Task<WorldLoadReceipt> Result => _completion.Task;
+        internal Task<WorldLoadReceipt> Result => _execution.Completion;
 
         [SuppressMessage(
             "Usage",
@@ -160,25 +163,36 @@ public sealed partial class EngineHost
         {
             try
             {
-                _ = _completion.TrySetResult(_operation.ExecuteAtOwnerBoundary(host));
+                var receipt = _execution.Persistence.CommitLoadAtOwnerBoundary(_execution);
+
+                if (receipt.Status is WorldLoadStatus.Loaded)
+                {
+                    try
+                    {
+                        host.AdoptWorldReplacement(
+                            _execution.Adoption
+                                ?? throw new InvalidOperationException("The hosted replacement omitted its prepared schedule adoption."));
+                    }
+                    catch (Exception exception)
+                    {
+                        host.FailPendingRequests(exception);
+                        _execution.FailAfterOwnerBoundary(exception);
+                        return;
+                    }
+                }
+
+                _execution.CompleteAfterOwnerBoundary(receipt);
             }
             catch (Exception exception)
             {
-                _operation.AbandonCapturedState();
-                _ = _completion.TrySetException(exception);
-            }
-            finally
-            {
-                _operation.EndLoadOperation();
+                _execution.FailAfterOwnerBoundary(exception);
             }
         }
 
         internal override void Fail(Exception exception)
         {
             ArgumentNullException.ThrowIfNull(exception);
-            _operation.AbandonCapturedState();
-            _operation.EndLoadOperation();
-            _ = _completion.TrySetException(exception);
+            _execution.FailBeforeOwnerBoundary(exception);
         }
     }
 }

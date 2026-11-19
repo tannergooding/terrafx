@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -20,15 +21,13 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
     private readonly AnimationPreparedRestoreAssets? _animationAssets;
     private readonly AssetStore _assets;
     private readonly IWorldAttachmentRegistration? _attachmentSourceRegistration;
-    private IDisposable? _commitSourceUse;
     private readonly long _completedTick;
-    private Exception? _constructionCleanupFailure;
     private WorldConstructionPlan? _constructionPlan;
     private readonly Lock _gate = new();
     private bool _isAcquisitionClosed;
     private bool _isAssetReferencesValidated;
-    private bool _isCaptured;
     private bool _isDisposed;
+    private bool _isReplacementInputsSealed;
     private bool _isSourcesPrepared;
     private readonly EbinReadLimits _limits;
     private AssetPackageLease? _packageLease;
@@ -43,7 +42,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
     internal WorldLoadPreparedState(
         AssetStore assets,
         WorldConstructionPlan constructionPlan,
-        WorldGuidReplacementPreparation replacementPreparation,
         AssetPackageLease packageLease,
         WorldRetainedHistoryControl retainedHistory,
         WorldRestoreIntent restoreIntent,
@@ -52,7 +50,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
     {
         ArgumentNullException.ThrowIfNull(assets);
         ArgumentNullException.ThrowIfNull(constructionPlan);
-        ArgumentNullException.ThrowIfNull(replacementPreparation);
         ArgumentNullException.ThrowIfNull(packageLease);
         ArgumentNullException.ThrowIfNull(retainedHistory);
         ArgumentNullException.ThrowIfNull(limits);
@@ -60,7 +57,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
         _assets = assets;
         _constructionPlan = constructionPlan;
         _registration = constructionPlan.Options.Registration;
-        ReplacementPreparation = replacementPreparation;
         _packageLease = packageLease;
         _retainedHistory = retainedHistory;
         RestoreIntent = restoreIntent;
@@ -71,7 +67,9 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
         _isAssetReferencesValidated = _resourceSourceRegistration is null;
         _animationAssets = _resourceSourceRegistration is null ? null : new AnimationPreparedRestoreAssets();
         _sourceControl = new WorldRestoreSourceControl(
-            this, retainedHistory.Checkpoint.WorldContents.EcsRecord,
+            this, retainedHistory.Checkpoint.WorldRecord,
+            retainedHistory.Checkpoint.CheckpointDigest,
+            retainedHistory.Checkpoint.WorldContents.EcsRecord,
             retainedHistory.Checkpoint.WorldContents.ScenesRecord,
             _resourceSourceRegistration, _attachmentSourceRegistration, sourceStorage, ReleaseOwnedResources);
     }
@@ -100,8 +98,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
 
     internal WorldConstructionPlan ConstructionPlan
         => _constructionPlan ?? throw new InvalidOperationException("The prepared source no longer owns its construction plan.");
-
-    internal WorldGuidReplacementPreparation ReplacementPreparation { get; }
 
     internal WorldRestoreIntent RestoreIntent { get; }
 
@@ -266,7 +262,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
 
     public void Dispose()
     {
-        IDisposable? commitSourceUse;
         ImmutableArray<IWorldPreparedResourceSource> preparedSources;
         ImmutableArray<IWorldPreparedAttachmentSource> preparedAttachments;
 
@@ -279,8 +274,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
 
             _isDisposed = true;
             _isAcquisitionClosed = true;
-            commitSourceUse = _commitSourceUse;
-            _commitSourceUse = null;
             preparedSources = _preparedSources;
             preparedAttachments = _preparedAttachments;
             _preparedSources = [];
@@ -289,32 +282,18 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
 
         try
         {
-            ReleaseConstructionResources();
+            foreach (var source in preparedSources)
+            {
+                source.Dispose();
+            }
         }
         finally
         {
             try
             {
-                try
+                foreach (var source in preparedAttachments)
                 {
-                    foreach (var source in preparedSources)
-                    {
-                        source.Dispose();
-                    }
-                }
-                finally
-                {
-                    try
-                    {
-                        foreach (var source in preparedAttachments)
-                        {
-                            source.Dispose();
-                        }
-                    }
-                    finally
-                    {
-                        commitSourceUse?.Dispose();
-                    }
+                    source.Dispose();
                 }
             }
             finally
@@ -322,134 +301,8 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
                 _sourceControl.Close();
             }
         }
-    }
 
-    internal void CloseAcquisition()
-    {
-        bool isCaptured;
-
-        lock (_gate)
-        {
-            _isAcquisitionClosed = true;
-            isCaptured = _isCaptured;
-        }
-
-        _constructionPlan?.PreparedReplacement?.CloseAcquisition();
-
-        if (!isCaptured)
-        {
-            Dispose();
-        }
-    }
-
-    [SuppressMessage(
-        "Reliability",
-        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
-        Justification = "The owner-boundary operation waits for exact package-backed Scene preparation to finish before candidate or package ownership can be released.")]
-    internal (World Candidate, WorldPlaybackControl PlaybackControl) CreateRestoredCandidate(
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        lock (_gate)
-        {
-            if (_isDisposed || !_isCaptured || !_isSourcesPrepared || !_isAssetReferencesValidated || (_commitSourceUse is null))
-            {
-                throw new InvalidOperationException("Candidate construction requires this prepared source owner's captured commit use.");
-            }
-
-            _sourceControl.ThrowIfFailed();
-            _animationAssets?.ValidateSourceOwner(
-                this, _packageLease ?? throw new InvalidOperationException("The prepared load lost its exact package lease."));
-        }
-
-        var candidate = World.CreateRestoreCandidate(ConstructionPlan);
-        WorldResourceOperationReservation? sourceBudget = null;
-        ScenePersistenceRestorer.PreparedRestore? preparedSceneRestore = null;
-        IDisposable? playbackSourceUse = null;
-        WorldPlaybackControl? playbackControl = null;
-        var candidateTransferred = false;
-
-        try
-        {
-            sourceBudget = candidate.RetainPreparedRestoreSourceBudget(_sourceControl.StorageByteReservation);
-            World.InitializeRestoreCandidate(candidate);
-            preparedSceneRestore = ScenePersistenceRestorer.PrepareAsync(
-                candidate,
-                _assets,
-                _packageLease
-                    ?? throw new InvalidOperationException("The prepared load lost its exact package lease."),
-                Checkpoint.WorldContents.ScenesRecord,
-                Checkpoint.WorldContents.Scenes,
-                cancellationToken).GetAwaiter().GetResult();
-            candidate.RestoreEcsRows(
-                Checkpoint.WorldContents.EcsRecord,
-                Checkpoint.WorldContents.Ecs,
-                CompletedTick,
-                _preparedSources,
-                _preparedAttachments,
-                cancellationToken);
-            ScenePersistenceRestorer.RestorePrepared(candidate, preparedSceneRestore, cancellationToken);
-            candidate.RestoreCheckpointClockAndControls(
-                Checkpoint.WorldRecord,
-                Checkpoint.WorldContents.Clock,
-                Checkpoint.WorldContents.Cursors,
-                Checkpoint.WorldContents.ControlRecordCount,
-                Checkpoint.WorldContents.SceneControlPayloadBytes,
-                cancellationToken);
-            lock (_gate)
-            {
-                // This transferred use retains the source caches, package, and prepared asset pins together.
-                playbackSourceUse = _sourceControl.AcquireUse();
-            }
-
-            playbackControl = new WorldPlaybackControl(
-                _packageLease ?? throw new InvalidOperationException("The prepared load lost its exact package lease."),
-                playbackSourceUse,
-                sourceBudget);
-            playbackSourceUse = null;
-            sourceBudget = null;
-            candidate.AdoptRestoreLifetimeLease(playbackControl);
-            var candidatePlaybackControl = playbackControl;
-            playbackControl = null;
-            candidateTransferred = true;
-            return (candidate, candidatePlaybackControl);
-        }
-        finally
-        {
-            try
-            {
-                preparedSceneRestore?.Dispose();
-            }
-            finally
-            {
-                try
-                {
-                    playbackControl?.Dispose();
-                }
-                finally
-                {
-                    try
-                    {
-                        playbackSourceUse?.Dispose();
-                    }
-                    finally
-                    {
-                        if (!candidateTransferred)
-                        {
-                            try
-                            {
-                                candidate.Dispose();
-                            }
-                            finally
-                            {
-                                sourceBudget?.Dispose();
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        _constructionPlan = null;
     }
 
     internal ImmutableArray<Diagnostic> PrepareSources(CancellationToken cancellationToken)
@@ -525,76 +378,107 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
         return [];
     }
 
-    internal void TransferRetainedHistoryToPlayback(
-        WorldPlaybackControl playbackControl,
-        WorldDomainOperationCredit sourceCredit)
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The owner-boundary executor joins exact package-backed Scene preparation before candidate or package ownership can be released.")]
+    internal void RestoreCandidate(
+        World candidate,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(playbackControl);
-        ArgumentNullException.ThrowIfNull(sourceCredit);
+        ArgumentNullException.ThrowIfNull(candidate);
+        cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
         {
-            if (!_isCaptured || _isDisposed)
+            if (_isDisposed || !_isSourcesPrepared || !_isAssetReferencesValidated || !_isReplacementInputsSealed)
             {
-                throw new InvalidOperationException("Source playback ownership can transfer only from a captured active load.");
-            }
-
-            var retainedHistory = _retainedHistory
-                ?? throw new InvalidOperationException("The prepared load no longer owns its source history.");
-            playbackControl.AttachRetainedHistory(retainedHistory, sourceCredit);
-        }
-    }
-
-    internal bool TryCaptureCommit(
-        out WorldDomainOperationCreditBundle? operationCredits,
-        out WorldDefaultDomainHandoff? defaultDomainHandoff,
-        out WorldGuidRefusal bindingRefusal,
-        out WorldAdmissionRefusal admissionRefusal)
-    {
-        lock (_gate)
-        {
-            operationCredits = null;
-            defaultDomainHandoff = null;
-
-            if (_isAcquisitionClosed || _isDisposed || _isCaptured)
-            {
-                bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
-                admissionRefusal = WorldAdmissionRefusal.None;
-                return false;
+                throw new InvalidOperationException("Candidate restoration requires the exact sealed prepared source owner.");
             }
 
             _sourceControl.ThrowIfFailed();
+            _animationAssets?.ValidateSourceOwner(
+                this, _packageLease ?? throw new InvalidOperationException("The prepared load lost its exact package lease."));
+        }
 
-            if (!_isSourcesPrepared || !_isAssetReferencesValidated)
+        ScenePersistenceRestorer.PreparedRestore? preparedSceneRestore = null;
+
+        try
+        {
+            preparedSceneRestore = ScenePersistenceRestorer.PrepareAsync(
+                candidate,
+                _assets,
+                _packageLease
+                    ?? throw new InvalidOperationException("The prepared load lost its exact package lease."),
+                Checkpoint.WorldContents.ScenesRecord,
+                Checkpoint.WorldContents.Scenes,
+                cancellationToken).GetAwaiter().GetResult();
+            candidate.RestoreEcsRows(
+                Checkpoint.WorldContents.EcsRecord,
+                Checkpoint.WorldContents.Ecs,
+                CompletedTick,
+                _preparedSources,
+                _preparedAttachments,
+                cancellationToken);
+            ScenePersistenceRestorer.RestorePrepared(candidate, preparedSceneRestore, cancellationToken);
+            candidate.RestoreCheckpointClockAndControls(
+                Checkpoint.WorldRecord,
+                Checkpoint.WorldContents.Clock,
+                Checkpoint.WorldContents.Cursors,
+                Checkpoint.WorldContents.ControlRecordCount,
+                Checkpoint.WorldContents.SceneControlPayloadBytes,
+                cancellationToken);
+        }
+        finally
+        {
+            preparedSceneRestore?.Dispose();
+        }
+    }
+
+    internal void SealReplacementInputs()
+    {
+        WorldRestoreSourceControl.SourceUse? sourceUse = null;
+        ReadOnlyMemory<byte> worldRecord;
+        ReadOnlyMemory<byte> checkpointDigest;
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed || _isAcquisitionClosed, this);
+
+            if (!_isSourcesPrepared || !_isAssetReferencesValidated || _isReplacementInputsSealed)
             {
-                throw new InvalidOperationException("The prepared load has not completed its source reads and package-reference validation.");
+                throw new InvalidOperationException("Replacement inputs can be sealed only once after all source and package consumers have joined.");
             }
 
-            var preparedReplacement = ConstructionPlan.PreparedReplacement
-                ?? throw new InvalidOperationException("The prepared World replacement omitted its Entities-owned capability.");
+            var checkpoint = Checkpoint;
+            worldRecord = checkpoint.WorldRecord;
+            checkpointDigest = checkpoint.CheckpointDigest;
+            sourceUse = _sourceControl.AcquireUse();
+        }
 
-            var sourceUse = _sourceControl.AcquireUse();
+        Span<byte> payloadDigest = stackalloc byte[32];
+        _ = SHA256.HashData(worldRecord.Span, payloadDigest);
 
-            try
+        try
+        {
+            (ConstructionPlan.PreparedReplacement
+                ?? throw new InvalidOperationException("The prepared load omitted its construction binding."))
+                .SealInputs(
+                    sourceUse
+                        ?? throw new InvalidOperationException("Replacement source-use acquisition returned no lease."),
+                    worldRecord,
+                    checkpointDigest.Span,
+                    payloadDigest);
+            sourceUse = null;
+
+            lock (_gate)
             {
-                if (!preparedReplacement.TryCaptureCommit(
-                        out operationCredits,
-                        out defaultDomainHandoff,
-                        out bindingRefusal,
-                        out admissionRefusal))
-                {
-                    return false;
-                }
-
-                _commitSourceUse = sourceUse;
-                sourceUse = null;
-                _isCaptured = true;
-                return true;
+                _isReplacementInputsSealed = true;
             }
-            finally
-            {
-                sourceUse?.Dispose();
-            }
+        }
+        finally
+        {
+            sourceUse?.Dispose();
         }
     }
 
@@ -683,92 +567,17 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
         return [];
     }
 
-    internal ValidatedWorldIdentityHistory ValidateRestoredCandidate(World candidate)
+    internal void ValidateCommitCapture()
     {
-        ArgumentNullException.ThrowIfNull(candidate);
-        using var lease = candidate.AcquireRestoreValidationCaptureLease();
-        var limits = WorldPersistenceEbinLimits.Create(candidate.Options);
-        var status = WorldPersistenceCaptureCoordinator.Capture(
-            candidate,
-            lease,
-            candidate.Options.Registration.Schemas,
-            out var captureReservation,
-            out var freshWorldRecord,
-            out _,
-            out var diagnostic,
-            CancellationToken.None);
-
-        if (status is not EbinWriteStatus.Complete)
+        lock (_gate)
         {
-            throw new InvalidOperationException(
-                diagnostic?.Category ?? $"Fresh restore validation capture returned {status}.");
-        }
+            _sourceControl.ThrowIfFailed();
+            ObjectDisposedException.ThrowIf(_isDisposed || _isAcquisitionClosed, this);
 
-        using var retainedCaptureReservation = captureReservation
-            ?? throw new InvalidOperationException("The fresh restore validation capture omitted its admission reservation.");
-        var record = freshWorldRecord
-            ?? throw new InvalidOperationException("The fresh restore validation capture omitted its World record.");
-        var identityAssignmentCount = WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(record, limits);
-        var lineageMembershipScratchCapacity =
-            WorldPersistenceWorldRecordReader.MeasureLineageMembershipScratchCapacity(record, limits);
-        var identityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
-        var lineageMembershipScratch = new Guid[lineageMembershipScratchCapacity];
-        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
-        var freshContents = WorldPersistenceWorldRecordReader.Read(
-            record,
-            limits,
-            candidate.Options.Registration,
-            identityScratch,
-            lineageMembershipScratch,
-            ref strictLayoutBuffers);
-        var sourceIdentityHistory = Checkpoint.WorldContents.Ecs.ValidatedIdentityHistory
-            ?? throw new InvalidOperationException("The validated source omitted its identity history.");
-        var targetIdentityHistory = freshContents.Ecs.ValidatedIdentityHistory
-            ?? throw new InvalidOperationException("The fresh candidate capture omitted its identity history.");
-
-        WorldPersistenceRestoreValidator.Validate(
-            Checkpoint.WorldRecord,
-            record,
-            sourceIdentityHistory,
-            targetIdentityHistory,
-            ConstructionPlan,
-            Checkpoint.CheckpointDigest.Span,
-            Checkpoint.NextTick);
-        retainedCaptureReservation.Dispose();
-        candidate.ReleaseUnusedRestoreValidationWorkspace();
-        return targetIdentityHistory;
-    }
-
-    [SuppressMessage("Usage", "CA1031:Do not catch general exception types", Justification = "Failed construction claims retain the complete source owner and its credits in quarantine.")]
-    private void ReleaseConstructionResources()
-    {
-        var constructionPlan = _constructionPlan;
-
-        try
-        {
-            // Unused candidate claims are closed independently of admitted source readers and authors.
-            try
+            if (!_isSourcesPrepared || !_isAssetReferencesValidated || !_isReplacementInputsSealed)
             {
-                constructionPlan?.PreparedReplacement?.CloseAcquisition();
+                throw new InvalidOperationException("The prepared load has not completed and sealed its exact source and package validation.");
             }
-            finally
-            {
-                try
-                {
-                    ReplacementPreparation.Dispose();
-                }
-                finally
-                {
-                    constructionPlan?.ReleaseUntransferredRestoreResources();
-                }
-            }
-
-            _constructionPlan = null;
-        }
-        catch (Exception exception)
-        {
-            _constructionCleanupFailure = exception;
-            throw;
         }
     }
 
@@ -776,11 +585,6 @@ internal sealed class WorldLoadPreparedState : IDisposable, IAnimationRestoreAss
     private void ReleaseOwnedResources()
     {
         List<Exception>? failures = null;
-
-        if (_constructionCleanupFailure is { } constructionFailure)
-        {
-            throw constructionFailure;
-        }
 
         void Release(Action cleanup)
         {

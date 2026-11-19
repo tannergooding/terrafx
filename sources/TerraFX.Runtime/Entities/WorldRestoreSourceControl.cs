@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Threading;
+using TerraFX;
 
 namespace TerraFX.Entities;
 
@@ -14,6 +16,7 @@ internal sealed class WorldRestoreSourceControl
 
     private readonly IWorldAttachmentRegistration? _attachment;
     private bool _attachmentRead;
+    private ReadOnlyMemory<byte> _checkpointDigest;
     private readonly Action _cleanup;
     private bool _cleanupStarted;
     private ReadOnlyMemory<byte> _ecsRecord;
@@ -29,9 +32,12 @@ internal sealed class WorldRestoreSourceControl
     private ReadOnlyMemory<byte> _scenesRecord;
     private readonly WorldPreparedSourceStorage _storage;
     private int _uses;
+    private ReadOnlyMemory<byte> _worldRecord;
 
     internal WorldRestoreSourceControl(
         IWorldRestoreSourceOwner owner,
+        ReadOnlyMemory<byte> worldRecord,
+        ReadOnlyMemory<byte> checkpointDigest,
         ReadOnlyMemory<byte> ecsRecord,
         ReadOnlyMemory<byte> scenesRecord,
         IWorldResourceRegistration? resource,
@@ -44,6 +50,8 @@ internal sealed class WorldRestoreSourceControl
         ArgumentNullException.ThrowIfNull(cleanup);
         _owner = owner;
         _history = owner.IdentityHistory;
+        _worldRecord = worldRecord;
+        _checkpointDigest = checkpointDigest;
         _ecsRecord = ecsRecord;
         _scenesRecord = scenesRecord;
         _resource = resource;
@@ -61,7 +69,7 @@ internal sealed class WorldRestoreSourceControl
 
     internal long StorageByteReservation => _storage.OwnedByteReservation;
 
-    internal IDisposable AcquireUse()
+    internal SourceUse AcquireUse()
     {
         lock (_gate)
         {
@@ -287,6 +295,68 @@ internal sealed class WorldRestoreSourceControl
         }
     }
 
+    internal void ValidateReplacementInputs(
+        SourceUse sourceUse,
+        ReadOnlyMemory<byte> worldRecord,
+        scoped ReadOnlySpan<byte> checkpointDigest,
+        scoped ReadOnlySpan<byte> payloadDigest)
+    {
+        ArgumentNullException.ThrowIfNull(sourceUse);
+
+        lock (_gate)
+        {
+            if (!ReferenceEquals(sourceUse.Control, this)
+                || !_worldRecord.Equals(worldRecord)
+                || (checkpointDigest.Length != 32)
+                || (payloadDigest.Length != 32)
+                || !CryptographicOperations.FixedTimeEquals(checkpointDigest, _checkpointDigest.Span))
+            {
+                throw RecordFailure(new InvalidOperationException("The replacement source does not borrow this exact retained World record, checkpoint digest, and source control."));
+            }
+
+            Span<byte> actualPayloadDigest = stackalloc byte[32];
+            _ = SHA256.HashData(worldRecord.Span, actualPayloadDigest);
+
+            if (!CryptographicOperations.FixedTimeEquals(payloadDigest, actualPayloadDigest))
+            {
+                throw RecordFailure(new InvalidOperationException("The replacement payload digest does not match the retained World record."));
+            }
+
+            var record = new EbinRecordReadView(worldRecord.Span);
+            var hasEcsRecord = false;
+            var hasScenesRecord = false;
+
+            for (var index = 0; index < record.FieldCount; index++)
+            {
+                var field = record.GetField(index);
+
+                if (field.Tag == 5)
+                {
+                    if (hasEcsRecord || !field.Payload.SequenceEqual(_ecsRecord.Span))
+                    {
+                        throw RecordFailure(new InvalidOperationException("The retained World record does not contain its exact prepared ECS projection."));
+                    }
+
+                    hasEcsRecord = true;
+                }
+                else if (field.Tag == 6)
+                {
+                    if (hasScenesRecord || !field.Payload.SequenceEqual(_scenesRecord.Span))
+                    {
+                        throw RecordFailure(new InvalidOperationException("The retained World record does not contain its exact prepared Scene projection."));
+                    }
+
+                    hasScenesRecord = true;
+                }
+            }
+
+            if (!hasEcsRecord || !hasScenesRecord)
+            {
+                throw RecordFailure(new InvalidOperationException("The retained World record omitted its prepared ECS or Scene projection."));
+            }
+        }
+    }
+
     internal void ValidateSource(
         IWorldRestoreSourceOwner owner,
         ReadOnlyMemory<byte> ecsRecord,
@@ -326,6 +396,8 @@ internal sealed class WorldRestoreSourceControl
             }
 
             _cleanupStarted = true;
+            _checkpointDigest = default;
+            _worldRecord = default;
             _ecsRecord = default;
             _scenesRecord = default;
             _historicalOrdinals = null;
