@@ -8,6 +8,8 @@ Select one route: **one selected-only standing record retained by the existing W
 
 The route is finite in membership for the input below. Its byte values and compiled final suffix are not established. Keep both selection guards and `WorldCosmeticCreditOwner.HasQualifiedStandingOwner` unchanged. No selected World/owner, credit operation, pool, Scene participant, Task producer, or GPU consumer is enabled by this proposal.
 
+**First implementation boundary: choose (a), analysis/constructor-free observation of existing types only (§6). Do not add the proposed standing record or lifetime field in this batch.** The future representation below is not authorization for a declaration-only production change under existing charges.
+
 ### Authority and fixed first input
 
 Chapter 04 owns exact admission, prospective grants, allocation/growth overlap and retained debt. Chapter 35 owns implementation/observation gates. Chapter 20 owns animation/deformation; it contains no particle standing-owner contract. The maintained particle behavior is **Chapter 21 §5**, supplemented here only by the existing tentative M05 particle-owner/addendum chain. Storage-only work changes neither chapter's behavior.
@@ -45,14 +47,14 @@ Refine the earlier [common-representation suggestion](m05-cosmetic-particle-comm
 | Location | Proposed exact additional representation |
 |---|---|
 | `WorldLifetimeControl` | One nullable `WorldCosmeticCreditStandingControl` reference, null when unselected. This affects **every** lifetime's shallow layout and must have common funding before operational integration. |
-| Proposed private sealed `WorldCosmeticCreditStandingControl` in Entities | Three readonly references: exact lifetime, original reservation, immutable registration; one copied readonly `WorldGuidGrant`; one readonly `long` admitted standing/protection amount; one nullable actual `WorldCosmeticCreditOwner`; two nullable `Exception` references for first construction and storage-cleanup failure; one `int` owner-thread ID; one `int` phase. No finalizer, lock, Task, delegate, collection, runtime callback, or extra grant. |
+| Proposed engine-private sealed `WorldCosmeticCreditStandingControl` in Entities | Three readonly references: exact lifetime, original reservation, immutable registration; one copied readonly `WorldGuidGrant`; one readonly `long` admitted standing/protection amount; one nullable actual `WorldCosmeticCreditOwner`; two nullable `Exception` references for first construction and storage-cleanup failure; one `int` owner-thread ID; one `int` phase. No finalizer, lock, Task, delegate, collection, runtime callback, or extra grant. |
 | `WorldConstructionPlan`, `World`, `WorldDomainReservation` | No new instance fields. Plan reads the once-bound amount through its existing lifetime. World attribution reads the same record; it is not another physical debit. Preserve the reservation's existing envelope. |
 | Domain/process terminal state | Reuse the existing domain registry/grant/lifetime/failure/state fields and binding-cell terminal domain/failure/state. Add a private construction-pending phase and exact-lifetime promotion/terminal-held transitions, not a second anchor object or another O/P/U. Any discovered layout change invalidates this field inventory and requires repricing first. |
 | Builder/registration | Retain their implemented selection fields and staging restrictions. Close their actual shared metadata accounting; do not add another per-World copy of registration metadata. |
 
 The standing record is necessary because neither the owner nor the existing lifetime has a place to preserve a failed, not-yet-returned child construction and its original amount. Putting the record's fields in World and plan would duplicate state and enlarge unselected objects. The record grants no additional release authority; the exact lifetime remains sole owner.
 
-The construction sequence would be:
+These are future declarations, not the next batch. A production lifetime field changes every fresh/restore instance, including unselected Worlds; a false selection guard or separate build output does not account for that layout. The eventual construction sequence would be:
 
 1. Before issuance, resolve a source/toolchain/input-bound profile and calculate the combined World peak and prospective default-domain peak (§3). Absence/mismatch refuses at the existing guard. Capture numeric/profile facts in synchronous construction locals; no heap profile wrapper or alternate allocator is needed.
 2. Add a fixed synchronous **process-registry caller of the selected fresh `AdmitWorld` body**, analogous to its existing terminal close invocation, with no delegate or heap wrapper. Its stack-local context contains the exact original fresh grant, actual domain/lifetime references as they return, captured amounts and phase. Use the existing fresh role acquisition. Before default-domain allocation, preadmit its exact prospective registrar construction charge against its own Chapter 04 metadata/aggregate limits. The present constructor allocates its TCS/backing **before** assigning `_registryCharge`; a later World reservation cannot retroactively fund that interval. The private selected construction entry spends the prospective original-domain provision and installs the same charge, not a second debit. The process caller retains construction/unwind provision until the actual body returns/throws; it uses no process metadata bytes for domain data.
@@ -73,8 +75,8 @@ An accounting row is a preclaim with one physical owner, not a measured object s
 | Disjoint row and finite membership for this input | How to obtain its real bound | Original reservation and held interval |
 |---|---|---|
 | Shared registration: the existing builder/registration selection fields plus the actual empty Build graph. The builder has six list fields; Build creates two description builders/schedule; the registration constructor creates four validation sets and empty-copy/sort paths. Schema backing is borrowed, not recreated. | Compare actual compiled field inventories/layouts with the pre-selection declarations; trace the exact empty `Build`/schedule/constructor path, including cold comparer/empty-array helpers and temporary/retained overlap. Validate the applicable `MaximumRegistrationBytes` at Build and the configured World registration boundary; current schedule graph/conflict checks do not do this. | Existing caller/registration construction owner, once per actual shared registration; not World data. The measured selection increment alone is not complete registration-budget closure. |
-| Common lifetime change: one nullable reference in every lifetime. No new World/plan/reservation fields. | Constructor-free baseline/candidate measurements of the **actual** lifetime; audit changed initialization IL. Price the delta under original common World control or prove complete existing coverage. | Original World control on selected **and unselected** routes, before lifetime allocation through lifetime's last owning access. |
-| Selected record: one instance with precisely §2's fields; credit owner: one instance with its existing fields. | Constructor-free shallow allocation observations of the real compiled declarations, independently checked against field/GC layout; audit constructors for extra allocation/boxing. No shadow class or operational uninitialized object. | Selected original World provision, before either allocation through returned helper/acceptor/lower-close use. |
+| Common lifetime change: one nullable reference in every lifetime. No new World/plan/reservation fields. | The existing type's measured steady shallow input is **224 B before that reference** (§6). Its candidate delta is unmeasured; audit actual candidate layout/initialization in a later common-accounting revision, not this batch. | Original World control on selected **and unselected** routes, before lifetime allocation through lifetime's last owning access. |
+| Selected record: one instance with precisely §2's fields; credit owner: one instance with its existing fields. | The existing credit owner's measured steady shallow input is **136 B** (§6). The proposed record does not yet exist or have a measured size. Its later actual declaration needs shallow/GC-layout and constructor-allocation evidence; no shadow class or operational uninitialized object. | Selected original World provision, before either allocation through returned helper/acceptor/lower-close use. |
 | Cells: one fixed `Cell[128]`; three reference slots/cell, initially null. | Reconfirm the existing literal field inventory/stride test for final binaries. The known lane gives `64 + RoundUp8(128 * 80) = 10304` World bytes. Obtain actual array allocation size separately; do not add an extra accounting header. | Same World provision. Zero controls, cell exception referents, operation workspaces and journals are allocated by this storage-only constructor. Journal/handback values must remain unboxed/uncaptured. |
 | Existing World construction/close graph, including its 4,096 row: actual empty World/lifetime/default owner/permit/plan/worker pool/locks, diagnostics, identity/archetype/entity-slot directories, subscriptions, system claim/cleanup preparation, and empty attachment release paths. | Expand the **actual** `AdmitWorld`, `World` field initializers, zero-worker constructor, `WorldSystemCleanupPreparation(0)`, and Dispose call graph. N=0 does not remove cleanup report/fault/finalization objects. Reconcile each allocation to an existing charged row; correct any uncovered baseline rather than assigning it to the new child. | Existing World reservation and appropriate diagnostic sublimit. The baseline is not “whatever fits in 4096” and must be established before using it as B. |
 | Protected selected construction/abort/close work: one synchronous construction attempt or one close; no reentrancy/retry, publishers, receivers or independent uses. At most the record's two retained failures plus any distinct lower escaping failure in the domain's existing failure slot. | Enumerate each reached allocation/throw site and simultaneous primary/cleanup/terminal failure closure, including actual exception, trace/dispatch/string/backing/native children. Derive an upper bound from pinned runtime paths, then check it with precise allocation observations. A count of two exception references is **not** a byte bound. | World protection for World/storage work; domain protection for its disjoint publisher/terminal failure work. Protection remains reserved for its admitted lifetime. A lower failure alias is charged once; a distinct graph is a distinct row. |
@@ -169,15 +171,36 @@ When construction fails before a standing record or lifetime escapes, only origi
 
 ## 6. Evidence sequence and the next implementation batch
 
-### Startable now: constructor-free representation and allocation-site closure
+### First-batch correction: (a), no production field
 
-The next bounded batch is **the two real header inputs, common lifetime delta, and fixed-input phase catalogue**, using the existing Runtime layout fixture pattern:
+The earlier instruction to compile the proposed record/reference as the next batch is withdrawn. Separate outputs can prevent accidental execution; they do not make a field in the production type free or leave its common layout unchanged. **Do not add a production field, record type, accessor, initializer, or reservation change in the next batch.** Keep all guards unchanged.
 
-1. Freeze actual production declarations/toolchain and compile an isolated declaration candidate containing exactly §2's private record and one lifetime reference. Wire no live initializer, terminal transition or accessor; keep all guards false/throwing. Use the ordinary projects and separate outputs, not shadow types, new conditional compilation, warning suppressions or a qualification runner. Preserve existing operational outputs.
-2. Extend `WorldLifetimeControlQuarantineTests` with constructor-free shallow cases for the actual credit owner, actual proposed standing record, and actual baseline/candidate lifetime; reconfirm no finalizers. Recheck implemented builder/registration deltas on their actual declarations. Use preallocated test-owned subject arrays and `RuntimeHelpers.GetUninitializedObject` only as size subjects; call no instance member and never pass subjects to production.
-3. In the same bounded batch, resolve the concrete allocation sites behind §3's empty registration/World/quarantine/default-domain rows. Use actual compiled inventories and pinned implementation/IL to enumerate multiplicity, capacities and coexistence. Record unanswered sites individually; do not enter zero for a runtime/native/exception row or call an observed warm maximum an upper bound.
+The user-run measurement at `4785e1a3b38fd85fedf37f516e264253c81085cb` supplies these existing-type inputs:
 
-This can start without enabling a selected owner or changing common operational layouts under old charges. It improves actual inputs rather than adding another inert live hook. Existing historical isolated declaration sizes are not replacements for these final declarations.
+| Existing type, RC3 Windows x64 | First measured batch, reported B/instance | Steady batch, reported B/instance |
+|---|---:|---:|
+| `WorldLifetimeControl`, without the proposed reference | 225 | 224 |
+| `WorldCosmeticCreditOwner`, without running its constructor | 137 | 136 |
+
+Both Debug and Release retained TRX files contain the passing `WorldLifetimeAndCosmeticOwnerHaveMeasuredConstructorFreeAllocations` case; each full selection executed/passed 5/5 tests. That selection also contains the existing operational lifetime-quarantine test: it is not five constructor-free cases or selected-owner lifecycle evidence. The measured Runtime module MVIDs are Debug `4627acc8-ed3a-46e8-9796-9a27e77bca91` and Release `4921ed43-8dbe-4838-b9db-bad8dd549bf8`.
+
+`MeasureUninitializedClassAllocation` warms 128 subjects, collects, then reports integer-divided totals for two measured 128-subject batches. The one-byte difference in each reported average is consistent with 128 additional first-batch bytes, not a one-byte field cost. The output alone does not identify a single 128-B allocation/site or whether it belongs to measurement/runtime setup versus the production path. Preserve that unresolved row; neither discard it nor charge it once per owner without attribution. The 224/136 values exclude constructor/field-initializer children, the cell backing, protected work and caller suffixes.
+
+**Narrowest remaining batch:**
+
+1. Reuse these completed header inputs and frozen source/TRX identities; do not repeat unchanged size tests merely to obtain the same numbers.
+2. Resolve the first-batch allocation attribution against the actual helper/runtime path and begin the existing lifetime's constructor allocation-site catalogue: its `Lock` field initializer and `WorldGuidRetirementPermit` construction are separate from the 224-B shell. Observe no valid owner/lifetime instance or World construction to discover those costs. If more measurement is necessary, narrowly extend only the existing test-owned helper to report raw batch totals and distinguish setup; select only the constructor-free measurement case, not the whole quarantine fixture. Use ordinary Debug/Release workflows, no production hooks or new runner.
+3. Record the resulting common-baseline/protected rows and actual owner/end from §3. Leave the proposed record size, candidate lifetime delta, standing preclaim and return qualification explicitly open. Do not populate them with padding assumptions, shadow-type measurements or a guessed margin.
+
+This batch can be analysis-only if the retained evidence and runtime allocation-site inspection suffice. It needs no production declaration or World creation tests.
+
+### Later option (b) is a common-accounting revision, not this batch
+
+Before any World creation tests execute with a new lifetime reference, measure its **actual compiled delta**, `candidateLifetimeShallowBytes - 224`, in the same lane and account for every other introduced common allocation/retention interval. Use final, analyzer-clean declarations with legitimate uses, after member-order/usage corrections. A reference occupies eight bytes on this lane, but that does not prove the rounded allocation delta. The first-batch 225 is not the candidate lifetime size.
+
+Conservatively add the uncovered actual common delta to the existing **4096-byte preclaim**, with any disjoint new common costs accounted separately; do not call `4096 - 224` spare capacity or assume zero cost because selection refuses. `World.AdmitWorld` and `World.CalculateRestoreWorldOwnedBytes` (`World.PersistenceAdmission.cs`) both use `FreshWorldControlBytes` before their actual `new WorldLifetimeControl` sites. Cover both routes, hosted/unselected variants, exact World/domain checks and retained attribution; audit direct-constructor fixtures too. Keep this common charge separate from the selected record/owner/backing/protection charge. A later accounted common revision may run ordinary unselected regressions while selected owner construction/selection/operations remain guarded; it does not require pretending the complete selected profile is closed.
+
+That revision must also be an ordinary build-clean implementation, not an inert field experiment. `TFX0002` requires category/staticness/accessibility/ordinal-name ordering subject to the actual initializer/layout barriers in `tools\Shared\CodeAnalysis\MemberOrdering.cs`; `.editorconfig` makes it an error. The §2 inventory is not declaration order. `Directory.Build.props` enables code style and warnings-as-errors, so an unused private slot can also fail compiler/code-style diagnostics such as CS0169/CS0414. Reflection-only measurement does not provide a real production consumer. Do not suppress diagnostics, disable analyzers, add dummy reads/getters, or put two top-level types in one file to force a candidate through. A later field/record needs legitimate capture/read/retention/accounting uses in the same coherent revision and must follow TFX0004's one-top-level-type rule. Until that revision and its common funding are ready, choose (a).
 
 ### Before any selected operational execution
 
@@ -210,7 +233,7 @@ Do not open admission on header tests alone. Managed behavior, compiled last-acc
 
 ## 7. Inspected input boundary
 
-This is a current source-backed proposal, not a replay of historical module results. The source boundary was checked on 2026-11-19 with branch HEAD `5a1ae264eb737618ae44e8b86ae16a8162520809`, which includes `607a4e3d` and `e1d1ae8f`. Working-byte hashes below identify the proposal inputs; relevant Entities/design/test sources were not edited by this proposal. Historical addendum inventories/results retain their own scope. No build, test, allocation probe, owner/World/Scene/pool operation or runtime-publisher execution was performed for this document.
+This is a current source-backed proposal, not a replay of historical module results. The original route boundary was checked on 2026-11-19 at `5a1ae264eb737618ae44e8b86ae16a8162520809`; the §6 correction incorporates the subsequent user-run existing-type measurement committed at `4785e1a3b38fd85fedf37f516e264253c81085cb`. Working-byte hashes below include the updated measurement fixture and correction inputs; source, tests, maintained design and Roadmap were not edited by this proposal/correction. No new build, test, allocation probe, owner/World/Scene/pool operation or runtime-publisher execution was performed for this documentation change.
 
 The complete standing-boundary inventory was checked: its source/contract/dirty-file entries matched; concurrent updates refreshed its binary hashes and clarified the unrelated executed selections. Those changes were inspected, not authored here. Those binaries were not used as evidence here. No current source-to-binary or old-test-to-current-binary correspondence is asserted. Rehash changed inputs before disposition.
 
@@ -227,7 +250,12 @@ The complete standing-boundary inventory was checked: its source/contract/dirty-
 | `docs\design\35-implementation-roadmap.md` | `24EEC6E92B7AD904D552F290EF748FFC8FCE13B6B94A89EBD9F39487D4584D87` |
 | `docs\project\Roadmap.md` | `FD84BBDF11FEF04C15FC09489DD663864664EFADEBF1E294748C83E8A73B1BF8` |
 | `global.json` | `1BCE01871321C2DF82E887DA428CE5C121A6C6541FE65017FE3D249BE47E190C` |
+| `.editorconfig` | `342683DE2B1C262624546F312F7D8E2078F89185ADD39F43F1FB5013376FD553` |
+| `Directory.Build.props` | `770EE4B2A422861A6F23F0D39DD0ECA361A81CB87E64EBAC4E12170F71231D7A` |
+| `tools\TerraFX.Diagnostics.Analyzers\MemberOrderingAnalyzer.cs` | `03E593E4D540EDB30A74A2832F96E0FED7B9C87CAD9D7E48481F0810272446BF` |
+| `tools\Shared\CodeAnalysis\MemberOrdering.cs` | `21B06DF3E8F95AAB9BE1AE264DCB794C9B7BCBC58AC98624EC1370A608E6D895` |
 | `E\World.cs` | `99DF71A9956B22E072FDF5314056A6854880BBDE83654D09E5EAB4A197B92FE8` |
+| `E\World.PersistenceAdmission.cs` | `1DBAC6F5D3DA19A6E616BDD03E8F4A9F885CF74CC0FD40D4F3E34ADAC5DA62B4` |
 | `E\WorldLifetimeControl.cs` | `5A304AAF8B2353E28F6F743D5587E82F12E979DCF0DFEBF55103E075CCAF54F2` |
 | `E\WorldLifetimeControl.CosmeticCredits.cs` | `C6F41DE02F0896016FA55845A61661BCD1A4DFE085BF68302767FE9C94DA3228` |
 | `E\WorldConstructionPlan.cs` | `B2EE768A7CFD14753882452CE019FFFF3DF274969B3368572E3EF26DDFFBFB06` |
@@ -254,7 +282,7 @@ The complete standing-boundary inventory was checked: its source/contract/dirty-
 | `E\WorldOptions.cs` | `1DACC0CCF24E4E3FF5459E53BC6CF5F562F565A3B7520C24A25451BD12BA4C54` |
 | `E\WorldSchedulingLimits.cs` | `497B007892C2F5E2C7B87665DF15656ED0788DC810C4FB37D2213719F22DDF61` |
 | `T\WorldOptionsTests.cs` | `AE075BEBF688FA767B0FE6906495DBA8DCABA6DD4B59E82BCC9658BBA4C6579C` |
-| `T\WorldLifetimeControlQuarantineTests.cs` | `F52196A4EA7F99AB47931B436CF7CE9512D7A10F8ADA80860D6928DA90F552AE` |
+| `T\WorldLifetimeControlQuarantineTests.cs` | `82BA06D3855B045AF5D473B23BA5BA72EF54160480CA276DDB283C9AC474AE40` |
 | `T\WorldGuidRegistryTests.cs` | `37A57BBA342B8454C399CE60CD9A02AA9CF29009D9A97ABFF2A0C562417A2105` |
 | `T\WorldAdmissionDomainTests.cs` | `9F884C2185CB3372914457DC72EC760666EDE1BD2388A387A08B64F3E17B894C` |
 | `T\WorldSystemFactoryTests.cs` | `87DAFCDB1C57F622625BC2538C72A8A7D2EE54090D8C11A79DD75C0A1FFAA2B6` |
@@ -263,5 +291,7 @@ The complete standing-boundary inventory was checked: its source/contract/dirty-
 | `docs\proposals\m05-cosmetic-particle-credit-handback-addendum.md` | `6FF6EA4E6BA175558C492155FC95E08B936C1171B6747CA6E499166A2F8CB19C` |
 | `docs\proposals\m05-cosmetic-particle-budget-return-addendum.md` | `1574E6D573BDFE2AF45A3E44EE3BAB5FE52131A02547C8610294F8BBF3C4B119` |
 | `docs\proposals\m05-cosmetic-particle-credit-layout-evidence-addendum.md` | `BFAFB74AA1570308830BB95C92058963101588419D196E4929EC5E8B786FDC50` |
+| `artifacts\tst\Debug\m05-cosmetic-owner-layout-steady-debug.trx` | `E7C994BBE87D00DBABA9992BB5AACF81FC79B2A952E56FC43F27448061E34FD8` |
+| `artifacts\tst\Release\m05-cosmetic-owner-layout-steady-release.trx` | `8774E861518F3BF554840680EDF124719C107652C5F5B55BDF50E523EB81A235` |
 
 The five preexisting dirty Scene test files listed in the standing boundary were not edited or used as qualification inputs. No schema/fixture changes are proposed. This document supplies one construction/funding/return candidate and its next bounded work, not permission to promote any of the guarded capabilities.
