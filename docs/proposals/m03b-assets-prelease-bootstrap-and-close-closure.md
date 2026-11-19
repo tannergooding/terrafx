@@ -1,14 +1,14 @@
 # M03-B Assets pre-lease bootstrap and close closure
 
-**Status: tentative rectification proposal; implementation NO-GO pending the authorization and lower-boundary gates below. No numerical opening profile or physical-close qualification. Keep `PreparedScene.QualifiedFootprint` null.**
+**Status: tentatively approved as implementation guidance per user direction; lower-boundary gates below remain NO-GO. No numerical opening profile or physical-close qualification. Keep `PreparedScene.QualifiedFootprint` null.**
 
 ## Decision
 
 The package-opening interval **cannot currently be funded by an authorized existing Assets issuer and the existing limits**. Select one conditional remedy: extend the existing `AssetStore.CreateAsync` issuance boundary to a package-acquisition-free, unpublished Store, extend `AssetPackageBacking` into its opening carrier, and use the existing intrusive Assets root for acquisition and failed-release retention. Request an explicit package-control earmark within the original `CpuAssetBudgetBytes`, not another option or quota.
 
-That earmark changes the budget's present decoded-wire-length contract. It requires approval before implementation; neither tentative approval of proposals nor unused numeric capacity supplies that authority. If changing this admission contract is unacceptable, there is no code-only solution within the stated constraints. Independently, a managed owner cannot repair an unreturned or already-invalidated lower handle.
+That earmark changes the budget's present decoded-wire-length contract. The user's tentative approval authorizes proceeding with this same-envelope path as implementation guidance; it does not close the lower acquisition/return gates below or establish physical-close qualification. If the decoded-wire-length-only admission behavior must remain unchanged, there is no code-only solution within the stated constraints. Independently, a managed owner cannot repair an unreturned or already-invalidated lower handle.
 
-The requested decision following the [acquisition-failure proposal](m03b-assets-acquisition-failure-owner.md) is therefore an **early existing-Store issuer, subject to explicit same-envelope authorization**, not a Scene purse, new public recovery owner, registration-funded pool, global quota, or generic cleanup service. Its [pre-lease operation proposal](m03b-assets-prelease-recovery-owner.md) and [capacity addendum](m03b-assets-prelease-operation-profile-capacity-addendum.md) retain their separate typed-load obligations.
+The requested decision following the [acquisition-failure proposal](m03b-assets-acquisition-failure-owner.md) is therefore an **early existing-Store issuer within the tentatively approved same-envelope budget path**, not a Scene purse, new public recovery owner, registration-funded pool, global quota, or generic cleanup service. Its [pre-lease operation proposal](m03b-assets-prelease-recovery-owner.md) and [capacity addendum](m03b-assets-prelease-operation-profile-capacity-addendum.md) retain their separate typed-load obligations.
 
 ## Verified current boundary
 
@@ -46,19 +46,19 @@ The local runtime identity file names `11.0.0-rc.3.26522.148`, unified-source re
 
 Do not retry uncertain disposal, wrap a cached raw handle in another SafeHandle, or add `DangerousAddRef` after the fact. Handle values can be recycled, and rooting a logically closed SafeHandle cannot reconstruct ownership. Splitting `File.OpenHandle` from `new FileStream(handle, ...)` merely moves the first-return boundary unless the opening API's own partial-acquisition closure is established.
 
-The minimum lower gate is either a **complete valid physical-release and constructor-unwind proof** for the selected runtime/OS/filesystem/read path, or an authorized narrow lower boundary that installs acquisition into the preowned carrier and reports released versus still-owned with preserved ownership. An unknown disposition remains NO-GO. This proposal authorizes no private native replacement for the BCL and claims no such capability currently exists.
+The minimum lower gate is either a **complete valid physical-release and constructor-unwind proof** for the selected runtime/OS/filesystem/read path, or the narrow lower boundary selected by the later [file-handle release proposal](m03b-assets-file-handle-release-acknowledgment.md). An unknown disposition remains NO-GO. That private port does not yet exist or qualify; this proposal's same-envelope bootstrap does not itself close it.
 
-## Required same-envelope authorization
+## Contract closure before implementation
 
 The proposed contract amendment must state all of the following before code:
 
 1. **Original issuer:** permit `CreateAsync` to make a checked, package-acquisition-free scalar bootstrap preclaim before managed owner construction, then transfer it once into the unpublished Store. Managed constructor failure must have acquired no package file. The existing Assets process anchor must retain the carrier before the external file constructor is entered.
-2. **Existing byte limit, changed scope:** use `B0 = original options.CpuAssetBudgetBytes` for existing wire-byte debits **plus** the complete opening/package-control ledger below. Keep this original upper envelope through replacement, Store close and failed factory construction. Candidate options are not a second purse; their existing payload limits still apply, but increasing a replacement limit cannot refinance old debt. This tighter admission behavior, including the zero-budget example, needs explicit compatibility approval. Lease/decode limits do not acquire new meanings.
+2. **Existing byte limit, changed scope:** use `B0 = original options.CpuAssetBudgetBytes` for existing wire-byte debits **plus** the complete opening/package-control ledger below. Keep this original upper envelope through replacement, Store close and failed factory construction. Candidate options are not a second purse; their existing payload limits still apply, but increasing a replacement limit cannot refinance old debt. The user has tentatively approved this tighter admission behavior, including the zero-budget refusal example, for implementation in this work; encode it in the owning contracts before code and do not treat it as qualification. Lease/decode limits do not acquire new meanings.
 3. **Cold and failed-root funding:** name the lifetime-paying grant for the shared intrusive anchor/gate, including cold initialization, and for every retained carrier/issuer graph. The required chain is `Assets process anchor -> unpublished backing -> exact Store issuer, opening progress, resources, outcomes and grants`. A static link is a root, not funding; a Store/carrier cycle is neither an independent root nor a grant. No implicit type initializer, cleanup allocation or later quota admission may fill this gap.
 4. **Failed standalone creation:** no returned Store is required for the installed root to retain its original issuer, claims, primary outcome and remaining obligations. That issuer is closed to further acquisition; dropping the failed Task does not refund it. A new `CreateAsync` call is an independent Store envelope, not release or retry of the old debt. Existing limits impose no aggregate process bound on arbitrarily many independent creations; a requirement to bound that aggregate cannot be met without separately authorized authority/capacity, excluded here.
 5. **Failure delivery:** define the missing Chapter 11 bounded primary/cleanup capture and public fault/cancellation semantics without changing Chapter 30 signatures. Reserve the actual exception/EDI/Task-delivery machinery, not just an array of sample references. Retaining an original exception can retain its entire object graph. No finite capture bound is established by naming a sample count.
 
-These are requested authorizations, not statements that present options, registrations or static fields already issue these grants.
+The user tentatively approved applying this path as implementation guidance. These requirements still need to be stated by the owning contracts and implemented; present options, registrations or static fields do not already issue these grants.
 
 ## Complete symbolic preclaim and retained-root ledger
 
