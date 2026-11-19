@@ -65,26 +65,9 @@ public sealed partial class AssetStore : IAsyncDisposable
     {
         ownershipTransferred = false;
         var lifetime = new AssetLeaseLifetime(store, backing, decodedBytes);
-
-        try
-        {
-            var lease = new AssetLease<T>(assetId, value, lifetime);
-            ownershipTransferred = true;
-            return lease;
-        }
-        catch
-        {
-            try
-            {
-                lifetime.ReleaseReference();
-            }
-            finally
-            {
-                ownershipTransferred = true;
-            }
-
-            throw;
-        }
+        var lease = new AssetLease<T>(assetId, value, lifetime);
+        ownershipTransferred = true;
+        return lease;
     }
 
     /// <summary>Disposes the store's package ownership while active leases retain their backing.</summary>

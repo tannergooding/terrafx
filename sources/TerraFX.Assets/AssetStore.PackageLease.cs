@@ -198,12 +198,12 @@ public sealed partial class AssetStore
                 ReleaseDecodeBudget(decodedBytes);
             }
 
-            CompleteLoad(decodedBytes, leaseCreated);
-
             if (!leaseCreated)
             {
                 backing.ReleaseReference();
             }
+
+            CompleteLoad(decodedBytes, leaseCreated);
         }
     }
 }

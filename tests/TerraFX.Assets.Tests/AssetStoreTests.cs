@@ -618,6 +618,75 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStoreCreateLeaseKeepsCallerBackingUntilHandleConstructionSucceeds()
+    {
+        var registration = CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 15)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration),
+            CancellationToken.None).ConfigureAwait(false);
+        var backingField = typeof(AssetStore).GetField("_currentBacking", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The selected package backing field is missing.");
+        var backing = backingField.GetValue(store) as AssetPackageBacking
+            ?? throw new InvalidOperationException("The selected package backing is missing.");
+        var callerReferenceAcquired = false;
+        var storeDisposed = false;
+
+        try
+        {
+            Assert.That(backing.TryAcquireReference(), Is.True);
+            callerReferenceAcquired = true;
+
+            var createLeaseMethod = typeof(AssetStore).GetMethod(
+                "CreateLease",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The package lease factory is missing.");
+            var createLease = createLeaseMethod.MakeGenericMethod(typeof(TestAssetValue));
+            object?[] arguments = [
+                store,
+                default(AssetId),
+                default(TestAssetValue),
+                backing,
+                0L,
+                false,
+            ];
+            var invocation = Assert.Throws<TargetInvocationException>(() => createLease.Invoke(null, arguments));
+
+            Assert.That(invocation!.InnerException, Is.TypeOf<ArgumentOutOfRangeException>());
+            Assert.That(arguments[5], Is.EqualTo(false));
+
+            await store.DisposeAsync().ConfigureAwait(false);
+            storeDisposed = true;
+            var callerReferenceStillExists = backing.TryAcquireReference();
+            Assert.That(callerReferenceStillExists, Is.True);
+
+            if (callerReferenceStillExists)
+            {
+                backing.ReleaseReference();
+                backing.ReleaseReference();
+                callerReferenceAcquired = false;
+            }
+        }
+        finally
+        {
+            if (!storeDisposed)
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (callerReferenceAcquired && backing.TryAcquireReference())
+            {
+                backing.ReleaseReference();
+                backing.ReleaseReference();
+            }
+
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreDescribedReadRejectsBrotliReferenceBeforePayloadRead()
     {
         var profileOrigin = typeof(ProfiledTestAssetOrigin);
