@@ -240,7 +240,6 @@ public sealed partial class GraphicsDevice
 
         _ = _surfaces.Remove(surface);
         s_quarantinedBackendSurfaces.Add(surface.BackendSurface);
-        s_quarantinedGraphicsDevices.Add(this);
         _hasQuarantinedResources = true;
         _retirementFailure ??= exception;
         surface.MarkQuarantined(exception);

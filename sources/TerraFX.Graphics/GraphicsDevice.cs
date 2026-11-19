@@ -29,7 +29,6 @@ public sealed partial class GraphicsDevice
     private static readonly ConcurrentBag<IGraphicsBackendResource> s_quarantinedBackendResources = [];
     private static readonly ConcurrentBag<IGraphicsBackendSurface> s_quarantinedBackendSurfaces = [];
     private static readonly ConcurrentBag<ReadbackBufferRequest> s_quarantinedBufferReadbacks = [];
-    private static readonly ConcurrentBag<GraphicsDevice> s_quarantinedGraphicsDevices = [];
     private static readonly ConcurrentBag<GraphicsResourceOwner> s_quarantinedResources = [];
 
     private long _activeGraphSubmissionCount;
@@ -1493,7 +1492,6 @@ public sealed partial class GraphicsDevice
     private void QuarantineBackendResource(IGraphicsBackendResource backendResource, Exception exception)
     {
         s_quarantinedBackendResources.Add(backendResource);
-        s_quarantinedGraphicsDevices.Add(this);
         _hasQuarantinedResources = true;
         _retirementFailure ??= exception;
     }
@@ -1589,7 +1587,6 @@ public sealed partial class GraphicsDevice
             }
         }
 
-        s_quarantinedGraphicsDevices.Add(this);
         return exception;
     }
 
@@ -1598,7 +1595,6 @@ public sealed partial class GraphicsDevice
         resource.MarkQuarantined();
         _ = _deferredRetirements.Remove(resource);
         s_quarantinedResources.Add(resource);
-        s_quarantinedGraphicsDevices.Add(this);
         _hasQuarantinedResources = true;
         _retirementFailure ??= exception;
         resource.RetirementReservation.Dispose();
@@ -2088,7 +2084,6 @@ public sealed partial class GraphicsDevice
 
                     if (_hasQuarantinedResources)
                     {
-                        s_quarantinedGraphicsDevices.Add(this);
                         Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Stopping);
                         _ = _shutdownCompletion.TrySetException(
                             _retirementFailure
@@ -3474,7 +3469,6 @@ public sealed partial class GraphicsDevice
             if (Interlocked.Exchange(ref _quarantined, 1) == 0)
             {
                 s_quarantinedBufferReadbacks.Add(this);
-                s_quarantinedGraphicsDevices.Add(_device);
             }
         }
 
