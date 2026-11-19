@@ -8,7 +8,8 @@ namespace TerraFX.Numerics;
 internal ref struct BoundedRational
 {
     // Every operation rejects overflow instead of truncating.
-    internal const int MaximumLimbCount = 16;
+    // Eighteen limbs cover exact binary32 projection cross-products scaled by Int32 viewport dimensions.
+    internal const int MaximumLimbCount = 18;
 
     // The workspace partitions equally sized numerator, denominator, scratch, and product regions.
     internal const int WorkspaceRegionCount = 4;
@@ -17,6 +18,7 @@ internal ref struct BoundedRational
     private readonly Span<ulong> _denominator;
     private readonly Span<ulong> _scratch;
     private readonly Span<ulong> _product;
+    private readonly Span<ulong> _workspace;
     private bool _isNegative;
 
     internal BoundedRational(Span<ulong> workspace)
@@ -28,6 +30,7 @@ internal ref struct BoundedRational
             ThrowHelper.ThrowArgumentException("The bounded rational workspace has an invalid size.", nameof(workspace));
         }
 
+        _workspace = workspace;
         var limbCount = workspace.Length / WorkspaceRegionCount;
         _numerator = workspace[..limbCount];
         _denominator = workspace.Slice(limbCount, limbCount);
@@ -68,6 +71,31 @@ internal ref struct BoundedRational
         }
     }
 
+    private static void Add(Span<ulong> left, ReadOnlySpan<ulong> right)
+    {
+        var rightLength = GetLimbLength(right);
+        UInt128 carry = 0;
+
+        for (var index = 0; index < rightLength; index++)
+        {
+            var sum = (UInt128)left[index] + right[index] + carry;
+            left[index] = unchecked((ulong)sum);
+            carry = sum >> 64;
+        }
+
+        for (var index = rightLength; (index < left.Length) && (carry != 0); index++)
+        {
+            var sum = (UInt128)left[index] + carry;
+            left[index] = unchecked((ulong)sum);
+            carry = sum >> 64;
+        }
+
+        if (carry != 0)
+        {
+            ThrowHelper.ThrowInvalidOperationException("The bounded rational workspace overflowed.");
+        }
+    }
+
     private static void AddSmall(Span<ulong> value, ulong addend)
     {
         UInt128 carry = addend;
@@ -104,7 +132,12 @@ internal ref struct BoundedRational
             return leftBitLength < shiftedRightBitLength ? -1 : 1;
         }
 
-        for (var index = left.Length - 1; index >= 0; index--)
+        if (leftBitLength == 0)
+        {
+            return 0;
+        }
+
+        for (var index = (leftBitLength - 1) / 64; index >= 0; index--)
         {
             var leftLimb = left[index];
             var rightLimb = GetShiftedLimb(right, index, rightShift);
@@ -152,6 +185,22 @@ internal ref struct BoundedRational
         }
 
         return 0;
+    }
+
+    private static (uint Significand, int Exponent, bool Negative) DecodeSingle(float value)
+    {
+        if (!float.IsFinite(value))
+        {
+            ThrowHelper.ThrowArgumentException("The value must be finite.", nameof(value));
+        }
+
+        var bits = BitConverter.SingleToUInt32Bits(value);
+        var exponentBits = checked((int)((bits >> 23) & 0xFF));
+        var fraction = bits & 0x007F_FFFF;
+        var significand = (exponentBits == 0) ? fraction : (fraction | 0x0080_0000u);
+        var exponent = (exponentBits == 0) ? -149 : (exponentBits - 150);
+        var negative = (bits & 0x8000_0000u) != 0;
+        return (significand, (significand == 0) ? 0 : exponent, negative);
     }
 
     private static int GetBitLength(ReadOnlySpan<ulong> value)
@@ -244,9 +293,17 @@ internal ref struct BoundedRational
 
     private static void MultiplySmall(Span<ulong> value, ulong multiplier)
     {
+        var valueLength = GetLimbLength(value);
         UInt128 carry = 0;
 
-        for (var index = 0; index < value.Length; index++)
+        for (var index = 0; index < valueLength; index++)
+        {
+            var product = ((UInt128)value[index] * multiplier) + carry;
+            value[index] = unchecked((ulong)product);
+            carry = product >> 64;
+        }
+
+        for (var index = valueLength; (index < value.Length) && (carry != 0); index++)
         {
             var product = ((UInt128)value[index] * multiplier) + carry;
             value[index] = unchecked((ulong)product);
@@ -280,40 +337,34 @@ internal ref struct BoundedRational
             ThrowHelper.ThrowInvalidOperationException("The bounded rational workspace overflowed.");
         }
 
-        var wordShift = bitCount / 64;
-        var bitShift = bitCount % 64;
+        var destinationLength = checked((bitLength + bitCount + 63) / 64);
 
-        for (var destinationIndex = value.Length - 1; destinationIndex >= 0; destinationIndex--)
+        for (var destinationIndex = destinationLength - 1; destinationIndex >= 0; destinationIndex--)
         {
-            var sourceIndex = destinationIndex - wordShift;
-
-            if (sourceIndex < 0)
-            {
-                value[destinationIndex] = 0;
-                continue;
-            }
-
-            var shifted = value[sourceIndex] << bitShift;
-
-            if (bitShift != 0 && sourceIndex > 0)
-            {
-                shifted |= value[sourceIndex - 1] >> (64 - bitShift);
-            }
-
-            value[destinationIndex] = shifted;
+            value[destinationIndex] = GetShiftedLimb(value, destinationIndex, bitCount);
         }
+
+        value[destinationLength..].Clear();
     }
 
     private static void Subtract(Span<ulong> left, ReadOnlySpan<ulong> right)
     {
+        var rightLength = GetLimbLength(right);
         ulong borrow = 0;
 
-        for (var index = 0; index < left.Length; index++)
+        for (var index = 0; index < rightLength; index++)
         {
             var subtrahend = (UInt128)right[index] + borrow;
             var minuend = left[index];
             left[index] = unchecked((ulong)((UInt128)minuend - subtrahend));
             borrow = (UInt128)minuend < subtrahend ? 1ul : 0ul;
+        }
+
+        for (var index = rightLength; (index < left.Length) && (borrow != 0); index++)
+        {
+            var minuend = left[index];
+            left[index] = unchecked(minuend - borrow);
+            borrow = (minuend == 0) ? 1ul : 0ul;
         }
 
         if (borrow != 0)
@@ -338,6 +389,70 @@ internal ref struct BoundedRational
         {
             ThrowHelper.ThrowInvalidOperationException("The bounded rational subtraction underflowed.");
         }
+    }
+
+    internal readonly int CompareTo(scoped in BoundedRational other)
+    {
+        if ((_numerator.Length != other._numerator.Length)
+            || (_denominator.Length != other._denominator.Length)
+            || (SharesWorkspace(other) && !IsSameWorkspace(other)))
+        {
+            ThrowHelper.ThrowArgumentException("The bounded rational workspaces must have equal region sizes.", nameof(other));
+        }
+
+        if ((GetBitLength(_denominator) == 0) || (GetBitLength(other._denominator) == 0))
+        {
+            ThrowHelper.ThrowInvalidOperationException("The bounded rational comparison requires initialized positive denominators.");
+        }
+
+        var numeratorBitLength = GetBitLength(_numerator);
+        var otherNumeratorBitLength = GetBitLength(other._numerator);
+
+        if ((numeratorBitLength == 0) || (otherNumeratorBitLength == 0))
+        {
+            if ((numeratorBitLength == 0) && (otherNumeratorBitLength == 0))
+            {
+                return 0;
+            }
+
+            if (numeratorBitLength == 0)
+            {
+                return other._isNegative ? 1 : -1;
+            }
+
+            return _isNegative ? -1 : 1;
+        }
+
+        if (_isNegative != other._isNegative)
+        {
+            return _isNegative ? -1 : 1;
+        }
+
+        Multiply(_numerator, other._denominator, _product);
+        Multiply(other._numerator, _denominator, _scratch);
+        var comparison = CompareShifted(_product, _scratch, 0);
+        return _isNegative ? -comparison : comparison;
+    }
+
+    internal void CopyFrom(scoped in BoundedRational value)
+    {
+        if ((_numerator.Length != value._numerator.Length)
+            || (_denominator.Length != value._denominator.Length)
+            || (GetBitLength(value._denominator) == 0)
+            || (SharesWorkspace(value) && !IsSameWorkspace(value)))
+        {
+            ThrowHelper.ThrowArgumentException("The bounded rational workspaces must have equal region sizes.", nameof(value));
+        }
+
+        if (IsSameWorkspace(value))
+        {
+            _isNegative = value._isNegative;
+            return;
+        }
+
+        value._numerator.CopyTo(_numerator);
+        value._denominator.CopyTo(_denominator);
+        _isNegative = value._isNegative;
     }
 
     internal readonly void CopyNumeratorTo(Span<ulong> destination)
@@ -435,6 +550,55 @@ internal ref struct BoundedRational
         return result;
     }
 
+    internal void SetDifference(scoped in BoundedRational left, scoped in BoundedRational right)
+    {
+        if ((_numerator.Length != left._numerator.Length)
+            || (_numerator.Length != right._numerator.Length)
+            || (_denominator.Length != left._denominator.Length)
+            || (_denominator.Length != right._denominator.Length)
+            || (GetBitLength(left._denominator) == 0)
+            || (GetBitLength(right._denominator) == 0)
+            || SharesWorkspace(left)
+            || SharesWorkspace(right))
+        {
+            ThrowHelper.ThrowArgumentException("The bounded rational difference requires separate equal-sized workspaces.");
+        }
+
+        Multiply(left._numerator, right._denominator, _numerator);
+        Multiply(right._numerator, left._denominator, _scratch);
+        var comparison = CompareShifted(_numerator, _scratch, 0);
+        var leftIsNegative = (GetBitLength(left._numerator) != 0) && left._isNegative;
+        var rightIsNegative = (GetBitLength(right._numerator) != 0) && right._isNegative;
+
+        if (leftIsNegative != rightIsNegative)
+        {
+            Add(_numerator, _scratch);
+            _isNegative = leftIsNegative;
+        }
+        else
+        {
+            if (comparison < 0)
+            {
+                _scratch.CopyTo(_product);
+                _numerator.CopyTo(_scratch);
+                _product.CopyTo(_numerator);
+            }
+
+            Subtract(_numerator, _scratch);
+            _isNegative = leftIsNegative
+                ? (comparison > 0)
+                : (comparison < 0);
+        }
+
+        Multiply(left._denominator, right._denominator, _product);
+        _product.CopyTo(_denominator);
+
+        if (GetBitLength(_numerator) == 0)
+        {
+            _isNegative = false;
+        }
+    }
+
     internal void SetFraction(ReadOnlySpan<ulong> numerator, ReadOnlySpan<ulong> denominator, bool negative)
     {
         if (numerator.Length != _numerator.Length || denominator.Length != _denominator.Length || GetBitLength(denominator) == 0)
@@ -448,23 +612,39 @@ internal ref struct BoundedRational
         _isNegative = negative;
     }
 
-    internal void SetSingle(float value)
+    internal void SetRatio(float numerator, float denominator)
     {
-        if (!float.IsFinite(value))
+        var (numeratorSignificand, numeratorExponent, numeratorIsNegative) = DecodeSingle(numerator);
+        var (denominatorSignificand, denominatorExponent, denominatorIsNegative) = DecodeSingle(denominator);
+
+        if (denominatorSignificand == 0)
         {
-            ThrowHelper.ThrowArgumentException("The value must be finite.", nameof(value));
+            ThrowHelper.ThrowArgumentOutOfRangeException(nameof(denominator));
         }
 
         _numerator.Clear();
         _denominator.Clear();
+        _numerator[0] = numeratorSignificand;
+        _denominator[0] = denominatorSignificand;
+        var exponent = numeratorExponent - denominatorExponent;
 
-        var bits = BitConverter.SingleToUInt32Bits(value);
-        var magnitude = bits & 0x7FFF_FFFF;
-        var exponentBits = (int)((magnitude >> 23) & 0xFF);
-        var fractionBits = magnitude & 0x007F_FFFF;
-        var significand = exponentBits == 0 ? fractionBits : 0x0080_0000u | fractionBits;
-        var exponent = exponentBits == 0 ? -149 : exponentBits - 150;
+        if (exponent >= 0)
+        {
+            ShiftLeft(_numerator, exponent);
+        }
+        else
+        {
+            ShiftLeft(_denominator, -exponent);
+        }
 
+        _isNegative = numeratorIsNegative != denominatorIsNegative;
+    }
+
+    internal void SetSingle(float value)
+    {
+        var (significand, exponent, negative) = DecodeSingle(value);
+        _numerator.Clear();
+        _denominator.Clear();
         _numerator[0] = significand;
         _denominator[0] = 1;
 
@@ -477,7 +657,7 @@ internal ref struct BoundedRational
             ShiftLeft(_denominator, -exponent);
         }
 
-        _isNegative = (bits & 0x8000_0000) != 0;
+        _isNegative = negative;
     }
 
     internal readonly void ShiftDenominatorLeft(int bitCount)
@@ -636,6 +816,10 @@ internal ref struct BoundedRational
         return -CompareShifted(_denominator, _numerator, -exponent);
     }
 
+    private readonly bool IsSameWorkspace(scoped in BoundedRational other)
+        => _workspace.Overlaps(other._workspace, out var offset)
+            && (offset == 0);
+
     private readonly ulong RoundQuotient(int binaryShift)
     {
         var numeratorShift = Math.Max(binaryShift, 0);
@@ -672,4 +856,7 @@ internal ref struct BoundedRational
 
         return quotient;
     }
+
+    private readonly bool SharesWorkspace(scoped in BoundedRational other)
+        => _workspace.Overlaps(other._workspace);
 }

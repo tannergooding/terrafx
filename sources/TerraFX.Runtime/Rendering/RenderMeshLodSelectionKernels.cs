@@ -2,7 +2,6 @@
 
 using System;
 using System.Collections.Immutable;
-using BigInteger = System.Numerics.BigInteger;
 using TerraFX.Graphics;
 using TerraFX.Numerics;
 using TerraFX.Scenes;
@@ -11,6 +10,9 @@ namespace TerraFX.Rendering;
 
 internal static class RenderMeshLodSelectionKernels
 {
+    // Exact cross-products of finite binary32 clip ratios and Int32 viewport dimensions fit in 18 limbs.
+    private const int ExactWorkspaceLength = BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount;
+
     internal static RenderMeshLodSelectionResult SelectLevel(
         RenderMeshBounds bounds,
         ImmutableArray<float> thresholds,
@@ -67,14 +69,19 @@ internal static class RenderMeshLodSelectionKernels
 
     private static RenderMeshLodSelectionResult ChooseLevel(
         ImmutableArray<float> thresholds,
-        ExactRational pixelSize,
+        BoundedRational pixelSize,
         byte? previousLevel)
     {
+        Span<ulong> thresholdWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        var threshold = new BoundedRational(thresholdWorkspace);
+
         if (previousLevel is not byte prior)
         {
             for (var index = 0; index < thresholds.Length; index++)
             {
-                if (pixelSize.CompareTo(ExactRational.FromSingle(thresholds[index])) >= 0)
+                threshold.SetSingle(thresholds[index]);
+
+                if (pixelSize.CompareTo(threshold) >= 0)
                 {
                     return new RenderMeshLodSelectionResult(checked((byte)index), RenderMeshLodSelectionDiagnostic.None);
                 }
@@ -83,13 +90,20 @@ internal static class RenderMeshLodSelectionKernels
             return new RenderMeshLodSelectionResult(checked((byte)thresholds.Length), RenderMeshLodSelectionDiagnostic.None);
         }
 
+        Span<ulong> scaledPixelWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> scaledThresholdWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        var scaledPixel = new BoundedRational(scaledPixelWorkspace);
+        var scaledThreshold = new BoundedRational(scaledThresholdWorkspace);
         var level = checked((int)prior);
 
         while (level < thresholds.Length)
         {
-            var threshold = ExactRational.FromSingle(thresholds[level]);
+            scaledPixel.CopyFrom(pixelSize);
+            scaledPixel.MultiplyNumerator(10);
+            scaledThreshold.SetSingle(thresholds[level]);
+            scaledThreshold.MultiplyNumerator(9);
 
-            if (pixelSize.Multiply(10).CompareTo(threshold.Multiply(9)) >= 0)
+            if (scaledPixel.CompareTo(scaledThreshold) >= 0)
             {
                 break;
             }
@@ -99,9 +113,12 @@ internal static class RenderMeshLodSelectionKernels
 
         while (level > 0)
         {
-            var threshold = ExactRational.FromSingle(thresholds[level - 1]);
+            scaledPixel.CopyFrom(pixelSize);
+            scaledPixel.MultiplyNumerator(10);
+            scaledThreshold.SetSingle(thresholds[level - 1]);
+            scaledThreshold.MultiplyNumerator(11);
 
-            if (pixelSize.Multiply(10).CompareTo(threshold.Multiply(11)) <= 0)
+            if (scaledPixel.CompareTo(scaledThreshold) <= 0)
             {
                 break;
             }
@@ -110,30 +127,6 @@ internal static class RenderMeshLodSelectionKernels
         }
 
         return new RenderMeshLodSelectionResult(checked((byte)level), RenderMeshLodSelectionDiagnostic.None);
-    }
-
-    private static (int Significand, int Exponent) DecodeSingle(float value)
-    {
-        var bits = BitConverter.SingleToUInt32Bits(value);
-        var exponentBits = checked((int)((bits >> 23) & 0xFF));
-        var fraction = bits & 0x007F_FFFF;
-
-        if (exponentBits == 0xFF)
-        {
-            throw new ArgumentOutOfRangeException(nameof(value), "Exact Mesh LOD comparisons require finite binary32 values.");
-        }
-
-        var significand = (exponentBits == 0)
-            ? checked((int)fraction)
-            : checked((int)(fraction | 0x0080_0000));
-        var exponent = (exponentBits == 0) ? -149 : (exponentBits - 127 - 23);
-
-        if ((bits & 0x8000_0000) != 0)
-        {
-            significand = -significand;
-        }
-
-        return (significand, significand == 0 ? 0 : exponent);
     }
 
     private static RenderMeshLodSelectionResult GetExactPixelSize(
@@ -145,10 +138,21 @@ internal static class RenderMeshLodSelectionKernels
         CameraProjectionKind projectionKind,
         byte? previousLevel)
     {
-        var minimumX = default(ExactRational);
-        var maximumX = default(ExactRational);
-        var minimumY = default(ExactRational);
-        var maximumY = default(ExactRational);
+        Span<ulong> minimumXWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> maximumXWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> minimumYWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> maximumYWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> candidateWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> horizontalWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        Span<ulong> verticalWorkspace = stackalloc ulong[ExactWorkspaceLength];
+        var minimumX = new BoundedRational(minimumXWorkspace);
+        var maximumX = new BoundedRational(maximumXWorkspace);
+        var minimumY = new BoundedRational(minimumYWorkspace);
+        var maximumY = new BoundedRational(maximumYWorkspace);
+        var candidate = new BoundedRational(candidateWorkspace);
+        var horizontal = new BoundedRational(horizontalWorkspace);
+        var vertical = new BoundedRational(verticalWorkspace);
+        var hasProjection = false;
 
         for (var corner = 0; corner < 8; corner++)
         {
@@ -185,43 +189,63 @@ internal static class RenderMeshLodSelectionKernels
                 return new RenderMeshLodSelectionResult(0, RenderMeshLodSelectionDiagnostic.PerspectiveNearPlane);
             }
 
-            var ndcX = ExactRational.FromRatio(clip.X, clip.W);
-            var ndcY = ExactRational.FromRatio(clip.Y, clip.W);
+            candidate.SetRatio(clip.X, clip.W);
 
-            if (corner == 0)
+            if (!hasProjection)
             {
-                minimumX = maximumX = ndcX;
-                minimumY = maximumY = ndcY;
+                minimumX.CopyFrom(candidate);
+                maximumX.CopyFrom(candidate);
             }
             else
             {
-                if (ndcX.CompareTo(minimumX) < 0)
+                if (candidate.CompareTo(minimumX) < 0)
                 {
-                    minimumX = ndcX;
+                    minimumX.CopyFrom(candidate);
                 }
 
-                if (ndcX.CompareTo(maximumX) > 0)
+                if (candidate.CompareTo(maximumX) > 0)
                 {
-                    maximumX = ndcX;
-                }
-
-                if (ndcY.CompareTo(minimumY) < 0)
-                {
-                    minimumY = ndcY;
-                }
-
-                if (ndcY.CompareTo(maximumY) > 0)
-                {
-                    maximumY = ndcY;
+                    maximumX.CopyFrom(candidate);
                 }
             }
+
+            candidate.SetRatio(clip.Y, clip.W);
+
+            if (!hasProjection)
+            {
+                minimumY.CopyFrom(candidate);
+                maximumY.CopyFrom(candidate);
+            }
+            else
+            {
+                if (candidate.CompareTo(minimumY) < 0)
+                {
+                    minimumY.CopyFrom(candidate);
+                }
+
+                if (candidate.CompareTo(maximumY) > 0)
+                {
+                    maximumY.CopyFrom(candidate);
+                }
+            }
+
+            hasProjection = true;
         }
 
-        var horizontalPixels = maximumX.Subtract(minimumX).Multiply(viewport.Width);
-        var verticalPixels = maximumY.Subtract(minimumY).Multiply(viewport.Height);
-        var maximumPixels = horizontalPixels.CompareTo(verticalPixels) >= 0 ? horizontalPixels : verticalPixels;
-        var size = maximumPixels.Divide(2L * viewport.Height);
-        return ChooseLevel(thresholds, size, previousLevel);
+        horizontal.SetDifference(maximumX, minimumX);
+        horizontal.MultiplyNumerator((ulong)viewport.Width);
+        vertical.SetDifference(maximumY, minimumY);
+        vertical.MultiplyNumerator((ulong)viewport.Height);
+        var viewportDiameter = checked((ulong)(2L * viewport.Height));
+
+        if (horizontal.CompareTo(vertical) >= 0)
+        {
+            horizontal.MultiplyDenominator(viewportDiameter);
+            return ChooseLevel(thresholds, horizontal, previousLevel);
+        }
+
+        vertical.MultiplyDenominator(viewportDiameter);
+        return ChooseLevel(thresholds, vertical, previousLevel);
     }
 
     private static void ValidateBounds(RenderMeshBounds bounds)
@@ -268,59 +292,4 @@ internal static class RenderMeshLodSelectionKernels
         byte LevelIndex,
         RenderMeshLodSelectionDiagnostic Diagnostic);
 
-    private readonly struct ExactRational
-    {
-        private readonly BigInteger _denominator;
-        private readonly BigInteger _numerator;
-
-        private ExactRational(BigInteger numerator, BigInteger denominator)
-        {
-            _numerator = numerator;
-            _denominator = denominator;
-        }
-
-        public static ExactRational FromRatio(float numerator, float denominator)
-        {
-            var (numeratorSignificand, numeratorExponent) = DecodeSingle(numerator);
-            var (denominatorSignificand, denominatorExponent) = DecodeSingle(denominator);
-            var numeratorValue = new BigInteger(numeratorSignificand);
-            var denominatorValue = new BigInteger(denominatorSignificand);
-            var exponent = numeratorExponent - denominatorExponent;
-
-            if (exponent >= 0)
-            {
-                numeratorValue <<= exponent;
-            }
-            else
-            {
-                denominatorValue <<= -exponent;
-            }
-
-            return new ExactRational(numeratorValue, denominatorValue);
-        }
-
-        public static ExactRational FromSingle(float value)
-        {
-            var (significandValue, exponent) = DecodeSingle(value);
-            var significand = new BigInteger(significandValue);
-
-            return (exponent >= 0)
-                ? new ExactRational(significand << exponent, BigInteger.One)
-                : new ExactRational(significand, BigInteger.One << -exponent);
-        }
-
-        public int CompareTo(ExactRational other)
-            => (_numerator * other._denominator).CompareTo(other._numerator * _denominator);
-
-        public ExactRational Divide(long divisor)
-            => new(_numerator, _denominator * divisor);
-
-        public ExactRational Multiply(long multiplier)
-            => new(_numerator * multiplier, _denominator);
-
-        public ExactRational Subtract(ExactRational other)
-            => new(
-                (_numerator * other._denominator) - (other._numerator * _denominator),
-                _denominator * other._denominator);
-    }
 }

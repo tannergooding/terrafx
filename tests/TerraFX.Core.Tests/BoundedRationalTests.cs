@@ -47,6 +47,73 @@ internal sealed class BoundedRationalTests
     }
 
     [Test]
+    public void ExactDifferenceHandlesTwoNegativeRatiosAndNegativeDenominators()
+    {
+        Span<ulong> largerMagnitudeWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> smallerMagnitudeWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> differenceWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> expectedWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        var largerMagnitude = new BoundedRational(largerMagnitudeWorkspace);
+        largerMagnitude.SetRatio(-2.0f, 3.0f);
+        var smallerMagnitude = new BoundedRational(smallerMagnitudeWorkspace);
+        smallerMagnitude.SetRatio(1.0f, -3.0f);
+        var difference = new BoundedRational(differenceWorkspace);
+        difference.SetDifference(largerMagnitude, smallerMagnitude);
+        var expectedDifference = new BoundedRational(expectedWorkspace);
+        expectedDifference.SetRatio(-1.0f, 3.0f);
+
+        Assert.That(largerMagnitude.CompareTo(smallerMagnitude), Is.LessThan(0));
+        Assert.That(difference.CompareTo(expectedDifference), Is.Zero);
+    }
+
+    [Test]
+    public void ExactRatioComparisonAndDifferencePreserveSigns()
+    {
+        Span<ulong> exactThirdWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> roundedThirdWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> differenceWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> expectedWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> copyWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> reverseDifferenceWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        var exactThird = new BoundedRational(exactThirdWorkspace);
+        exactThird.SetRatio(1.0f, 3.0f);
+        var roundedThird = new BoundedRational(roundedThirdWorkspace);
+        roundedThird.SetSingle(1.0f / 3.0f);
+        var difference = new BoundedRational(differenceWorkspace);
+        difference.SetDifference(roundedThird, exactThird);
+        var expectedDifference = new BoundedRational(expectedWorkspace);
+        expectedDifference.SetRatio(1.0f, 100_663_296.0f);
+        var copy = new BoundedRational(copyWorkspace);
+        copy.CopyFrom(difference);
+        var reverseDifference = new BoundedRational(reverseDifferenceWorkspace);
+        reverseDifference.SetDifference(exactThird, roundedThird);
+
+        Assert.That(exactThird.CompareTo(roundedThird), Is.LessThan(0));
+        Assert.That(difference.CompareTo(expectedDifference), Is.Zero);
+        Assert.That(copy.CompareTo(expectedDifference), Is.Zero);
+        Assert.That(reverseDifference.IsNegative, Is.True);
+        Assert.That(reverseDifference.CompareTo(expectedDifference), Is.LessThan(0));
+    }
+
+    [Test]
+    public void ExactRatioOperationsHandleTheFullBinary32ExponentRange()
+    {
+        Span<ulong> largeWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> smallWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        Span<ulong> differenceWorkspace = stackalloc ulong[BoundedRational.MaximumLimbCount * BoundedRational.WorkspaceRegionCount];
+        var large = new BoundedRational(largeWorkspace);
+        large.SetRatio(float.MaxValue, float.Epsilon);
+        var small = new BoundedRational(smallWorkspace);
+        small.SetRatio(float.Epsilon, float.MaxValue);
+        var difference = new BoundedRational(differenceWorkspace);
+        difference.SetDifference(large, small);
+
+        Assert.That(large.CompareTo(small), Is.GreaterThan(0));
+        Assert.That(difference.IsNegative, Is.False);
+        Assert.That(difference.NumeratorIsZero, Is.False);
+    }
+
+    [Test]
     public void RoundsAtTheFiniteOverflowBoundaryWithoutReturningInfinity()
     {
         const ulong MaximumFinite = 0xFFFF_FF00_0000_0000;

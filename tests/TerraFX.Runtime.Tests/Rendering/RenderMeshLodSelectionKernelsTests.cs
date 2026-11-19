@@ -50,6 +50,29 @@ internal sealed class RenderMeshLodSelectionKernelsTests
     }
 
     [Test]
+    public void FiniteExtremeBinary32ProjectionRemainsExactlySelectable()
+    {
+        var viewProjection = new Matrix4x4(
+            new Vector4(float.MaxValue, 0, 0, 0),
+            Vector4.UnitY,
+            Vector4.UnitZ,
+            new Vector4(0, 0, 0, float.Epsilon));
+
+        var selection = RenderMeshLodSelectionKernels.SelectLevel(
+            BoundsForPixelSize(0.5f),
+            [0.5f],
+            Matrix4x4.Identity,
+            viewProjection,
+            new RenderArea(0, 0, int.MaxValue, int.MaxValue),
+            CameraProjectionKind.Orthographic,
+            previousLevel: null,
+            boundsQualified: true);
+
+        Assert.That(selection.LevelIndex, Is.Zero);
+        Assert.That(selection.Diagnostic, Is.EqualTo(RenderMeshLodSelectionKernels.RenderMeshLodSelectionDiagnostic.None));
+    }
+
+    [Test]
     public void HysteresisUsesAdjacentMovesForLargeJumps()
     {
         var thresholds = ImmutableArray.Create(0.8f, 0.4f, 0.2f);
@@ -162,6 +185,51 @@ internal sealed class RenderMeshLodSelectionKernelsTests
 
         Assert.That(result.LevelIndex, Is.Zero);
         Assert.That(result.Diagnostic, Is.EqualTo(RenderMeshLodSelectionKernels.RenderMeshLodSelectionDiagnostic.UnrepresentableProjection));
+    }
+
+    [Test]
+    public void MeasuresExactSelectionAllocationTraffic()
+    {
+        const int IterationCount = 1024;
+        var bounds = new RenderMeshBounds(
+            new Vector3(-0.5f, -0.5f, 0),
+            new Vector3(0.5f, 0.5f, 0),
+            Vector3.Zero,
+            1);
+        var thresholds = ImmutableArray.Create(0.75f, 0.4f, 0.2f);
+        var viewport = new RenderArea(0, 0, 1920, 1080);
+
+        _ = RenderMeshLodSelectionKernels.SelectLevel(
+            bounds,
+            thresholds,
+            Matrix4x4.Identity,
+            Matrix4x4.Identity,
+            viewport,
+            CameraProjectionKind.Orthographic,
+            previousLevel: null,
+            boundsQualified: true);
+
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        var selectedLevelSum = 0;
+
+        for (var index = 0; index < IterationCount; index++)
+        {
+            var selection = RenderMeshLodSelectionKernels.SelectLevel(
+                bounds,
+                thresholds,
+                Matrix4x4.Identity,
+                Matrix4x4.Identity,
+                viewport,
+                CameraProjectionKind.Orthographic,
+                previousLevel: null,
+                boundsQualified: true);
+            selectedLevelSum += selection.LevelIndex;
+        }
+
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        Assert.That(selectedLevelSum, Is.Zero);
+        Assert.That(allocatedBytes, Is.Zero);
+        TestContext.WriteLine($"Exact LOD selection allocation traffic: {allocatedBytes / IterationCount} bytes per call ({allocatedBytes} B / {IterationCount} calls).");
     }
 
     [Test]
