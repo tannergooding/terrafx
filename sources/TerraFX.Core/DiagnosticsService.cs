@@ -246,7 +246,6 @@ public sealed class DiagnosticsService
 
     private static long CalculateWarningPayloadByteCharge(Diagnostic source, long occurrenceCount)
     {
-        var occurrenceCountText = occurrenceCount.ToString(CultureInfo.InvariantCulture);
         var bytes = checked(
             DiagnosticObjectBytes
             + DiagnosticRetentionControlBytes
@@ -255,7 +254,7 @@ public sealed class DiagnosticsService
             + StringCharge(source.Operation)
             + StringCharge(source.Message)
             + StringCharge(OccurrenceCountKey)
-            + StringCharge(occurrenceCountText));
+            + StringCharge(GetPositiveDecimalDigitCount(occurrenceCount)));
 
         if (source.CommandIdentity is string commandIdentity)
         {
@@ -329,6 +328,20 @@ public sealed class DiagnosticsService
             + (2 * ArrayCharge(0, Unsafe.SizeOf<DiagnosticContextEntry>()))
             + CalculateAppendWarningWorkspaceBytes(contextCount: 0)
             + CalculateSnapshotConstructionBytes(maximumRecords));
+
+    private static int GetPositiveDecimalDigitCount(long value)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(value);
+        var digitCount = 1;
+
+        while (value >= 10)
+        {
+            value /= 10;
+            digitCount++;
+        }
+
+        return digitCount;
+    }
 
     private static bool Matches(Diagnostic diagnostic, DiagnosticQuery query)
         => (diagnostic.Severity >= query.MinimumSeverity)
