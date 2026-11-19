@@ -176,6 +176,11 @@ internal sealed class DiagnosticsServiceTests
             executionSessionId,
             17,
             account);
+        service.Write(
+            CreateDiagnostic("critical", DiagnosticSeverity.Critical, 2, worldGuid),
+            executionSessionId,
+            17,
+            account);
 
         const BindingFlags instanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
         var recordsField = typeof(DiagnosticsService).GetField("_records", instanceFlags)
@@ -184,25 +189,35 @@ internal sealed class DiagnosticsServiceTests
             ?? throw new InvalidOperationException("The diagnostic record array was not initialized.");
         var firstEntry = records.GetValue(0)
             ?? throw new InvalidOperationException("The first diagnostic entry was not boxed.");
+        var secondEntry = records.GetValue(1)
+            ?? throw new InvalidOperationException("The second diagnostic entry was not boxed.");
         var retentionField = firstEntry.GetType().GetField("Retention", instanceFlags)
             ?? throw new InvalidOperationException("The diagnostic retention field was not found.");
-        var retention = retentionField.GetValue(firstEntry)
+        var firstRetention = retentionField.GetValue(firstEntry)
             ?? throw new InvalidOperationException("The diagnostic retention was not initialized.");
-        var recordPayloadField = retention.GetType().GetField("_record", instanceFlags)
+        var secondRetention = retentionField.GetValue(secondEntry)
+            ?? throw new InvalidOperationException("The critical diagnostic retention was not initialized.");
+        var recordPayloadField = firstRetention.GetType().GetField("_record", instanceFlags)
             ?? throw new InvalidOperationException("The retained record field was not found.");
-        var accountField = retention.GetType().GetField("_account", instanceFlags)
+        var accountField = firstRetention.GetType().GetField("_account", instanceFlags)
             ?? throw new InvalidOperationException("The retained account field was not found.");
-        var payloadBytesField = retention.GetType().GetField("_payloadBytes", instanceFlags)
+        var payloadBytesField = firstRetention.GetType().GetField("_payloadBytes", instanceFlags)
             ?? throw new InvalidOperationException("The retained payload-size field was not found.");
 
         service.Close();
 
         var clearedFirstEntry = records.GetValue(0)
             ?? throw new InvalidOperationException("The cleared diagnostic entry was not boxed.");
+        var clearedSecondEntry = records.GetValue(1)
+            ?? throw new InvalidOperationException("The cleared critical entry was not boxed.");
         Assert.That(retentionField.GetValue(clearedFirstEntry), Is.Null);
-        Assert.That(recordPayloadField.GetValue(retention), Is.Null);
-        Assert.That(accountField.GetValue(retention), Is.Null);
-        Assert.That(payloadBytesField.GetValue(retention), Is.EqualTo(0L));
+        Assert.That(retentionField.GetValue(clearedSecondEntry), Is.Null);
+        Assert.That(recordPayloadField.GetValue(firstRetention), Is.Null);
+        Assert.That(accountField.GetValue(firstRetention), Is.Null);
+        Assert.That(payloadBytesField.GetValue(firstRetention), Is.EqualTo(0L));
+        Assert.That(recordPayloadField.GetValue(secondRetention), Is.Null);
+        Assert.That(accountField.GetValue(secondRetention), Is.Null);
+        Assert.That(payloadBytesField.GetValue(secondRetention), Is.EqualTo(0L));
         Assert.That(account.ReservedBytes, Is.Zero);
         capability.Close();
     }
