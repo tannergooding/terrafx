@@ -155,7 +155,7 @@ This expanded source inspection integrates the selection-gate update at HEAD `63
 
 The repository-local `.\.dotnet\dotnet.exe --info` identifies SDK `11.0.100-rc.3.26522.148`, host `11.0.0-rc.3.26522.148` at runtime commit `5254d8bcf5`, Windows `10.0.26300`, x64. The 80-byte stride observation remains the earlier Debug/Release managed RC3 result linked above. This update ran the full Core suite and focused Runtime LOD selection suite after the bounded-rational change, but no owner/layout allocation probe or selected World/Scene/pool operation. No portable, native or AOT claim follows.
 
-The current Runtime and Runtime.Tests binaries were rehashed after those validations. The Runtime test binaries were executed only for the focused LOD selection suite, not for the retained cosmetic-credit gate/layout results; these hashes do not identify the modules behind those earlier observations. The layout addendum retains its original module identities and binary hashes. The focused gate TRX files are retained gate evidence, not proof about these binaries. `results.json` is the earlier layout-batch record, not a replacement for the `*-current-*` layout TRX files. Reconcile changed inputs before applying any disposition.
+The current Runtime and Runtime.Tests binaries were rehashed after the Core, LOD-selection, and World-subscription validations. The Runtime test binaries were executed only for the focused LOD-selection and World-subscription suites, not for the retained cosmetic-credit gate/layout results; these hashes do not identify the modules behind those earlier observations. The layout addendum retains its original module identities and binary hashes. The focused gate TRX files are retained gate evidence, not proof about these binaries. `results.json` is the earlier layout-batch record, not a replacement for the `*-current-*` layout TRX files. Reconcile changed inputs before applying any disposition.
 
 | Input | SHA-256 |
 |---|---|
@@ -199,10 +199,10 @@ The current Runtime and Runtime.Tests binaries were rehashed after those validat
 | `tests\TerraFX.Runtime.Tests\Entities\WorldOptionsTests.cs` | `AE075BEBF688FA767B0FE6906495DBA8DCABA6DD4B59E82BCC9658BBA4C6579C` |
 | `.dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148\System.Private.CoreLib.dll` | `DF53885902E896A2B40988237CBE9CBB9F1BB0743200F05FE9257C56A29C5732` |
 | `.dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148\coreclr.dll` | `46A09D97AD8DD30D400A86C90AF707BEE7593B585D3CCB8586C4FFFCA404D1E2` |
-| `artifacts\bin\sources\TerraFX.Runtime\Debug\net11.0\TerraFX.Runtime.dll` | `E4A0FD705E48C0A34806BDAA440797C1D22DD0126D50CB624FB403F4BC2E88F9` |
-| `artifacts\bin\sources\TerraFX.Runtime\Release\net11.0\TerraFX.Runtime.dll` | `9A19F6C7EAC63E8926FA38FD9E0F1236BC4C0F6F4E3C5216FE6492ECE52D966A` |
-| `artifacts\bin\tests\TerraFX.Runtime.Tests\Debug\net11.0\TerraFX.Runtime.Tests.dll` | `6D89DE04ADDB94142CEEFBC922E2E658BA699483B737EFDB9B7181E2633A6087` |
-| `artifacts\bin\tests\TerraFX.Runtime.Tests\Release\net11.0\TerraFX.Runtime.Tests.dll` | `0B9EF8BFE83F8A0E9EB82DD053D37F48B49BCE6261283D59C006E5640C02452C` |
+| `artifacts\bin\sources\TerraFX.Runtime\Debug\net11.0\TerraFX.Runtime.dll` | `542BCF0B4DE22AEE185C6DE2B75BC60CB413F13B5D554F2AD1D2A396D160DA1D` |
+| `artifacts\bin\sources\TerraFX.Runtime\Release\net11.0\TerraFX.Runtime.dll` | `2CA525D91AF312997F5D113B789EC3C2D6EB432636B9061CBEABF1F14D4E8DC1` |
+| `artifacts\bin\tests\TerraFX.Runtime.Tests\Debug\net11.0\TerraFX.Runtime.Tests.dll` | `352D102C9C9EC7F1C46AC015E36E77B2DBCCDDC32F7D12439B136EA2CC9EB718` |
+| `artifacts\bin\tests\TerraFX.Runtime.Tests\Release\net11.0\TerraFX.Runtime.Tests.dll` | `EBC04CF033E7B3796F73E0BC34DB0D9C374363179889150590BAD573DBC98A79` |
 | `artifacts\tst\Debug\cosmetic-credit-selection-debug.trx` | `F48F5091AA3AA35D75947EA8E95AC4E411089BF194CEF567A76A3B2772D28FE2` |
 | `artifacts\tst\Release\cosmetic-credit-selection-release.trx` | `FC6DD7E49D015F946BB30AB3EB655455929BF8E1A48D3302E18464A9CF9E4CD9` |
 | `artifacts\tst\Debug\particle-credit-cell-layout-current-debug.trx` | `952D95D0C2A7D598B200DF007CF8275BADE42C03AED4414EB8099F5937B8247C` |
