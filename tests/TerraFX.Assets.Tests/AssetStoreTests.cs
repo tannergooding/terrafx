@@ -186,6 +186,17 @@ internal sealed class AssetStoreTests
         throw new AssertionException("The native envelope schema is missing.");
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<(AssetPackageBacking Backing, WeakReference<AssetStoreOptions> Options)> OpenBackingWithoutRetainingOptions(
+        string path,
+        byte[] package)
+    {
+        var options = CreateOptions(path, package, CreateRegistration());
+        var weakOptions = new WeakReference<AssetStoreOptions>(options);
+        var backing = await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false);
+        return (backing, weakOptions);
+    }
+
     private static void WriteFieldHeader(
         Span<byte> destination,
         uint tag,
@@ -1472,6 +1483,35 @@ internal sealed class AssetStoreTests
             await store.DisposeAsync().ConfigureAwait(false);
             File.Delete(firstPath);
             File.Delete(secondPath);
+        }
+    }
+
+    [Test]
+    public async Task PackageBackingDoesNotRetainOpenedOptions()
+    {
+        var package = AssetPackageReaderTests.CreatePackage();
+        var path = AssetPackageReaderTests.WritePackage(package);
+
+        try
+        {
+            var (backing, weakOptions) = await OpenBackingWithoutRetainingOptions(path, package).ConfigureAwait(false);
+
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+
+                Assert.That(weakOptions.TryGetTarget(out _), Is.False);
+            }
+            finally
+            {
+                backing.ReleaseOwner();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
         }
     }
 

@@ -13,12 +13,12 @@ internal readonly struct AssetOwnedReadDescriptor
         AssetId = entry.AssetId;
         BackingToken = backing.BackingToken;
         CodecReceipt = codecReceipt;
-        CpuAssetBudgetBytes = backing.Options.CpuAssetBudgetBytes;
+        CpuAssetBudgetBytes = backing.CpuAssetBudgetBytes;
         DecodedLength = entry.DecodedLength;
         EntryCodec = entry.Codec;
-        MaximumConcurrentDecodeBytes = backing.Options.MaximumConcurrentDecodeBytes;
-        MaximumDecodedAssetBytes = backing.Options.MaximumDecodedAssetBytes;
-        MaximumLiveAssetLeases = backing.Options.MaximumLiveAssetLeases;
+        MaximumConcurrentDecodeBytes = backing.MaximumConcurrentDecodeBytes;
+        MaximumDecodedAssetBytes = backing.MaximumDecodedAssetBytes;
+        MaximumLiveAssetLeases = backing.MaximumLiveAssetLeases;
         PackageByteLength = backing.PackageByteLength;
         ProfileId = backing.ProfileId;
         ReadLimits = backing.ReadLimits;
@@ -81,10 +81,10 @@ internal readonly struct AssetOwnedReadDescriptor
             && (RequiredPackageCodec == codec.RequiredPackageCodec)
             && (RequiredPackageCodec is not AssetPackagePayloadCodec requiredCodec
                 || EntryCodec == (byte)requiredCodec)
-            && (CpuAssetBudgetBytes == backing.Options.CpuAssetBudgetBytes)
-            && (MaximumConcurrentDecodeBytes == backing.Options.MaximumConcurrentDecodeBytes)
-            && (MaximumDecodedAssetBytes == backing.Options.MaximumDecodedAssetBytes)
-            && (MaximumLiveAssetLeases == backing.Options.MaximumLiveAssetLeases)
+            && (CpuAssetBudgetBytes == backing.CpuAssetBudgetBytes)
+            && (MaximumConcurrentDecodeBytes == backing.MaximumConcurrentDecodeBytes)
+            && (MaximumDecodedAssetBytes == backing.MaximumDecodedAssetBytes)
+            && (MaximumLiveAssetLeases == backing.MaximumLiveAssetLeases)
             && (PackageByteLength == backing.PackageByteLength)
             && ProfileId.Equals(backing.ProfileId)
             && ReferenceEquals(ReadLimits, backing.ReadLimits)

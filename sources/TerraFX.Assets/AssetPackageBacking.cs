@@ -37,16 +37,29 @@ internal sealed class AssetPackageBacking
         Entries = entries;
         PackageByteLength = packageByteLength;
         ProfileId = profileId;
-        Options = options;
+        CpuAssetBudgetBytes = options.CpuAssetBudgetBytes;
+        ExpectedPackageSha256 = options.ExpectedPackageSha256;
+        MaximumConcurrentDecodeBytes = options.MaximumConcurrentDecodeBytes;
+        MaximumDecodedAssetBytes = options.MaximumDecodedAssetBytes;
+        MaximumLiveAssetLeases = options.MaximumLiveAssetLeases;
+        Registration = options.Registration;
         _readLimits = CreateReadLimits(options.MaximumDecodedAssetBytes);
         SpatialSettings = spatialSettings;
     }
 
     internal AssetPackageBackingToken BackingToken => _backingToken;
 
+    internal long CpuAssetBudgetBytes { get; }
+
     internal ImmutableArray<AssetPackageEntry> Entries { get; }
 
-    internal AssetStoreOptions Options { get; }
+    internal ImmutableArray<byte> ExpectedPackageSha256 { get; }
+
+    internal int MaximumConcurrentDecodeBytes { get; }
+
+    internal int MaximumDecodedAssetBytes { get; }
+
+    internal int MaximumLiveAssetLeases { get; }
 
     internal long PackageByteLength { get; }
 
@@ -54,7 +67,7 @@ internal sealed class AssetPackageBacking
 
     internal EbinReadLimits ReadLimits => _readLimits;
 
-    internal AssetStoreRegistration Registration => Options.Registration;
+    internal AssetStoreRegistration Registration { get; }
 
     internal SpatialSettings SpatialSettings { get; }
 

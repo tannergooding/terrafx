@@ -231,7 +231,7 @@ public sealed class AssetPackageLease : IDisposable
             lock (_gate)
             {
                 ThrowIfNotActive(instance);
-                return _backing.Options.MaximumDecodedAssetBytes;
+                return _backing.MaximumDecodedAssetBytes;
             }
         }
 
@@ -240,7 +240,7 @@ public sealed class AssetPackageLease : IDisposable
             lock (_gate)
             {
                 ThrowIfNotActive(instance);
-                return _backing.Options.ExpectedPackageSha256;
+                return _backing.ExpectedPackageSha256;
             }
         }
 
@@ -249,7 +249,7 @@ public sealed class AssetPackageLease : IDisposable
             lock (_gate)
             {
                 ThrowIfNotActive(instance);
-                return _backing.Options.Registration;
+                return _backing.Registration;
             }
         }
 

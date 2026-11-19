@@ -20,7 +20,7 @@ public sealed partial class AssetStore
             backing = _currentBacking
                 ?? throw new InvalidOperationException("The asset store has no selected package.");
 
-            if (_liveAssetLeases >= backing.Options.MaximumLiveAssetLeases)
+            if (_liveAssetLeases >= backing.MaximumLiveAssetLeases)
             {
                 throw new InvalidOperationException("The live asset lease budget is exhausted.");
             }

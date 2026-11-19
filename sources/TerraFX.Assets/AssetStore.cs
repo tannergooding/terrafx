@@ -348,7 +348,7 @@ public sealed partial class AssetStore : IAsyncDisposable
             var backing = _currentBacking
                 ?? throw new InvalidOperationException("The asset store has no selected package.");
 
-            if (_liveAssetLeases >= backing.Options.MaximumLiveAssetLeases)
+            if (_liveAssetLeases >= backing.MaximumLiveAssetLeases)
             {
                 throw new InvalidOperationException("The live asset lease budget is exhausted.");
             }
@@ -406,17 +406,16 @@ public sealed partial class AssetStore : IAsyncDisposable
             }
 
             decodedBytes = checked((long)entry.DecodedLength);
-            var options = backing.Options;
 
-            if ((decodedBytes > options.CpuAssetBudgetBytes)
-                || (_liveAssetBytes > options.CpuAssetBudgetBytes - decodedBytes)
-                || (_liveAssetLeases >= options.MaximumLiveAssetLeases))
+            if ((decodedBytes > backing.CpuAssetBudgetBytes)
+                || (_liveAssetBytes > backing.CpuAssetBudgetBytes - decodedBytes)
+                || (_liveAssetLeases >= backing.MaximumLiveAssetLeases))
             {
                 throw new InvalidOperationException("The live asset lease budget is exhausted.");
             }
 
-            if ((decodedBytes > options.MaximumConcurrentDecodeBytes)
-                || (_activeDecodeBytes > options.MaximumConcurrentDecodeBytes - decodedBytes))
+            if ((decodedBytes > backing.MaximumConcurrentDecodeBytes)
+                || (_activeDecodeBytes > backing.MaximumConcurrentDecodeBytes - decodedBytes))
             {
                 throw new InvalidOperationException("The concurrent asset decode budget is exhausted.");
             }
@@ -466,7 +465,7 @@ public sealed partial class AssetStore : IAsyncDisposable
     {
         lock (_gate)
         {
-            var maximumDecodeBytes = (_currentBacking ?? backing).Options.MaximumConcurrentDecodeBytes;
+            var maximumDecodeBytes = (_currentBacking ?? backing).MaximumConcurrentDecodeBytes;
 
             if ((decodedBytes > maximumDecodeBytes)
                 || (_activeDecodeBytes > maximumDecodeBytes - decodedBytes))
