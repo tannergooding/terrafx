@@ -1947,22 +1947,23 @@ internal sealed unsafe partial class VulkanBackendDevice
                 continue;
             }
 
-            var groupUniformBufferBindings =
-                ImmutableArray.CreateBuilder<VulkanBackendUniformBufferBinding>(groupUniformBufferBindingCount);
-            var groupStorageBufferBindings =
-                ImmutableArray.CreateBuilder<VulkanBackendStorageBufferBinding>(groupStorageBufferBindingCount);
-            var groupImageBindings =
-                ImmutableArray.CreateBuilder<VulkanBackendSampledImageBinding>(groupImageBindingCount);
-            var groupStorageImageBindings =
-                ImmutableArray.CreateBuilder<VulkanBackendStorageImageBinding>(groupStorageImageBindingCount);
-            var groupSamplerBindings =
-                ImmutableArray.CreateBuilder<VulkanBackendSamplerBinding>(groupSamplerBindingCount);
+            var groupUniformBufferBindings = new VulkanBackendUniformBufferBinding[groupUniformBufferBindingCount];
+            var groupStorageBufferBindings = new VulkanBackendStorageBufferBinding[groupStorageBufferBindingCount];
+            var groupImageBindings = new VulkanBackendSampledImageBinding[groupImageBindingCount];
+            var groupStorageImageBindings = new VulkanBackendStorageImageBinding[groupStorageImageBindingCount];
+            var groupSamplerBindings = new VulkanBackendSamplerBinding[groupSamplerBindingCount];
+            var groupUniformBufferBindingIndex = 0;
+            var groupStorageBufferBindingIndex = 0;
+            var groupImageBindingIndex = 0;
+            var groupStorageImageBindingIndex = 0;
+            var groupSamplerBindingIndex = 0;
 
             foreach (var binding in uniformBufferBindings)
             {
                 if (binding.Group == group)
                 {
-                    groupUniformBufferBindings.Add(binding);
+                    groupUniformBufferBindings[groupUniformBufferBindingIndex] = binding;
+                    groupUniformBufferBindingIndex++;
                 }
             }
 
@@ -1970,7 +1971,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (binding.Group == group)
                 {
-                    groupStorageBufferBindings.Add(binding);
+                    groupStorageBufferBindings[groupStorageBufferBindingIndex] = binding;
+                    groupStorageBufferBindingIndex++;
                 }
             }
 
@@ -1978,7 +1980,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (binding.Group == group)
                 {
-                    groupImageBindings.Add(binding);
+                    groupImageBindings[groupImageBindingIndex] = binding;
+                    groupImageBindingIndex++;
                 }
             }
 
@@ -1986,7 +1989,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (binding.Group == group)
                 {
-                    groupStorageImageBindings.Add(binding);
+                    groupStorageImageBindings[groupStorageImageBindingIndex] = binding;
+                    groupStorageImageBindingIndex++;
                 }
             }
 
@@ -1994,7 +1998,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (binding.Group == group)
                 {
-                    groupSamplerBindings.Add(binding);
+                    groupSamplerBindings[groupSamplerBindingIndex] = binding;
+                    groupSamplerBindingIndex++;
                 }
             }
 
@@ -2005,11 +2010,11 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             var descriptorSet = CreateGraphDescriptorSet(
                 pipeline,
-                groupUniformBufferBindings.MoveToImmutable(),
-                groupStorageBufferBindings.MoveToImmutable(),
-                groupImageBindings.MoveToImmutable(),
-                groupStorageImageBindings.MoveToImmutable(),
-                groupSamplerBindings.MoveToImmutable(),
+                groupUniformBufferBindings,
+                groupStorageBufferBindings,
+                groupImageBindings,
+                groupStorageImageBindings,
+                groupSamplerBindings,
                 group);
             descriptorSets[descriptorSetCount++] = descriptorSet;
             var nativeDescriptorSet = descriptorSet.DescriptorSet;
