@@ -48,11 +48,13 @@ internal sealed class DiagnosticsServiceTests
         long submissionSequence,
         Guid drawId,
         int degenerateVertexCount = 1,
-        int testedVertexCount = 3)
+        int testedVertexCount = 3,
+        Guid? commandDrawId = null)
     {
         var snapshotId = new Guid("11112222-3333-4444-8555-66778899aabb");
         var snapshotIdText = snapshotId.ToString("N");
         var drawIdText = drawId.ToString("N");
+        var commandDrawIdText = (commandDrawId ?? drawId).ToString("N");
         var submissionSequenceText = submissionSequence.ToString(CultureInfo.InvariantCulture);
         var commandIdentity = string.Concat(
             "submission/",
@@ -60,7 +62,7 @@ internal sealed class DiagnosticsServiceTests
             "/snapshot/",
             snapshotIdText,
             "/draw/",
-            drawIdText);
+            commandDrawIdText);
 
         return new Diagnostic(
             "DegenerateSkinnedNormal",
@@ -567,6 +569,11 @@ internal sealed class DiagnosticsServiceTests
                 1,
                 new Guid("02000000-0000-0000-0000-000000000002"),
                 testedVertexCount: 262145),
+            CreateSkinnedNormalDiagnostic(
+                worldGuid,
+                1,
+                new Guid("03000000-0000-0000-0000-000000000003"),
+                commandDrawId: new Guid("04000000-0000-0000-0000-000000000004")),
         ];
 
         foreach (var diagnostic in invalidWarnings)
