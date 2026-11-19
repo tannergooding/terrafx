@@ -1585,9 +1585,13 @@ public sealed partial class GraphicsDevice
 
     private void QuarantineResource(GraphicsResourceOwner resource, Exception exception)
     {
+        if (!_resources.Contains(resource))
+        {
+            s_quarantinedResources.Add(resource);
+        }
+
         resource.MarkQuarantined();
         _ = _deferredRetirements.Remove(resource);
-        s_quarantinedResources.Add(resource);
         _hasQuarantinedResources = true;
         _retirementFailure ??= exception;
         resource.RetirementReservation.Dispose();
