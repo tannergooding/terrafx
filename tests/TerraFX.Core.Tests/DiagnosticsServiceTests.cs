@@ -326,11 +326,12 @@ internal sealed class DiagnosticsServiceTests
             string code,
             string operation,
             string message,
-            ImmutableArray<DiagnosticContextEntry> context)
+            ImmutableArray<DiagnosticContextEntry> context,
+            DiagnosticSeverity severity = DiagnosticSeverity.Warning)
         {
             return new Diagnostic(
                 code,
-                DiagnosticSeverity.Warning,
+                severity,
                 monotonicTimestamp: 1,
                 hostId: null,
                 worldGuid: null,
@@ -410,19 +411,36 @@ internal sealed class DiagnosticsServiceTests
         {
             var service = new DiagnosticsService(4);
             var first = CreateDiagnostic("retention-warm", operation, message, context);
-            var second = CreateDiagnostic("retention-measured", operation, message, context);
+            const int iterationCount = 8;
+            var diagnostics = new Diagnostic[iterationCount];
+
+            for (var index = 0; index < diagnostics.Length; index++)
+            {
+                diagnostics[index] = CreateDiagnostic(
+                    $"retention-{index}",
+                    operation,
+                    message,
+                    context,
+                    DiagnosticSeverity.Information);
+            }
+
             service.Write(first, null, null);
             GC.KeepAlive(first);
-            GC.KeepAlive(second);
+            GC.KeepAlive(diagnostics);
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
             var start = GC.GetAllocatedBytesForCurrentThread();
-            service.Write(second, null, null);
-            var bytes = checked(GC.GetAllocatedBytesForCurrentThread() - start);
+
+            for (var index = 0; index < diagnostics.Length; index++)
+            {
+                service.Write(diagnostics[index], null, null);
+            }
+
+            var bytes = checked((GC.GetAllocatedBytesForCurrentThread() - start) / iterationCount);
             GC.KeepAlive(service);
-            GC.KeepAlive(second);
+            GC.KeepAlive(diagnostics);
             service.Close();
             return bytes;
         }
@@ -471,7 +489,7 @@ internal sealed class DiagnosticsServiceTests
         TestContext.WriteLine($"Seven-entry context copy delta: {(contextBytes - noContextBytes) / iterationCount} bytes per record");
         TestContext.WriteLine($"DiagnosticContextEntry stride: {Unsafe.SizeOf<DiagnosticContextEntry>()} bytes");
         TestContext.WriteLine($"WorldDiagnosticAttributionAccount allocation: {attributionAccountBytes} bytes");
-        TestContext.WriteLine($"DiagnosticsService retention-entry allocation: {retentionBytes} bytes");
+        TestContext.WriteLine($"DiagnosticsService preconstructed Information admission: {retentionBytes} bytes");
         TestContext.WriteLine(
             $"DiagnosticsService construction: capacity=1, {singleRecordServiceBytes} bytes; capacity={diagnosticCapacity}, {fullRingServiceBytes} bytes; ring allocation delta={ringAllocationDelta} bytes, inferred entry-stride={measuredEntryStride}, remainder={ringStrideRemainder}");
 
