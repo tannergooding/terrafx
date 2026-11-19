@@ -83,6 +83,8 @@ public sealed partial class GraphicsDevice
         DeviceEpoch = deviceEpoch;
         _status = (int)GraphicsDeviceStatus.Ready;
         _shutdownTask = WaitForShutdownAndOwnerExitAsync(_shutdownCompletion.Task, _ownerThread);
+        _graphSubmissionRetentionAnchor = new GraphSubmissionRetentionAnchor(this, frameSlotCount);
+        RegisterGraphSubmissionRetentionAnchor(_graphSubmissionRetentionAnchor);
     }
 
     /// <summary>Gets the immutable capabilities reported by the selected backend.</summary>
@@ -2106,6 +2108,7 @@ public sealed partial class GraphicsDevice
             var backendDevice = _backendDevice
                 ?? throw new InvalidOperationException("A ready GraphicsDevice must own its backend device.");
             backendDevice.Dispose();
+            UnregisterGraphSubmissionRetentionAnchor();
             _pipelinesByHandle.Clear();
             _backendDevice = null;
             Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Disposed);

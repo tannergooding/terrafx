@@ -88,6 +88,11 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
             {
                 _ = writer.Completion.TrySetCanceled(writer.CancellationToken);
             }
+            else if (writer.State == 4)
+            {
+                _ = writer.Completion.TrySetException(
+                    new InvalidOperationException("The Graphics graph-retention cells are unavailable."));
+            }
             else
             {
                 _ = writer.Completion.TrySetException(new ChannelClosedException());
@@ -172,6 +177,16 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
                 CloseRetirementReservationsUnderLock();
                 SignalWorkUnderLock();
             }
+        }
+    }
+
+    internal void ReleaseGraphRetentionCell(IGraphicsGraphRetentionCellWork work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+
+        lock (_retirementGate)
+        {
+            work.ReleaseRetentionCell();
         }
     }
 
@@ -275,8 +290,16 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
                 var accepted = writer.Work
                     ?? throw new InvalidOperationException("A pending Graphics request lost its work.");
                 writer.Work = null;
+
+                if (!TryEnqueueRequestUnderLock(accepted))
+                {
+                    writer.State = 4;
+                    writer.Next = completed;
+                    completed = writer;
+                    continue;
+                }
+
                 writer.State = 1;
-                EnqueueRequestUnderLock(accepted);
                 writer.Next = completed;
                 completed = writer;
                 break;
@@ -302,12 +325,13 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
 
         try
         {
-            if (_requestsClosed || (_requestCount == _requests.Length))
+            if (_requestsClosed
+                || (_requestCount == _requests.Length)
+                || !TryEnqueueRequestUnderLock(work))
             {
                 return false;
             }
 
-            EnqueueRequestUnderLock(work);
             SignalWorkUnderLock();
             return true;
         }
@@ -446,11 +470,24 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
         }
     }
 
+    private bool TryEnqueueRequestUnderLock(IGraphicsDeviceWork work)
+    {
+        if ((work is IGraphicsGraphRetentionCellWork graphWork)
+            && !graphWork.TryClaimRetentionCell())
+        {
+            return false;
+        }
+
+        EnqueueRequestUnderLock(work);
+        return true;
+    }
+
     private ValueTask WriteRequestCore(IGraphicsDeviceWork work, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(work);
         cancellationToken.ThrowIfCancellationRequested();
-        PendingRequestWriter writer;
+        PendingRequestWriter? writer = null;
+        var retentionCellsUnavailable = false;
 
         lock (_retirementGate)
         {
@@ -463,28 +500,40 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
 
             if (_requestCount < _requests.Length)
             {
-                EnqueueRequestUnderLock(work);
-                SignalWorkUnderLock();
-                return ValueTask.CompletedTask;
-            }
+                if (TryEnqueueRequestUnderLock(work))
+                {
+                    SignalWorkUnderLock();
+                    return ValueTask.CompletedTask;
+                }
 
-            writer = new PendingRequestWriter(this, work, cancellationToken) {
-                Previous = _pendingRequestTail,
-            };
-
-            if (_pendingRequestTail is null)
-            {
-                _pendingRequestHead = writer;
+                retentionCellsUnavailable = true;
             }
             else
             {
-                _pendingRequestTail.Next = writer;
-            }
+                writer = new PendingRequestWriter(this, work, cancellationToken) {
+                    Previous = _pendingRequestTail,
+                };
 
-            _pendingRequestTail = writer;
+                if (_pendingRequestTail is null)
+                {
+                    _pendingRequestHead = writer;
+                }
+                else
+                {
+                    _pendingRequestTail.Next = writer;
+                }
+
+                _pendingRequestTail = writer;
+            }
         }
 
-        return WaitForPendingRequestAsync(writer);
+        if (retentionCellsUnavailable)
+        {
+            throw new InvalidOperationException("The Graphics graph-retention cells are unavailable.");
+        }
+
+        return WaitForPendingRequestAsync(writer
+            ?? throw new InvalidOperationException("A pending Graphics request lost its admission owner."));
     }
 
     internal sealed class GraphicsRetirementReservation : IDisposable

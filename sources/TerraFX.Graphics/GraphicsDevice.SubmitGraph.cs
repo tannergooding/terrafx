@@ -1,7 +1,6 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -11,8 +10,9 @@ namespace TerraFX.Graphics;
 
 public sealed partial class GraphicsDevice
 {
-    private static readonly ConcurrentBag<GraphicsGraphSubmission> s_quarantinedGraphSubmissions = [];
-    private static readonly ConcurrentBag<GraphicsResourceOwner.UseLease[]> s_quarantinedGraphUseLeases = [];
+    private static GraphSubmissionRetentionAnchor? s_graphSubmissionRetentionRoot;
+    private static readonly Lock s_graphSubmissionRetentionRootGate = new();
+    private readonly GraphSubmissionRetentionAnchor _graphSubmissionRetentionAnchor;
     private long _nextGraphSubmissionSequence;
 
     private static void AddResourceUseLease(
@@ -30,6 +30,23 @@ public sealed partial class GraphicsDevice
         {
             useLease.Dispose();
             throw;
+        }
+    }
+
+    private static void RegisterGraphSubmissionRetentionAnchor(GraphSubmissionRetentionAnchor anchor)
+    {
+        ArgumentNullException.ThrowIfNull(anchor);
+
+        lock (s_graphSubmissionRetentionRootGate)
+        {
+            if (anchor.IsRooted)
+            {
+                throw new InvalidOperationException("The graph-submission retention anchor is already rooted.");
+            }
+
+            anchor.Next = s_graphSubmissionRetentionRoot;
+            s_graphSubmissionRetentionRoot = anchor;
+            anchor.IsRooted = true;
         }
     }
 
@@ -166,30 +183,22 @@ public sealed partial class GraphicsDevice
             }
 
             var request = new SubmitGraphRequest(this, submission, useLeases, frameSlotReservation);
+
+            if (submission.RequiresDiagnosticQueueAdmission)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!_ownerQueue.TryWriteDiagnosticRequest(request, GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge))
+                {
+                    ThrowDiagnosticQueueUnavailable();
+                }
+            }
+            else
+            {
+                await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+
             ownershipTransferred = true;
-
-            try
-            {
-                if (submission.RequiresDiagnosticQueueAdmission)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    if (!_ownerQueue.TryWriteDiagnosticRequest(request, GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge))
-                    {
-                        ThrowDiagnosticQueueUnavailable();
-                    }
-                }
-                else
-                {
-                    await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
-                }
-            }
-            catch
-            {
-                request.AdmissionFailed();
-                throw;
-            }
-
             return await request.Task.ConfigureAwait(false);
         }
         finally
@@ -239,13 +248,9 @@ public sealed partial class GraphicsDevice
 
     private void QuarantineGraphSubmission(
         GraphicsGraphSubmission submission,
-        List<GraphicsResourceOwner.UseLease> useLeases,
         Exception exception)
     {
         submission.RetainRecordingForUncertainSubmission();
-        s_quarantinedGraphSubmissions.Add(submission);
-        s_quarantinedGraphUseLeases.Add([.. useLeases]);
-        useLeases.Clear();
 
         foreach (var import in submission.BufferImports)
         {
@@ -271,10 +276,92 @@ public sealed partial class GraphicsDevice
         });
     }
 
+    private void ReleaseGraphSubmissionRetentionCell(SubmitGraphRequest request, int cellIndex)
+    {
+        var cells = _graphSubmissionRetentionAnchor.Cells;
+
+        if ((cellIndex < 0)
+            || (cellIndex >= cells.Length)
+            || !ReferenceEquals(cells[cellIndex], request))
+        {
+            throw new InvalidOperationException("The graph-submission retention cell does not belong to this request.");
+        }
+
+        cells[cellIndex] = null;
+    }
+
+    private bool TryClaimGraphSubmissionRetentionCell(SubmitGraphRequest request, out int cellIndex)
+    {
+        var cells = _graphSubmissionRetentionAnchor.Cells;
+
+        for (var index = 0; index < cells.Length; index++)
+        {
+            if (cells[index] is not null)
+            {
+                continue;
+            }
+
+            cells[index] = request;
+            cellIndex = index;
+            return true;
+        }
+
+        cellIndex = -1;
+        return false;
+    }
+
+    private void UnregisterGraphSubmissionRetentionAnchor()
+    {
+        lock (s_graphSubmissionRetentionRootGate)
+        {
+            var anchor = _graphSubmissionRetentionAnchor;
+
+            if (!ReferenceEquals(anchor.Owner, this))
+            {
+                throw new InvalidOperationException("The graph-submission retention anchor belongs to another device.");
+            }
+
+            foreach (var request in anchor.Cells)
+            {
+                if (request is not null)
+                {
+                    throw new InvalidOperationException("The GraphicsDevice still owns retained graph-submission cells.");
+                }
+            }
+
+            GraphSubmissionRetentionAnchor? previous = null;
+            var current = s_graphSubmissionRetentionRoot;
+
+            while ((current is not null) && !ReferenceEquals(current, anchor))
+            {
+                previous = current;
+                current = current.Next;
+            }
+
+            if ((current is null) || !anchor.IsRooted)
+            {
+                throw new InvalidOperationException("The graph-submission retention anchor is not rooted.");
+            }
+
+            if (previous is null)
+            {
+                s_graphSubmissionRetentionRoot = anchor.Next;
+            }
+            else
+            {
+                previous.Next = anchor.Next;
+            }
+
+            anchor.Next = null;
+            anchor.IsRooted = false;
+        }
+    }
+
     internal sealed class GraphFrameSlotReservation : IDisposable
     {
         private readonly GraphicsDevice _device;
         private SemaphoreSlim? _frameSlots;
+        private int _requestTransferState;
 
         internal GraphFrameSlotReservation(GraphicsDevice device, SemaphoreSlim frameSlots)
         {
@@ -286,6 +373,45 @@ public sealed partial class GraphicsDevice
 
         public void Dispose()
         {
+            if (Interlocked.CompareExchange(ref _requestTransferState, 2, 0) == 0)
+            {
+                ReleaseFrameSlot();
+            }
+        }
+
+        internal bool IsOwnedBy(GraphicsDevice device)
+            => ReferenceEquals(_device, device) && (Volatile.Read(ref _frameSlots) is not null);
+
+        internal void ReleaseFromRequest()
+        {
+            var previousState = Interlocked.CompareExchange(ref _requestTransferState, 2, 1);
+
+            if (previousState is 1 or 2)
+            {
+                if (previousState == 1)
+                {
+                    ReleaseFrameSlot();
+                }
+
+                return;
+            }
+
+            throw new InvalidOperationException("The graph frame-slot reservation was not transferred to a request.");
+        }
+
+        internal void RollbackRequestTransfer()
+        {
+            if (Interlocked.CompareExchange(ref _requestTransferState, 0, 1) != 1)
+            {
+                throw new InvalidOperationException("The graph frame-slot request transfer cannot be rolled back.");
+            }
+        }
+
+        internal bool TryTransferToRequest()
+            => Interlocked.CompareExchange(ref _requestTransferState, 1, 0) == 0;
+
+        private void ReleaseFrameSlot()
+        {
             var frameSlots = Interlocked.Exchange(ref _frameSlots, null);
 
             if (frameSlots is not null)
@@ -295,9 +421,6 @@ public sealed partial class GraphicsDevice
                 _device._ownerQueue.SignalOwnerWork();
             }
         }
-
-        internal bool IsOwnedBy(GraphicsDevice device)
-            => ReferenceEquals(_device, device) && (Volatile.Read(ref _frameSlots) is not null);
     }
 
     internal sealed class GraphResourceUseLeaseSet : IDisposable
@@ -378,7 +501,51 @@ public sealed partial class GraphicsDevice
         }
     }
 
-    private sealed class SubmitGraphRequest : IGraphicsDeviceWork
+    private sealed class GraphSubmissionRetentionAnchor
+    {
+        private readonly SubmitGraphRequest?[] _cells;
+        private readonly GraphicsDevice _device;
+        private bool _isRooted;
+        private GraphSubmissionRetentionAnchor? _next;
+
+        internal GraphSubmissionRetentionAnchor(GraphicsDevice device, int cellCount)
+        {
+            ArgumentNullException.ThrowIfNull(device);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cellCount);
+            _cells = new SubmitGraphRequest[cellCount];
+            _device = device;
+        }
+
+        internal SubmitGraphRequest?[] Cells => _cells;
+
+        internal bool IsRooted
+        {
+            get
+            {
+                return _isRooted;
+            }
+            set
+            {
+                _isRooted = value;
+            }
+        }
+
+        internal GraphSubmissionRetentionAnchor? Next
+        {
+            get
+            {
+                return _next;
+            }
+            set
+            {
+                _next = value;
+            }
+        }
+
+        internal GraphicsDevice Owner => _device;
+    }
+
+    private sealed class SubmitGraphRequest : IGraphicsDeviceWork, IGraphicsGraphRetentionCellWork
     {
         private readonly TaskCompletionSource<GraphicsGraphSubmissionResult> _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -388,6 +555,9 @@ public sealed partial class GraphicsDevice
         private int _frameSlotReleased;
         private readonly GraphFrameSlotReservation _frameSlotReservation;
         private int _nativeSubmissionStarted;
+        private int _ownsFrameSlotReservation;
+        private int _retentionCellIndex = -1;
+        private bool _retentionCellQuarantined;
         private readonly GraphicsGraphSubmission _submission;
         private long _submissionSequence;
         private long _submittedFence;
@@ -468,7 +638,8 @@ public sealed partial class GraphicsDevice
                 || ((Volatile.Read(ref _nativeSubmissionStarted) != 0)
                     && (_device._backendDevice?.HasUncertainSubmission == true)))
             {
-                _device.QuarantineGraphSubmission(_submission, _useLeases, exception);
+                ((IGraphicsGraphRetentionCellWork)this).MarkRetentionCellQuarantined();
+                _device.QuarantineGraphSubmission(_submission, exception);
                 ReleaseFrameSlot();
             }
             else
@@ -478,9 +649,6 @@ public sealed partial class GraphicsDevice
 
             _ = _completion.TrySetException(exception);
         }
-
-        internal void AdmissionFailed()
-            => ReleaseWork();
 
         internal void Complete()
         {
@@ -535,12 +703,41 @@ public sealed partial class GraphicsDevice
                 TaskScheduler.Default);
         }
 
+        void IGraphicsGraphRetentionCellWork.MarkRetentionCellQuarantined()
+        {
+            if ((_retentionCellIndex < 0) || _retentionCellQuarantined)
+            {
+                throw new InvalidOperationException("The graph request has no active retention cell to quarantine.");
+            }
+
+            _retentionCellQuarantined = true;
+        }
+
         private void ReleaseFrameSlot()
         {
-            if (Interlocked.Exchange(ref _frameSlotReleased, 1) == 0)
+            if ((Interlocked.Exchange(ref _frameSlotReleased, 1) == 0)
+                && (Interlocked.Exchange(ref _ownsFrameSlotReservation, 0) != 0))
             {
-                _frameSlotReservation.Dispose();
+                _frameSlotReservation.ReleaseFromRequest();
             }
+        }
+
+        void IGraphicsGraphRetentionCellWork.ReleaseRetentionCell()
+        {
+            var cellIndex = _retentionCellIndex;
+
+            if (cellIndex < 0)
+            {
+                return;
+            }
+
+            if (_retentionCellQuarantined)
+            {
+                throw new InvalidOperationException("A quarantined graph request cannot release its retention cell.");
+            }
+
+            _device.ReleaseGraphSubmissionRetentionCell(this, cellIndex);
+            _retentionCellIndex = -1;
         }
 
         private void ReleaseWork()
@@ -553,7 +750,32 @@ public sealed partial class GraphicsDevice
             ReleaseUseLeases(_useLeases);
             _submission.DisposeRecordedPassCommandLists();
             _submission.DisposeBackendStorage();
+            _device._ownerQueue.ReleaseGraphRetentionCell(this);
             ReleaseFrameSlot();
+        }
+
+        bool IGraphicsGraphRetentionCellWork.TryClaimRetentionCell()
+        {
+            if (_retentionCellIndex >= 0)
+            {
+                throw new InvalidOperationException("The graph request already owns a retention cell.");
+            }
+
+            if (!_frameSlotReservation.TryTransferToRequest())
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _ownsFrameSlotReservation, 1);
+
+            if (_device.TryClaimGraphSubmissionRetentionCell(this, out _retentionCellIndex))
+            {
+                return true;
+            }
+
+            _frameSlotReservation.RollbackRequestTransfer();
+            Volatile.Write(ref _ownsFrameSlotReservation, 0);
+            return false;
         }
     }
 }

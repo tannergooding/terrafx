@@ -154,6 +154,67 @@ internal sealed class GraphicsOwnerRequestQueueTests
     }
 
     [Test]
+    public async Task GraphRequestClaimsRetentionCellWhenPromotedIntoTheRequestRing()
+    {
+        using var queue = new GraphicsOwnerRequestQueue();
+        var retained = new TestWork[256];
+
+        for (var index = 0; index < retained.Length; index++)
+        {
+            retained[index] = new TestWork();
+            await queue.WriteRequestAsync(retained[index], CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var graphWork = new TestGraphWork();
+        var admission = queue.WriteRequestAsync(graphWork, CancellationToken.None).AsTask();
+        Assert.That(admission.IsCompleted, Is.False);
+        Assert.That(graphWork.ClaimCount, Is.Zero);
+        Assert.That(queue.TryReadRequest(out _), Is.True);
+        await admission.ConfigureAwait(false);
+        Assert.That(graphWork.ClaimCount, Is.EqualTo(1));
+        Assert.That(graphWork.ReleaseCount, Is.Zero);
+
+        for (var index = 1; index < retained.Length; index++)
+        {
+            Assert.That(queue.TryReadRequest(out var observed), Is.True);
+            Assert.That(observed, Is.SameAs(retained[index]));
+        }
+
+        Assert.That(queue.TryReadRequest(out var graphRequest), Is.True);
+        Assert.That(graphRequest, Is.SameAs(graphWork));
+        queue.ReleaseGraphRetentionCell(graphWork);
+        Assert.That(graphWork.ReleaseCount, Is.EqualTo(1));
+        Assert.That(queue.TryReadRequest(out _), Is.False);
+    }
+
+    [Test]
+    public async Task GraphRequestWithoutRetentionCellFailsPendingAdmission()
+    {
+        using var queue = new GraphicsOwnerRequestQueue();
+
+        for (var index = 0; index < 256; index++)
+        {
+            await queue.WriteRequestAsync(new TestWork(), CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var graphWork = new TestGraphWork(canClaim: false);
+        var admission = queue.WriteRequestAsync(graphWork, CancellationToken.None).AsTask();
+        Assert.That(admission.IsCompleted, Is.False);
+        Assert.That(queue.TryReadRequest(out _), Is.True);
+        _ = Assert.ThrowsAsync<InvalidOperationException>(async () => await admission.ConfigureAwait(false));
+        Assert.That(graphWork.ClaimCount, Is.EqualTo(1));
+        Assert.That(graphWork.ReleaseCount, Is.Zero);
+
+        for (var index = 0; index < 255; index++)
+        {
+            Assert.That(queue.TryReadRequest(out var work), Is.True);
+            Assert.That(work, Is.Not.SameAs(graphWork));
+        }
+
+        Assert.That(queue.TryReadRequest(out _), Is.False);
+    }
+
+    [Test]
     public async Task RequestAdmissionWaitsAtCapacityAndHonorsCancellation()
     {
         using var queue = new GraphicsOwnerRequestQueue();
@@ -354,6 +415,39 @@ internal sealed class GraphicsOwnerRequestQueueTests
             }
 
             replacement?.Dispose();
+        }
+    }
+
+    private sealed class TestGraphWork(bool canClaim = true) : IGraphicsDeviceWork, IGraphicsGraphRetentionCellWork
+    {
+        private readonly bool _canClaim = canClaim;
+        private int _claimCount;
+        private int _releaseCount;
+
+        internal int ClaimCount => _claimCount;
+
+        internal int ReleaseCount => _releaseCount;
+
+        public void Execute(GraphicsDevice device)
+        {
+        }
+
+        public void Fail(Exception exception)
+        {
+            throw exception;
+        }
+
+        public void MarkRetentionCellQuarantined()
+        {
+        }
+
+        public void ReleaseRetentionCell()
+            => _releaseCount++;
+
+        public bool TryClaimRetentionCell()
+        {
+            _claimCount++;
+            return _canClaim;
         }
     }
 
