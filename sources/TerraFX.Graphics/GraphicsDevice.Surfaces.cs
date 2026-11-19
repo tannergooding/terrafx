@@ -238,8 +238,6 @@ public sealed partial class GraphicsDevice
             return;
         }
 
-        _ = _surfaces.Remove(surface);
-        s_quarantinedBackendSurfaces.Add(surface.BackendSurface);
         _hasQuarantinedResources = true;
         _retirementFailure ??= exception;
         surface.MarkQuarantined(exception);

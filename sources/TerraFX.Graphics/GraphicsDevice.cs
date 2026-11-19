@@ -27,7 +27,6 @@ public sealed partial class GraphicsDevice
     // Keep an owner rooted if native disposal cannot confirm that its resources were released.
     private static readonly ConcurrentBag<IGraphicsBackendDevice> s_quarantinedBackendDevices = [];
     private static readonly ConcurrentBag<IGraphicsBackendResource> s_quarantinedBackendResources = [];
-    private static readonly ConcurrentBag<IGraphicsBackendSurface> s_quarantinedBackendSurfaces = [];
     private static readonly ConcurrentBag<ReadbackBufferRequest> s_quarantinedBufferReadbacks = [];
     private static readonly ConcurrentBag<GraphicsResourceOwner> s_quarantinedResources = [];
 
@@ -1557,10 +1556,7 @@ public sealed partial class GraphicsDevice
             }
         }
 
-        var activeResources = new GraphicsResourceOwner[_resources.Count];
-        _resources.CopyTo(activeResources);
-
-        foreach (var resource in activeResources)
+        foreach (var resource in _resources)
         {
             try
             {
@@ -1572,10 +1568,7 @@ public sealed partial class GraphicsDevice
             }
         }
 
-        var activeSurfaces = new Surface[_surfaces.Count];
-        _surfaces.CopyTo(activeSurfaces);
-
-        foreach (var surface in activeSurfaces)
+        foreach (var surface in _surfaces)
         {
             try
             {
