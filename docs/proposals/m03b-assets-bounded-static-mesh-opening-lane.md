@@ -355,6 +355,8 @@ R: .dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148\.version
 | R | 1 | `aab4f62773986811741aea2bbe2f631c7fbaeeefd485eca380deba5622b1ba8e` |
 | ALL | 76 | `bde4c55beef3a6144a2b82e62b6c298274a68fd9f359af084669b146ec7cdd11` |
 
+Pre-implementation recheck at **`2026-11-19T23:12:13Z`**, HEAD **`2f4f6a414256b204d73640fb223765fa71235c4a`**: technical input sets A, K, S, D, T, C and R match this freeze exactly. Preservation-only P is now `c26815d13cf4096a7109476799416c2b7d1f689e052b7288b69ce9e1441aa4ee`, making the current ALL digest `eab1d4ece2a59dc31fd596f0a4ca7eeffff211ca6ed7a0c198c634da0ef28b03`. The five dirty Scene/Sprite test files remain outside this input set.
+
 Critical raw source identities:
 
 | File | SHA-256 |
