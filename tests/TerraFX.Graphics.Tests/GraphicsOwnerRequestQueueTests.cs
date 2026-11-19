@@ -215,6 +215,40 @@ internal sealed class GraphicsOwnerRequestQueueTests
     }
 
     [Test]
+    public void GraphRetentionCellAdmissionDoesNotAllocatePerWrite()
+    {
+        using var queue = new GraphicsOwnerRequestQueue();
+        var graphWork = new TestGraphWork();
+
+        for (var index = 0; index < 2; index++)
+        {
+            Assert.That(queue.TryWriteDiagnosticRequest(graphWork, queue.RequestBackingByteCharge), Is.True);
+            Assert.That(queue.TryReadRequest(out var observed), Is.True);
+            Assert.That(observed, Is.SameAs(graphWork));
+            queue.ReleaseGraphRetentionCell(graphWork);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < 16; index++)
+        {
+            if (!queue.TryWriteDiagnosticRequest(graphWork, queue.RequestBackingByteCharge))
+            {
+                throw new InvalidOperationException("The graph request was not admitted during the allocation probe.");
+            }
+
+            if (!queue.TryReadRequest(out var observed) || !ReferenceEquals(observed, graphWork))
+            {
+                throw new InvalidOperationException("The admitted graph request was not dequeued during the allocation probe.");
+            }
+
+            queue.ReleaseGraphRetentionCell(graphWork);
+        }
+
+        Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
+    }
+
+    [Test]
     public async Task RequestAdmissionWaitsAtCapacityAndHonorsCancellation()
     {
         using var queue = new GraphicsOwnerRequestQueue();
