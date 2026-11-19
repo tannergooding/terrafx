@@ -120,6 +120,40 @@ internal sealed class WorldLifetimeControlQuarantineTests
         }
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (long First, long Steady) MeasureUninitializedClassAllocation(Type type)
+    {
+        const int InstanceCount = 128;
+        var warmInstances = new object[InstanceCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        GC.KeepAlive(warmInstances);
+        CollectGarbage();
+        var instances = new object[InstanceCount * 2];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < InstanceCount; index++)
+        {
+            instances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        var firstAllocationBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        var steadyAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = InstanceCount; index < instances.Length; index++)
+        {
+            instances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        var steadyAllocationBytes = GC.GetAllocatedBytesForCurrentThread() - steadyAllocationStart;
+        GC.KeepAlive(instances);
+        return (firstAllocationBytes / InstanceCount, steadyAllocationBytes / InstanceCount);
+    }
+
     [Test]
     public void CosmeticCreditCellBackingUsesCompiledStrideAndWorldAccounting()
     {
@@ -274,5 +308,22 @@ internal sealed class WorldLifetimeControlQuarantineTests
         Assert.That(
             allocatedBytes,
             Is.EqualTo(controlCount * WorldGuidUseControl.ControlByteCharge));
+    }
+
+    [Test]
+    public void WorldLifetimeAndCosmeticOwnerHaveMeasuredConstructorFreeAllocations()
+    {
+        var (lifetimeFirstBytes, lifetimeSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldLifetimeControl));
+        var (ownerFirstBytes, ownerSteadyBytes) = MeasureUninitializedClassAllocation(typeof(WorldCosmeticCreditOwner));
+
+        Assert.That(lifetimeSteadyBytes, Is.GreaterThan(0));
+        Assert.That(ownerSteadyBytes, Is.GreaterThan(0));
+        Assert.That(lifetimeSteadyBytes % IntPtr.Size, Is.Zero);
+        Assert.That(ownerSteadyBytes % IntPtr.Size, Is.Zero);
+        TestContext.Out.WriteLine(
+            $"WorldLifetimeControlFirst={lifetimeFirstBytes}; WorldLifetimeControlSteady={lifetimeSteadyBytes}; "
+            + $"CosmeticCreditOwnerFirst={ownerFirstBytes}; CosmeticCreditOwnerSteady={ownerSteadyBytes}; "
+            + $"Framework={RuntimeInformation.FrameworkDescription}/{RuntimeInformation.ProcessArchitecture}; "
+            + $"RuntimeModule={typeof(WorldLifetimeControl).Module.ModuleVersionId}");
     }
 }
