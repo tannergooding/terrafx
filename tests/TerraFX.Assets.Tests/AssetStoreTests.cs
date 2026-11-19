@@ -187,14 +187,25 @@ internal sealed class AssetStoreTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static async Task<(AssetPackageBacking Backing, WeakReference<AssetStoreOptions> Options)> OpenBackingWithoutRetainingOptions(
+    private static async Task<(
+        AssetPackageBacking Backing,
+        WeakReference<AssetStoreOptions> Options,
+        AssetStoreRegistration Registration,
+        byte[] PackageSha256)> OpenBackingWithoutRetainingOptions(
         string path,
         byte[] package)
     {
-        var options = CreateOptions(path, package, CreateRegistration());
+        var registration = CreateRegistration();
+        var packageSha256 = SHA256.HashData(package);
+        var options = new AssetStoreOptions(path, packageSha256, registration) {
+            CpuAssetBudgetBytes = 345,
+            MaximumDecodedAssetBytes = 123,
+            MaximumConcurrentDecodeBytes = 234,
+            MaximumLiveAssetLeases = 12,
+        };
         var weakOptions = new WeakReference<AssetStoreOptions>(options);
         var backing = await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false);
-        return (backing, weakOptions);
+        return (backing, weakOptions, registration, packageSha256);
     }
 
     private static void WriteFieldHeader(
@@ -1494,7 +1505,7 @@ internal sealed class AssetStoreTests
 
         try
         {
-            var (backing, weakOptions) = await OpenBackingWithoutRetainingOptions(path, package).ConfigureAwait(false);
+            var (backing, weakOptions, registration, packageSha256) = await OpenBackingWithoutRetainingOptions(path, package).ConfigureAwait(false);
 
             try
             {
@@ -1503,6 +1514,12 @@ internal sealed class AssetStoreTests
                 GC.Collect();
 
                 Assert.That(weakOptions.TryGetTarget(out _), Is.False);
+                Assert.That(backing.CpuAssetBudgetBytes, Is.EqualTo(345));
+                Assert.That(backing.ExpectedPackageSha256.AsSpan().SequenceEqual(packageSha256), Is.True);
+                Assert.That(backing.MaximumConcurrentDecodeBytes, Is.EqualTo(234));
+                Assert.That(backing.MaximumDecodedAssetBytes, Is.EqualTo(123));
+                Assert.That(backing.MaximumLiveAssetLeases, Is.EqualTo(12));
+                Assert.That(backing.Registration, Is.SameAs(registration));
             }
             finally
             {
