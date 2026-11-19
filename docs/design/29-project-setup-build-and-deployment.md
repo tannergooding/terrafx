@@ -51,7 +51,8 @@ The admitted `WorldConstructionPlan` is the only transfer route for this capabil
 new-lineage reservations, domain-operation interests, retirement owner/anchor,
 default-domain owner/handoff, `WorldConstructionPlan`, `WorldGuidRegistry`,
 `WorldGuidGrant`, `WorldGuidSlabGrant`, `WorldPreparedReplacement`,
-`WorldReplacementOperation`, `WorldGuidUse`/`WorldGuidUseControl`,
+`WorldReplacementOperation`, `WorldReplacementOutcome`, `WorldPlaybackControl`,
+`WorldPersistenceRestoreValidator`, `WorldGuidUse`/`WorldGuidUseControl`,
 `WorldGuidRetirementPermit` and `WorldGuidRefusal`. These are engine-private
 capabilities bound to exact domain/root/operation generations, never public
 GUID-based permissions. The validator creates `ValidatedWorldIdentityHistory`
@@ -62,6 +63,13 @@ Hosting supplies its admitted worker-pool lease and exact domain but cannot
 resolve/register lineages or issue World owners. Persistence consumes and retains
 the exact lower-owned plan/leases; it cannot manufacture a lineage list or
 retarget a candidate by readable GUID metadata.
+
+`TerraFX.Hosting` owns the per-plan `WorldLoadExecution` that sequences higher
+restore/capture/adoption work around the Entities-owned replacement operation's
+candidate, comparison-preparation and publication phases. The execution context
+does not issue World owners, call the candidate factory directly, or publish a
+replacement; it retains only the exact captured lower operation and its own funded
+completion/delivery/cleanup state.
 
 The separate `WorldGuidRegistryAccounting1` is Entities-owned and process-wide;
 it does not extend or borrow the domain-local lineage registrar's M/K/E/I/R/B or
@@ -212,26 +220,60 @@ once, then initializes live storage. A later initialization failure burns the ID
 `World.CreateRestoreCandidate(WorldConstructionPlan)` prepare fresh or restored plans
 through the same private constructor; the World factory is the only fresh-lineage
 selector, and a restore candidate consumes only source/transformation identity already
-admitted by the plan. The restored candidate factory is called only by the exact
-captured `WorldReplacementOperation`, after source-dependent checks and before
-candidate factories or Restore. The WorldAdmissionDomain's registrar, reservations
+admitted by the plan. The restored candidate factory is called only by
+`WorldReplacementOperation.TryCreateCandidateAtOwnerBoundary`, invoked by the exact
+captured Hosting `WorldLoadExecution` after source-dependent checks and before
+candidate factories or Restore. The lower operation owns candidate creation and
+terminal publication but does not invoke higher Scene/Assets orchestration. The
+WorldAdmissionDomain's registrar, reservations
 and interests do not issue owners or accept identity from GUID-only metadata. A
 default-domain replacement transfers its existing close-owner credit exactly once at
 successful publication; ordinary interests do not grant close authority, and retiring
 the former World releases only its own interests.
 
 The host-owned `WorldPersistence.CommitLoadAsync` captures its exact
-`WorldPreparedReplacement` synchronously, then queues one typed owner request through
-`EngineHost.TryEnqueueWorldReplacement`. The request executes at an owner-loop
-boundary and adopts the replacement before servicing another host request or
-simulation tick. Adoption replaces only the exact old schedule entry, retains its
-pause/physical-input-reconciliation state and router/event-sequence lease, and starts a
-new host-clock segment at the replacement's `NextTick` with no debt carried from the
-old World. An attached `WorldInputTimelineAdapter` is rebound at that same boundary;
-already admitted router state is routed to the replacement's next tick. A standalone
-`WorldPersistence.CommitLoadAsync` runs only on the exact target World owner thread
-and uses that World's owner boundary directly. Neither path queues an arbitrary
-callback or lets caller cancellation revoke captured work.
+`WorldPreparedReplacement` synchronously and binds the returned lower operation to
+one preowned `WorldLoadExecution`. The same complete Hosting executor runs through
+`WorldPersistence.CommitLoadAtOwnerBoundary(WorldLoadExecution)` for standalone and
+hosted work. Standalone commit calls that owner boundary on the exact target World
+owner thread; hosted commit queues the typed execution through
+`EngineHost.TryEnqueueWorldReplacement` and invokes the same owner boundary from its
+typed request. `WorldLoadExecution` owns higher restoration, actual Integration
+capture/fresh comparison preparation, source-bound remap and receipt/adoption
+preparation; it calls only the lower operation's exact candidate, comparison and
+publication phases. It cannot issue World owners or publish by GUID. After successful
+publication, the typed host request applies its preallocated
+`EngineHost.WorldReplacementAdoptionPlan` before servicing another host request or
+simulation tick. The plan replaces only the exact old schedule entry, retains pause
+and physical-input-reconciliation state and router/event-sequence lease, and starts a
+new host-clock segment at the replacement's `NextTick` with no old debt. Its concrete
+`WorldInputTimelineAdapter.WorldReplacementAdoption` items apply at that same
+boundary. Neither route queues an arbitrary callback or lets caller cancellation
+revoke captured work.
+
+The exact phase callers are:
+
+| Member | Only caller |
+|---|---|
+| `WorldPreparedReplacement.TryCaptureCommit(out WorldReplacementOperation?, out WorldGuidRefusal)` | Public `WorldPersistence.CommitLoadAsync`, after its entry checks and pre-admission cancellation check. |
+| `WorldPreparedReplacement.CloseAcquisition()` | `WorldLoadPlan.Dispose()` only; a captured operation and its `WorldLoadExecution` survive wrapper closure. |
+| `void WorldConstructionPlanControl.SealInputs(WorldRestoreSourceControl.SourceUse sourceUse, ReadOnlyMemory<byte> validatedWorldRecord, scoped ReadOnlySpan<byte> checkpointDigest, scoped ReadOnlySpan<byte> payloadDigest)` | `WorldLoadPreparedState.SealReplacementInputs()` only, after source-dependent checks and preparation consumers join. |
+| `bool WorldReplacementOperation.TryCreateCandidateAtOwnerBoundary(out World? candidate, out WorldGuidRefusal refusal)` | `WorldLoadExecution.ExecuteAtOwnerBoundary()` only. |
+| `void WorldReplacementOperation.PreparePublicationAtOwnerBoundary(in WorldPersistenceCaptureLease captureLease, ReadOnlyMemory<byte> freshWorldRecord, ValidatedWorldIdentityHistory freshIdentityHistory)` | The same complete Hosting executor, after higher restoration and actual fresh capture. |
+| `WorldReplacementOutcome WorldReplacementOperation.PublishAtOwnerBoundary()` | The same executor only after successful comparison/marker/playback preparation; this is the sole terminal publisher. |
+| `WorldReplacementOperation.AbandonBeforeOwnerBoundary()` | The execution context's queue-full/pre-execution failure path only. |
+| `WorldReplacementOperation.AbortAtOwnerBoundary()` | The execution context's prepublication unwind only, after higher candidate users join. |
+| `void WorldReplacementOperation.EndAfterConsumerCleanup()` | The execution context after actual higher consumer and cleanup quiescence. |
+| `WorldLoadReceipt WorldPersistence.CommitLoadAtOwnerBoundary(WorldLoadExecution execution)` | Standalone public commit on the exact World owner, or the typed host request on the host owner. |
+| `void EngineHost.AdoptWorldReplacement(EngineHost.WorldReplacementAdoptionPlan adoption)` | The typed host request after `Published`, before another owner request or simulation tick. |
+
+`WorldLoadExecution` is constructed before its `WorldLoadPlan` escapes; only the
+successful public commit binds that context to the actual persistence service and
+captured operation. `WorldLoadPreparedState.RestoreCandidate(World, CancellationToken)`
+is called only by its complete owner-boundary executor with the exact unpublished
+candidate and `CancellationToken.None`. It runs higher Scene/Assets work without a
+reverse Entities dependency. No other owner may call the lower factory, phase methods,
+publisher, host-adoption path or playback transfer.
 
 The only `Entity`-constructor caller is the private
 `World.CreateEntityHandle(uint slotIndex, uint generation)`, which uses its receiver's
