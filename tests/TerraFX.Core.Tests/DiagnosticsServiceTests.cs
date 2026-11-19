@@ -93,6 +93,25 @@ internal sealed class DiagnosticsServiceTests
             ]);
     }
 
+    private static long GetSkinnedNormalDiagnosticAdmissionBytes()
+    {
+        Span<int> contextStringLengths = [
+            "SnapshotId".Length, 32,
+            "DrawId".Length, 32,
+            "SubmissionSequence".Length, 19,
+            "CompletedFence".Length, 19,
+            "TestedVertexCount".Length, 6,
+            "DegenerateVertexCount".Length, 6,
+        ];
+
+        return DiagnosticsService.GetNoncoalescingWarningAdmissionBytes(
+            codeLength: "DegenerateSkinnedNormal".Length,
+            operationLength: "Renderer.SubmitAsync".Length,
+            messageLength: "Skinned mesh vertices required the dominant-bone normal fallback.".Length,
+            commandIdentityLength: 110,
+            contextStringLengths);
+    }
+
     [Test]
     public void AbandonedWarningPreclaimRefundsServiceAndWorldReservations()
     {
@@ -141,6 +160,51 @@ internal sealed class DiagnosticsServiceTests
         Assert.That(latestFault, Is.Null);
         _ = Assert.Throws<ObjectDisposedException>(() => capability.GetTimestamp());
         service.Close();
+    }
+
+    [Test]
+    public void CloseClearsReleasedRetentionPayloadAndReturnsAccountCredits()
+    {
+        var service = new DiagnosticsService(2);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        service.Write(
+            CreateDiagnostic("retained", DiagnosticSeverity.Information, 1, worldGuid),
+            executionSessionId,
+            17,
+            account);
+
+        const BindingFlags instanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var recordsField = typeof(DiagnosticsService).GetField("_records", instanceFlags)
+            ?? throw new InvalidOperationException("The diagnostic record array field was not found.");
+        var records = recordsField.GetValue(service) as Array
+            ?? throw new InvalidOperationException("The diagnostic record array was not initialized.");
+        var firstEntry = records.GetValue(0)
+            ?? throw new InvalidOperationException("The first diagnostic entry was not boxed.");
+        var retentionField = firstEntry.GetType().GetField("Retention", instanceFlags)
+            ?? throw new InvalidOperationException("The diagnostic retention field was not found.");
+        var retention = retentionField.GetValue(firstEntry)
+            ?? throw new InvalidOperationException("The diagnostic retention was not initialized.");
+        var recordPayloadField = retention.GetType().GetField("_record", instanceFlags)
+            ?? throw new InvalidOperationException("The retained record field was not found.");
+        var accountField = retention.GetType().GetField("_account", instanceFlags)
+            ?? throw new InvalidOperationException("The retained account field was not found.");
+        var payloadBytesField = retention.GetType().GetField("_payloadBytes", instanceFlags)
+            ?? throw new InvalidOperationException("The retained payload-size field was not found.");
+
+        service.Close();
+
+        var clearedFirstEntry = records.GetValue(0)
+            ?? throw new InvalidOperationException("The cleared diagnostic entry was not boxed.");
+        Assert.That(retentionField.GetValue(clearedFirstEntry), Is.Null);
+        Assert.That(recordPayloadField.GetValue(retention), Is.Null);
+        Assert.That(accountField.GetValue(retention), Is.Null);
+        Assert.That(payloadBytesField.GetValue(retention), Is.EqualTo(0L));
+        Assert.That(account.ReservedBytes, Is.Zero);
+        capability.Close();
     }
 
     [Test]
@@ -616,20 +680,7 @@ internal sealed class DiagnosticsServiceTests
         var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 16384);
         capability.BindOwner(17);
         var account = capability.AttributionAccount;
-        Span<int> contextStringLengths = [
-            "SnapshotId".Length, 32,
-            "DrawId".Length, 32,
-            "SubmissionSequence".Length, 19,
-            "CompletedFence".Length, 19,
-            "TestedVertexCount".Length, 6,
-            "DegenerateVertexCount".Length, 6,
-        ];
-        var admissionBytes = DiagnosticsService.GetNoncoalescingWarningAdmissionBytes(
-            codeLength: "DegenerateSkinnedNormal".Length,
-            operationLength: "Renderer.SubmitAsync".Length,
-            messageLength: "Skinned mesh vertices required the dominant-bone normal fallback.".Length,
-            commandIdentityLength: 110,
-            contextStringLengths);
+        var admissionBytes = GetSkinnedNormalDiagnosticAdmissionBytes();
 
         for (var index = 0; index < 2; index++)
         {
@@ -662,6 +713,39 @@ internal sealed class DiagnosticsServiceTests
     }
 
     [Test]
+    public void PreclaimedWarningCommitEvictsOldestWhenRingIsFull()
+    {
+        var service = new DiagnosticsService(1);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 16384);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        var admissionBytes = GetSkinnedNormalDiagnosticAdmissionBytes();
+
+        service.Write(CreateDiagnostic("older", DiagnosticSeverity.Information, 1), null, null);
+        Assert.That(service.TryReserveAttributionPayload(account, admissionBytes + 1024, out var reservation), Is.True);
+        Assert.That(
+            service.WriteNoncoalescingWarning(
+                CreateSkinnedNormalDiagnostic(
+                    worldGuid,
+                    1,
+                    new Guid("01000000-0000-0000-0000-000000000001")),
+                ref reservation),
+            Is.True);
+        reservation.Dispose();
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(1, DiagnosticSeverity.Trace, null, null));
+        Assert.That(snapshot.Records, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Records[0].Code, Is.EqualTo("DegenerateSkinnedNormal"));
+        Assert.That(snapshot.DroppedCount, Is.EqualTo(1));
+
+        capability.Close();
+        service.Close();
+        Assert.That(account.ReservedBytes, Is.Zero);
+    }
+
+    [Test]
     public void RecordDroppedCountsTelemetryThatCouldNotBeMaterialized()
     {
         var service = new DiagnosticsService(1);
@@ -672,6 +756,94 @@ internal sealed class DiagnosticsServiceTests
         Assert.That(snapshot.Records, Is.Empty);
         Assert.That(snapshot.DroppedCount, Is.EqualTo(1));
         Assert.That(snapshot.CoalescedCount, Is.Zero);
+    }
+
+    [Test]
+    public void SubscriptionWarningCoalescingReacquiresTargetAfterAccountEvictionCompactsRing()
+    {
+        var service = new DiagnosticsService(4);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+
+        service.Write(
+            CreateDiagnostic("A", DiagnosticSeverity.Warning, 1, worldGuid, operation: "x", message: "x"),
+            executionSessionId,
+            17,
+            account);
+        service.WriteSubscriptionCapacityWarning(account);
+        service.Write(
+            CreateDiagnostic("C", DiagnosticSeverity.Warning, 3, worldGuid, operation: "x", message: "x"),
+            executionSessionId,
+            17,
+            account);
+
+        var before = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+        Assert.That(before.Records, Has.Length.EqualTo(3));
+
+        service.WriteSubscriptionCapacityWarning(account);
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+        Assert.That(snapshot.Records, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Records[0].Code, Is.EqualTo("WorldSubscriptionCapacityExceeded"));
+        Assert.That(snapshot.Records[0].Context[^1].Value, Is.EqualTo("2"));
+        Assert.That(snapshot.DroppedCount, Is.EqualTo(2));
+        Assert.That(snapshot.CoalescedCount, Is.EqualTo(1));
+
+        capability.Close();
+        service.Close();
+        Assert.That(account.ReservedBytes, Is.Zero);
+    }
+
+    [Test]
+    public void WarningCoalescingReacquiresTargetAfterAccountEvictionCompactsRing()
+    {
+        var service = new DiagnosticsService(4);
+        var worldGuid = new Guid("30112233-4455-4677-8899-aabbccddeeff");
+        var executionSessionId = new Guid("00112233-4455-4677-8899-aabbccddeeff");
+        var capability = service.CreateBorrowedWorldCapability(worldGuid, executionSessionId, maximumDiagnosticBytes: 4096);
+        capability.BindOwner(17);
+        var account = capability.AttributionAccount;
+        string[] codes = ["A", "B", "C", "D"];
+
+        for (var index = 0; index < codes.Length; index++)
+        {
+            service.Write(
+                CreateDiagnostic(
+                    codes[index],
+                    DiagnosticSeverity.Warning,
+                    index + 1,
+                    worldGuid,
+                    operation: "x",
+                    message: "x"),
+                executionSessionId,
+                17,
+                account);
+        }
+
+        var before = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+        Assert.That(before.Records, Has.Length.EqualTo(4));
+
+        service.Write(
+            CreateDiagnostic("B", DiagnosticSeverity.Warning, 5, worldGuid, operation: "x", message: "x"),
+            executionSessionId,
+            17,
+            account);
+
+        var snapshot = service.GetSnapshot(new DiagnosticQuery(4, DiagnosticSeverity.Warning, null, null));
+        var coalesced = snapshot.Records.Where(static record => record.Code == "B").ToArray();
+        Assert.That(coalesced, Has.Length.EqualTo(1));
+        Assert.That(coalesced[0].MonotonicTimestamp, Is.EqualTo(2));
+        Assert.That(coalesced[0].Context[^1].Value, Is.EqualTo("2"));
+        Assert.That(snapshot.Records.Any(static record => record.Code == "A"), Is.False);
+        Assert.That(snapshot.DroppedCount, Is.GreaterThanOrEqualTo(1));
+        Assert.That(snapshot.CoalescedCount, Is.EqualTo(1));
+
+        capability.Close();
+        service.Close();
+        Assert.That(account.ReservedBytes, Is.Zero);
     }
 
     [Test]

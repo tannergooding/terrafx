@@ -329,6 +329,26 @@ public sealed class DiagnosticsService
         return -1;
     }
 
+    private static int FindRetentionIndex(
+        DiagnosticEntry[] records,
+        int head,
+        int count,
+        DiagnosticRetention retention,
+        int maximumRecords)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var recordIndex = (head + index) % maximumRecords;
+
+            if (ReferenceEquals(records[recordIndex].Retention, retention))
+            {
+                return recordIndex;
+            }
+        }
+
+        return -1;
+    }
+
     private static long GetMinimumServiceByteReservation(int maximumRecords)
         => checked(
             GetOwnedByteReservation(maximumRecords)
@@ -700,15 +720,16 @@ public sealed class DiagnosticsService
 
         if (records is not null)
         {
-            foreach (var entry in records)
+            for (var index = 0; index < records.Length; index++)
             {
-                if (entry.Retention is { } retention)
+                var retention = records[index].Retention;
+                records[index] = default;
+
+                if (retention is not null)
                 {
                     ReleaseRetention(retention);
                 }
             }
-
-            Array.Clear(records);
         }
 
         if (latestFault is not null)
@@ -921,10 +942,10 @@ public sealed class DiagnosticsService
 
             if (coalescedIndex >= 0)
             {
-                ref var entry = ref records[coalescedIndex];
-                var oldRetention = entry.Retention
+                var previousEntry = records[coalescedIndex];
+                var oldRetention = previousEntry.Retention
                     ?? throw new InvalidOperationException("The occupied diagnostic ring slot has no retained record.");
-                var occurrenceCount = SaturatingIncrement(entry.OccurrenceCount);
+                var occurrenceCount = SaturatingIncrement(previousEntry.OccurrenceCount);
                 var retainedPayloadBytes = CalculateWarningPayloadByteCharge(oldRetention.Record, occurrenceCount);
                 var workspaceBytes = CalculateUpdateWarningWorkspaceBytes(oldRetention.Record.Context.Length);
                 var peakBytes = checked(retainedPayloadBytes + workspaceBytes);
@@ -942,8 +963,17 @@ public sealed class DiagnosticsService
                     return;
                 }
 
+                var currentIndex = FindRetentionIndex(records, _head, _count, oldRetention, _maximumRecords);
+
+                if (currentIndex < 0)
+                {
+                    reservation.Dispose();
+                    throw new InvalidOperationException("The protected subscription warning was lost during admission.");
+                }
+
                 _preparingPayloadBytes = checked(_preparingPayloadBytes + peakBytes);
                 var preparationReleased = false;
+                ref var entry = ref records[currentIndex];
 
                 try
                 {
@@ -1117,8 +1147,11 @@ public sealed class DiagnosticsService
 
         if (retention.ServiceReferenceCount == 0)
         {
-            _retainedPayloadBytes -= retention.PayloadBytes;
-            retention.Account?.Release(retention.PayloadBytes);
+            var payloadBytes = retention.PayloadBytes;
+            var account = retention.Account;
+            retention.ReleasePayload();
+            _retainedPayloadBytes -= payloadBytes;
+            account?.Release(payloadBytes);
         }
     }
 
@@ -1252,10 +1285,10 @@ public sealed class DiagnosticsService
 
                 if (coalescedIndex >= 0)
                 {
-                    ref var entry = ref records[coalescedIndex];
-                    var oldRetention = entry.Retention
+                    var previousEntry = records[coalescedIndex];
+                    var oldRetention = previousEntry.Retention
                         ?? throw new InvalidOperationException("The occupied diagnostic ring slot has no retained record.");
-                    var occurrenceCount = SaturatingIncrement(entry.OccurrenceCount);
+                    var occurrenceCount = SaturatingIncrement(previousEntry.OccurrenceCount);
                     var replacementPayloadBytes = CalculateWarningPayloadByteCharge(oldRetention.Record, occurrenceCount);
                     var replacementWorkspaceBytes = CalculateUpdateWarningWorkspaceBytes(oldRetention.Record.Context.Length);
                     var replacementPeakBytes = checked(replacementPayloadBytes + replacementWorkspaceBytes);
@@ -1278,7 +1311,15 @@ public sealed class DiagnosticsService
                         return false;
                     }
 
+                    var currentIndex = FindRetentionIndex(records, _head, _count, oldRetention, _maximumRecords);
+
+                    if (currentIndex < 0)
+                    {
+                        throw new InvalidOperationException("The protected warning was lost during admission.");
+                    }
+
                     _preparingPayloadBytes = checked(_preparingPayloadBytes + replacementPeakBytes);
+                    ref var entry = ref records[currentIndex];
 
                     try
                     {
@@ -1326,6 +1367,12 @@ public sealed class DiagnosticsService
                         || (reservation.DiagnosticsReservedBytes < completePeakBytes))
                     {
                         throw new InvalidOperationException("The diagnostic record exceeds its preclaimed source-account or service bytes.");
+                    }
+
+                    if (!TryMakeServiceRoom(records, bytes: 0, protectedRetention: null, requireRingSlot: true))
+                    {
+                        _droppedCount = SaturatingIncrement(_droppedCount);
+                        return false;
                     }
                 }
                 else if (!TryReserveAccountBytes(attributionAccount, peakBytes, protectedRetention: null, out reservation))
@@ -1435,22 +1482,28 @@ public sealed class DiagnosticsService
 
     private sealed class DiagnosticRetention
     {
+        private WorldDiagnosticAttributionAccount? _account;
+        private long _payloadBytes;
+        private Diagnostic? _record;
+
         internal DiagnosticRetention(
             Diagnostic record,
             WorldDiagnosticAttributionAccount? account,
             long payloadBytes)
         {
-            Record = record;
-            Account = account;
-            PayloadBytes = payloadBytes;
+            _record = record;
+            _account = account;
+            _payloadBytes = payloadBytes;
             ServiceReferenceCount = 1;
         }
 
-        internal WorldDiagnosticAttributionAccount? Account { get; }
+        internal WorldDiagnosticAttributionAccount? Account => _account;
 
-        internal long PayloadBytes { get; }
+        internal long PayloadBytes => _payloadBytes;
 
-        internal Diagnostic Record { get; }
+        internal Diagnostic Record
+            => _record
+                ?? throw new ObjectDisposedException(nameof(DiagnosticRetention));
 
         internal int ServiceReferenceCount { get; set; }
 
@@ -1462,6 +1515,13 @@ public sealed class DiagnosticsService
             }
 
             ServiceReferenceCount = checked(ServiceReferenceCount + 1);
+        }
+
+        internal void ReleasePayload()
+        {
+            _account = null;
+            _payloadBytes = 0;
+            _record = null;
         }
     }
 }
