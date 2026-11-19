@@ -8,7 +8,7 @@ Keep the current immutable public representation initially. The smallest behavio
 
 The measured repository-local Windows x64 RC3 runtime, prior-session preserved images, and current source-matching emitted images are identified. Sections 4.3-4.4 derive fixed layouts and direct owned-heap construction bounds from the matched runtime algorithm and metadata, not traffic. Section 4.5 records the closed admission/root corrections and remaining P1/P2 funding obligations. A size table or passing managed regression selection alone cannot qualify the service.
 
-The inspected supported APIs do **not** establish a portable full managed-object-graph bound before allocation. The matched implementation does permit the fixed-layout derivation below. With C1-C3 corrected, the smallest next closure is protected/control/producer funding and the complete reviewed profile, not replacement of every Diagnostic with an arena. A bounded representation redesign remains necessary only for storage/construction that cannot be bounded under an accepted implementation profile, or if implementation-specific sizing is rejected. Increasing constants or measuring more traffic does not establish those missing obligations.
+The inspected supported APIs do **not** establish a portable full managed-object-graph bound before allocation. The matched implementation does permit the fixed-layout derivation below. With C1-C3 corrected, remaining work is P1/P2 only. The expanded source trace finds real initial control payers and closes the per-row formatting/copy subcase, but does not establish complete cross-service/escaped funding or a mandatory Critical-producer catalog. Section 4.7 gives the minimum protected structure and equations without choosing unreviewed allowances. A complete protected representation cannot yet be declared contract-closed or eligible.
 
 This proposal changes no owner contract, public API, quota, diagnostic identity, or milestone gate. Tentative approval permits work on the closure mechanism, not permission to mark an unproved profile eligible.
 
@@ -31,7 +31,7 @@ Source observations from the frozen review inputs below:
 | Current `WriteNoncoalescingWarning` / `ValidateSkinnedNormalDiagnostic` | Before entering preclaimed `WriteCore`, this path now requires the exact `DegenerateSkinnedNormal` code, operation/message literals and six ordered context entries. It validates lowercase nonempty Guid identities, canonical positive long values, positive vertex counts at most 262144 with degenerate count no greater than tested count, and matching submission/snapshot/draw command identity. This closes a producer-shape boundary, **not** the allocation-size profile or its byte funding. |
 | `GetSnapshot` and `DiagnosticSnapshot.CreateOwned` | The in-progress path transfers builder backing through `MoveToImmutable` and bypasses the snapshot constructor's explicit second copy. Qualify this actual construction path, not the older double-copy observation in the addendum. Builder, backing, snapshot, and any remaining temporary storage still need bounds. |
 
-These are source observations, not executed accounting or allocation observations. No TerraFX.Runtime implementation or test source was reviewed for this proposal.
+These are source observations, not executed accounting or allocation observations. Evidence scope now includes the specific World/Host/Rendering funding and producer paths in section 6, checked against source revision `4069a0a7`; it is not a qualification of the complete World or Renderer allocation ledger. No test source/results were used as a size oracle.
 
 ## 3. Public guarantees are not heap-layout guarantees
 
@@ -95,8 +95,8 @@ Additional ordinary developer outputs matching the committed service source were
 
 | Current emission input | MVID | Source/validation evidence |
 |---|---|---|
-| `artifacts\bin\sources\TerraFX.Core\Debug\net11.0\TerraFX.Core.dll` | `32c67849-2ac0-40c3-8eeb-26c2ebaf4778` | All 11 in-scope Core documents match section 6, including corrected `DiagnosticsService.cs` and the clock/query/severity leaves. |
-| `artifacts\bin\sources\TerraFX.Core\Release\net11.0\TerraFX.Core.dll` | `8b8b84a3-44a4-4cdf-9c0e-44981ebd5117` | The same 11 source matches. |
+| `artifacts\bin\sources\TerraFX.Core\Debug\net11.0\TerraFX.Core.dll` | `d927f08f-3af5-4256-846f-8b51200a917f` | All 11 in-scope Core documents match section 6, including corrected `DiagnosticsService.cs` and the clock/query/severity leaves. |
+| `artifacts\bin\sources\TerraFX.Core\Release\net11.0\TerraFX.Core.dll` | `66fcce33-c9ff-490f-ba73-f2ec9c0e9080` | The same 11 source matches. |
 
 Both current images contain the validator, its four static local-function methods, and `WriteNoncoalescingWarning`; their resolved call/allocation sequences agree between configurations. The validator's only `newobj` sites construct `ArgumentException` on rejecting branches. The four static helpers contain no allocation opcodes, boxing, closures or delegates. The entry method's successful `newobj` operations construct nullable **values**, not heap objects. The accepted path uses string indexing, spans, equality and `TryParse`; no input-dependent managed allocation is introduced by this validation. This is emitted valid-path evidence, not a claim about all runtime-global first-use activity. These are mutable developer-output locations: their section 6 hashes must still match at disposition.
 
@@ -224,7 +224,7 @@ The current append workspace `128 + 2*ArrayCharge(n+1)` dominates its one direct
 
 Positive default-format `Int64.ToString` follows [`FormatInt64`](https://github.com/dotnet/dotnet/blob/5254d8bcf59917edc1e1abc33bdf2442b77b1c70/src/runtime/src/libraries/System.Private.CoreLib/src/System/Number.Formatting.cs#L1355) → `UInt64ToDecStr`: one result string of 1-19 characters, or a cached result; no per-call heap formatting Builder is used. The runtime's lazily populated 300-element small-number cache has a **2424-byte reference array** ([source](https://github.com/dotnet/dotnet/blob/5254d8bcf59917edc1e1abc33bdf2442b77b1c70/src/runtime/src/libraries/System.Private.CoreLib/src/System/Number.Formatting.cs#L266)). That is runtime-global state, not another retained Diagnostic context array. First-use traffic, shared-global ownership, and explicit temporary owner storage must not be conflated. The formulas do not claim a process RSS/stack/loader-memory ceiling or silently fund runtime-global initialization from a record's charge.
 
-For the closed positive skinned-normal shape, the literal lengths are Code 23, Operation 20 and Message 65; maximum CommandIdentity is 110. Producer key/value length pairs are `(10,32)`, `(6,32)`, `(18,19)`, `(14,19)`, `(17,6)`, `(21,6)`; service occurrence adds `(15,1)`. Independently applying `S` gives **1328** conservatively counted string bytes and a retained graph bound **1728**. Under the source-construction model assumed by Core's preclaim helper—one input context array plus the constructor copy—the direct source/append peak is **2320**; the current helper reserves **3856**. These are formula results, not traffic measurements or eligibility. Any external producer Builder, rented formatting buffer, queue/control or other construction storage must have its actual capacity and payer proved separately; the validator cannot retroactively fund it.
+For the closed positive skinned-normal shape, the literal lengths are Code 23, Operation 20 and Message 65; maximum CommandIdentity is 110. Producer key/value length pairs are `(10,32)`, `(6,32)`, `(18,19)`, `(14,19)`, `(17,6)`, `(21,6)`; service occurrence adds `(15,1)`. Independently applying `S` gives **1328** conservatively counted string bytes and a per-entry retained bound **1728**, excluding its separately funded shared account. The actual producer lowering in section 4.7 matches the source/append model: the direct per-row construction peak is **2320**, or **2392** when conservatively including one 72-byte account-control use; the current helper reserves **3856**. These are formula results, not traffic measurements or eligibility. They do not pay for the earlier snapshot, pending submission, result-array/readback or other producer-control interval.
 
 The latest-fault pointer is an alias to a retention node, not a second copy: its second service reference keeps the same graph/account charge alive after ring eviction. Caller snapshots contain only copied arrays and Diagnostic references, not node/account/service capabilities. Their later caller lifetime does not keep a service debit alive; a separate engine owner still needs its own funded use. Normal eviction and Close clear their ring references before releasing the node; final release clears the node's payload/account references before refund. Reservation transfer moves retained credits and leaves preclaimed temporary credits until the producer disposes its reservation. These corrected transitions do not establish P1/P2's protected/control funding.
 
@@ -240,7 +240,7 @@ The committed corrections were inspected in source and tied to the current emitt
 
 **P1 — Required protected roots/peaks are not funded.** The only explicit unused protected reservation is `_protectedSnapshotBytes`. An admitted fault remains charged through `_latestFault`, but there is no protected next-fault/counter construction/replacement envelope. Critical input follows ordinary room-making/refusal before `_latestFault` is updated. Saturation helpers cap counters without constructing the independently required `DiagnosticCounterSaturated` observation. No finite mandatory fault/counter producer representation or complete protected peak is supplied by this Core implementation. Do not invent a numeric allowance or treat ordinary refusal as closure of that guarantee.
 
-**P2 — Complete control/caller funding is not established by shallow sizes.** The account's 128-byte control allowance covers its 72-byte object; it does not itself prove payment for the 80-byte capability, process-lived Core clock storage, external source construction/queue backing, or account-control lifetime after World close. Those require exact existing owner credits and actual last-use rules. ServiceControlBytes' apparent slack is not an ownership mapping. For M05 source construction, the exact missing caller evidence is the lowering/actual capacities and payer for any command-identity formatter, input-context Builder/rental, and pending producer control used before `WriteNoncoalescingWarning`; the closed six-entry validator and Core's 3856-byte prospective claim do not establish that work. Runtime-global BCL caches, including generic Empty storage, numeric strings, comparers and culture state, must be distinguished from Core-owned statics and per-operation borrowed/work storage; warm traffic is not proof of no first-use allocation. No new quota or silent exemption is proposed.
+**P2 — Complete control/caller funding is not established by constants alone.** The expanded trace in section 4.7 identifies actual initial World/domain and service reservations, plus sufficient per-entry control credit for node/account use. It also verifies the per-row producer without a rented formatter/Builder. Remaining obligations are complete fixed-cohort coverage, composition with World/domain credits and standalone backing, escaped/pending control uses, and the process-lived clock payer. These are not discharged by the names `FreshWorldControlBytes`/`ServiceControlBytes` or by spare arithmetic capacity.
 
 Smallest remaining contract-respecting closure: fund closed mandatory fault/counter and control/producer lifetimes under the existing ceilings, establish the complete conservative protected peak, then obtain owner disposition for the exact profile inputs. C1-C3 no longer block that work, but neither an arena nor larger guessed constants supplies P1/P2's missing evidence. No code or contract was changed by this proposal update.
 
@@ -253,6 +253,104 @@ Preserve the current allocation-free count sizing through `GetPositiveDecimalDig
 Use the existing [build procedures](../project/Building.md) and [consumer/NativeAOT procedures](../project/Building.Consumers.md), not a new qualification runner. Future focused Core Debug then Release regressions should cover unknown-profile refusal before backing construction, exact-fit/one-byte-short admission above the real baseline, overflow, oversized pre-existing strings, replacement coexistence and decimal digit transitions, protected roots/polling workspace, cross-service account pressure, and release with retained caller snapshots. Expected storage bounds must come from the reviewed derivation, not solely from the production charge helpers. Confirm nonempty selected/executed tests and current-run results under `artifacts\tst\<Configuration>`.
 
 These managed checks establish their executed behavior only. Published NativeAOT and real standalone/hosted consumers require separate execution on each applicable target under [Chapter 35](../design/35-implementation-roadmap.md#4-completion-gates). They do not inherit acceptance from a managed Core test or this proposal.
+
+### 4.7 P1/P2 owner trace and minimum protected-state decision
+
+**Disposition: partial mechanical closure, not a complete protected profile.** Source-backed payers exist; calling all capability/account storage unfunded would be incorrect. Conversely, neither a quota counter nor unused space in a broad constant is an entitlement. The inspected files match revision `4069a0a706feabf4e66a3e6affafde503160b836`; owning Chapters 04/28/29 and the addendum are unchanged.
+
+#### Actual owner/credit mapping
+
+| Storage/use | Actual source reservation and lifetime | What is established / remains open |
+|---|---|---|
+| Fresh World capability, 80 bytes | `World.AdmitWorld` includes `FreshWorldControlBytes = 4096` in `worldOwnedBytes`; `WorldAdmissionDomain.TryReserveWorld` debits `_worldBytes` before service/capability construction. The plan transfers the capability into the World. | A real initial World/domain payer exists. Prove `other simultaneous fresh-control storage + 80 <= 4096`, including plan/World coexistence and other users of that cohort; do not assign all 4096 to Diagnostics. |
+| Fresh account, 72 bytes | Fresh admission separately adds `ControlByteCharge = 128` to `diagnosticBytes` before the domain reservation and account constructor. Core also withholds those 128 from the account's attribution capacity. | Initial physical credit and quota deduction exist; 72 fits that claim. They are distinct roles, not two physical allocations. The capability is not automatically paid by the same 128: 72 + 80 exceeds it. |
+| Restore capability/account | `CalculateRestoreWorldOwnedBytes` reserves the 4096 control cohort and restore terms before creating a new borrowed capability/account. It does **not** contain the fresh path's separate `diagnosticBytes` term. | This path needs its own cohort proof for the 80 + 72 controls. Do not copy the fresh-account charge into the restore evidence or assume the restore-context allowance is spare. |
+| Service/ring | Core constructor minimum/room equations withhold `ServiceControlBytes = 256` and the whole ring charge. Standalone fresh admission includes that backing in its real domain grant; Host startup owns the shared service under its fixed 8-MiB service ceiling, not a per-World duplicate backing charge. | The 112-byte instance is covered by a real withheld term, not merely a named constant. Remaining fixed users/lifetimes must be assigned within that term. |
+| Service-held/preparing account use | Every attributed retention/preclaim includes the 128-byte retention-control term in real service/account reservations. Its control graph is node 48 + one account 72 = 120. Final node release clears its references before refund. | This term is sufficient for that independently held use, including after World close; do not add another per-entry account charge on top. It does not retroactively fund account creation or unrelated pending holders. Aliased account uses may be conservatively reserved without claiming duplicated physical allocations. |
+| Shared clock | `EnsureInitialized` is reached during service construction. Core retains its boxed ClockState 40 plus static cells for type/process lifetime; the provider is runtime-shared. A live service's 256 term has arithmetic room beyond its 112-byte instance. | Arithmetic room is not a persistent payer. No examined service close transfers/retains a control claim for the Core-owned static lifetime after the last service. The owning profile must identify the existing process/control payer or change the private storage/lifetime; no clock exemption or new quota is assumed. |
+| Snapshot/pending submission account use | The frame lease borrows from the live World. `RenderSnapshot` stores the account and returns it by reference; `SubmitAsync` captures it across awaits before per-row preclaim. `SubmissionAdmissionLease` limits active submissions and diagnostic submissions, and asset pins retain assets. | These are lifetime/count mechanisms, not a demonstrated diagnostic byte grant. No account-specific World/domain credit is carried by these inspected holders. An actual existing operation/control payer must cover the interval and final return, even if a public snapshot's caller retains a separate use. |
+| End of initial World grant | World closes the capability; domain retirement waits for the recorded close/Scene/independent-use conditions and then returns `interest.Bytes`. The account itself contains no domain reservation or World-use authority. | Plain account references are not an enrollment in those return conditions. Funding must be retained or transferred to each real escaping owner before the initial credit ends; do not keep an unrelated World authority alive or inject a Runtime callback into Core. |
+
+Two compositions require explicit correction/proof, not a larger allowance:
+
+- Fresh `diagnosticBytes` is only account control plus standalone initial backing, not a prepaid maximum payload envelope. Core's later account/service CAS/debit paths do not call `WorldDomainReservation.TryReserveAdditional`, and `GetOtherWorldOwnedStateBytes` does not read their dynamic diagnostic balances. An independently enforced `MaximumDiagnosticBytes` ceiling therefore does not itself prove that variable payloads spend the remaining World-shared/domain credits. Identify a real prepaid/transferred envelope or another already-funded owner receipt; no opaque control/CPU-extraction allowance is borrowed by inference.
+- For a standalone source, its owned service backing must compose with that account's records across **all** services. Account capacity currently subtracts 128, while the standalone service independently permits up to `M - 128`; those two checks alone do not add the standalone backing/global protected storage to cross-service attribution. A fixed baseline debit or equivalent exact composition must cover the same existing sublimit, without charging shared host backing to every hosted World.
+
+#### Producer subcase now bounded
+
+`Renderer.SkinnedNormalDiagnosticPipeline.cs` reserves before formatting and disposes the reservation in `finally`. Its matching Debug/Release Runtime IL uses an inline 12-int descriptor, an inline six-string-reference argument buffer for `string.Concat(ReadOnlySpan<string?>)`, one input context array of six entries, and the already-derived constructor/append copies. There is no per-row ArrayPool rental, StringBuilder, heap params array or delegate/closure in these two methods.
+
+Guid `"N"` formatting allocates the final 32-character string directly. Positive integer formatting follows the bounded default decimal paths. The matched [`Concat` span implementation](https://github.com/dotnet/dotnet/blob/5254d8bcf59917edc1e1abc33bdf2442b77b1c70/src/runtime/src/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs#L411) allocates only its final result on this path; its concurrent-mutation retry is unreachable for the private inline argument buffer. Thus the 2320/2392 direct owned-heap factors are source-derived, and 3856 covers that per-row subcase. Earlier readback/result storage, the async submission control and shared-global first use are not silently included in that conclusion.
+
+The inspected Runtime images have Debug MVID `0b75efe9-db9c-4458-a7a1-c11bfdf13d96` and Release MVID `2a1347ff-7e84-4cc3-87e0-7245a481ef0b`; all 17 newly scoped Runtime PDB documents match the frozen source files. This is scoped emission evidence, not qualification of the complete Runtime module or the 32-/16-MiB Renderer ledgers.
+
+#### Smallest protected structure that can be priced after owner decisions
+
+Latest fault needs only the existing single independent latest-fault interest, retaining the **complete** approved immutable Diagnostic graph; caller results remain unchanged. Let the reviewed finite mandatory-producer catalog be `F`, with `R(f)` from section 4.4 and exact producer workspace `W(f)`. Then reserve the maximum simultaneous transition, not net growth:
+
+```text
+H_fault = max over old,new in F of (R(old) + R(new) + W(new))
+```
+
+An old fault still held by the ordinary ring is not free when the latest-fault interest moves. Before recycling its protected credit, remove that ring interest under the existing policy or obtain an ordinary funded claim for it. Caller observations do not prolong service ownership. Attributed fault claims must also fit the exact account across services; a single service's protected pool does not create per-World headroom elsewhere.
+
+There is **no production Critical-producer format catalog in the inspected source**: production `DiagnosticSeverity.Critical` references found are Core validation/retention branches. `World.FaultWorld` currently constructs an **Error** using a possibly unbounded exception/validation message and keeps its separate World fault/result. It cannot be silently promoted, truncated, or treated as a reviewed Critical envelope. Constructor-valid Critical strings/contexts are not universally bounded by a small protected slot; two individually large graphs need not coexist within the existing ceiling. Byte refusal is not a derivation of mandatory-producer coverage. An absent catalog leaves `H_fault` undefined, not zero or vacuously qualified.
+
+For the two concrete service-global counters, the minimum record multiplicity can be one immutable **counter-set** record, not one queue item per overflow. A reviewable candidate is:
+
+- One preallocated saturation mask and publication checkpoint for `{DroppedCount, CoalescedCount}`, plus one protected node reference; publish only when the monotonic mask grows. Use existing `DiagnosticCounterSaturated`, fixed reviewed operation/message literals, and context entries identifying each saturated counter with the literal `long.MaxValue` text. No runtime numeric formatter or arbitrary counter-name callback is needed.
+- A reviewed non-Warning/non-Critical severity avoids changing ordinary Warning coalescing keys or replacing a real Critical fault. Alternatively the owner must explicitly resolve the protected-Warning interaction; a new coalescing exception is not inferred here.
+- Reserve one of the existing ring slots before ordinary admissions and pin its published counter node against ordinary eviction. It remains in stable admission order and ordinary copied polling; no extra unbounded root merge or caller-retained service capability is introduced. Immutable replacement keeps earlier caller snapshots unchanged.
+- Producers on a real-time callback only set a preallocated atomic latch. They neither acquire the service gate, allocate/format, await, nor publish a Diagnostic. The control owner publishes using its prepaid reservation. Core's current gated `RecordDropped` is not advertised as callback-safe. No synthetic callback test qualifies a future Audio owner.
+
+For a reviewed counter set `K` and subset `X` of saturated counters, using the existing string-size function `S(length)`, a non-Warning candidate has:
+
+```text
+C(X) = 216 + 48 + A_16(|X|)
+       + S(26) + S(operationLength) + S(messageLength)
+       + sum over j in X of (S(counterNameLength[j]) + S(19))
+H_counter = maximum of first publication and
+            C(oldSubset) + C(newSubset) + W_counter(newSubset)
+            for strictly growing subsets
+```
+
+For only the two globals, the replacement maximum is old-one plus new-two, not an unbounded stream of duplicates; `W_counter` includes the actual input-context copy/workspace. Root pointers/latch fields belong in the revised service layout, not a new budget category. `OccurrenceCount` is also saturated in current Core, and Chapter 28 names other owners' counters: the reviewed membership must state whether/how aggregate-instance saturation and those owners are represented. The two-global candidate is not asserted to satisfy an unspecified larger set.
+
+#### Existing-ceiling equations and unresolved decisions
+
+With approved fixed backing `B`, bounded polling construction `P`, ordinary live/preparing `O`, and fault/counter live/preparing/unused protected credits, the same service ceiling must enforce:
+
+```text
+B + P_unused + P_preparing + O_live + O_preparing
+  + F_live + F_preparing + F_unused
+  + C_live + C_preparing + C_unused <= L_service
+L_service <= 8,388,608
+
+sourceControlAndOwnedBacking[i]
+  + all-service live/preparing[i] + unusedProtected[i] <= M_i
+fundedDiagnosticEnvelope[i] + otherOwnedWorldCredits[i]
+  <= MaximumOwnedStateBytes[i]
+all outstanding actual domain grants <= the existing domain ceiling
+```
+
+Protected use transfers unused reservation into preparing/live; it is not added twice. A standalone World's own service-global protected storage/polling must also compose with its backing and all-service account debits, even where a control record has no WorldGuid. The diagnostic envelope is funding inside existing World/domain credits, not another quota or arena allocation. It cannot exceed exact configured `M_i` or real remaining shared credits. Derive ring capacity and protected polling together; the pinned counter slot cannot be spent by ordinary records. If mandatory minima do not fit, reject owner/producer admission before authority/native work, not by rounding up a limit.
+
+**The exact P1 decision still missing:** owners must close the mandatory Critical format/producer catalog, full-result versus explicitly authorized protected-record mapping, and saturation membership/severity/polling behavior. Under unchanged contracts this proposal defaults to preserving the full approved record and caller result; it selects no lossy summary, replacement diagnostic ID, arbitrary string cap or numeric fault allowance.
+
+**The exact P2 closure still missing:** name and prove the complete 4096/256 control cohorts, the clock's actual lifetime payer, the World/domain-funded diagnostic envelope/composition, and the escaping snapshot/submission/control receipt/return path. Service-held node/account coverage and the per-row formatter are now proved subcases, not substitutes for those intervals.
+
+#### Source-backed implementation batches and focused checks
+
+| Batch | Owning components / prerequisite | Bounded action and acceptance evidence |
+|---|---|---|
+| Owner input closure | Critical producer owners and Chapter 28 control owners | Freeze the concrete catalog and counter-set semantics above. Existing test Critical fixtures or the World Error fault do not supply a production catalog. This is the first review gate, not permission to invent one. |
+| Initial and escaping funding | `World.AdmitWorld`, restore plan, domain/lifetime controls, snapshot/submission holders | Close complete fixed-cohort coverage; fund variable diagnostic headroom from existing credits and compose standalone backing with cross-service quotas. Retain/transfer exact claims until actual last engine use. Keep the Core account non-emitting and free of Runtime/World references, callbacks or World-use authority. |
+| Protected Core construction | Service/account admission and owning control publisher, after catalog/funding closure | Derive `H_fault`, `H_counter`, revised service metadata and poll capacity from the approved shapes. Implement protected claims/slot reservation, full old/new coexistence, and immutable publication without recursively charging loss/coalescing counters for their own report. No new public API or separately spendable allowance. |
+| Final evidence | Existing Core/Runtime Debug then Release procedures | Refreeze final source/images and review byte boundaries plus lifecycle/consumer observations separately. No numeric eligibility from the current managed counts or this design candidate. |
+
+Focused checks must exercise real initial grants and one-byte-short refusal before capability construction; restore/fresh funding differences; standalone backing plus another service's account pressure; World close while snapshot/submission/record uses remain; last-use transfer/refund exactly once; ordinary byte/slot exhaustion followed by two distinct approved Critical faults with immutable prior observations/caller results; saturation of each reviewed counter, both before/after control publication, without recursive drops; pinned counter visibility/order with ordinary flooding; smallest valid World limit and exact protected/poll replacement boundaries. Callback checks cover a preallocated latch without gate/allocation; actual Audio nonblocking behavior remains with its real owner.
+
+**Safe boundary now:** keep P1/P2 and numeric eligibility open. Do not enable a mandatory protected producer or accept diagnostic-enabled native work under an unpriced catalog/unfunded control interval. Retain existing before-work capacity rejection where funding is absent; do not fabricate a zero result or count unobserved positive rows as dropped. Once a positive row is validated, ordinary publication refusal remains one visible drop and cannot turn an otherwise valid submission into failure. Real operation faults/results remain independent and must not be hidden or rewritten to make telemetry fit. C1-C3 stay closed; unrelated dependency-ready work may continue.
 
 ## 5. When a representation redesign is required
 
@@ -271,7 +369,7 @@ If these remaining allocations cannot be bounded either, the redesign is also bl
 
 ## 6. Frozen review inputs
 
-Refreshed on 2026-11-19 at Core source/worktree revision **`4069a0a706feabf4e66a3e6affafde503160b836`**. The service row is the inspected committed C1-C3 correction, superseding all previous current-source hashes; the reviewed Core files are clean. Prior-session preserved images remain older emission inputs. The current Debug/Release outputs match all 11 in-scope source documents, including corrected service, validator, clock, query and severity. Their mutable output paths must retain these exact hashes for review. The checkout-local RC3 runtime, not global RTM, is frozen. No schema or protected fixture is changed or accepted. Other workspace changes are outside this review.
+Refreshed on 2026-11-19 for source revision **`4069a0a706feabf4e66a3e6affafde503160b836`**, with worktree HEAD observed at `313021544b5cf626b1fce05f13a7c1c3fb0624be`. Every newly scoped World/Host/Rendering source file was checked unchanged against the requested revision; unrelated later work is not reviewed. The service row remains the inspected C1-C3 correction. Prior-session preserved images remain older emission inputs. Current Core Debug/Release outputs match all 11 scoped Core source documents, and the added Runtime outputs match all 17 scoped Runtime documents. Mutable output paths must retain these exact hashes for review. The checkout-local RC3 runtime, not global RTM, is frozen. No schema or protected fixture is changed or accepted.
 
 | Input | SHA-256 |
 |---|---|
@@ -295,8 +393,27 @@ Refreshed on 2026-11-19 at Core source/worktree revision **`4069a0a706feabf4e66a
 | `.dotnet\sdk\11.0.100-rc.3.26522.148\Roslyn\bincore\csc.dll` | `a3c6fcd1fb9ae921a985e7d55f79ce921eee79a5a61a11f6d8ce9776baf81172` |
 | `session artifact: files\diagnostics-profile\TerraFX.Core.Debug.net11.0.dll` | `00a56c4bb8a8995a0c5e254155e013b31205c1ac3ec3fc82392e9a81a762c20b` |
 | `session artifact: files\diagnostics-profile\TerraFX.Core.Release.net11.0.dll` | `bfff18b4953ce6f19d1d566b0e64d815e3c1179e743dcc20e79e43952cdb47fa` |
-| `artifacts\bin\sources\TerraFX.Core\Debug\net11.0\TerraFX.Core.dll` | `b0d1778169b2a5e2b78a19473ec04dbfe4a43f7b90b5f1c4fc1b762cf60fe731` |
-| `artifacts\bin\sources\TerraFX.Core\Release\net11.0\TerraFX.Core.dll` | `ff1b7106417139b68535cd021a36ddcf5cbc7e8663af6461cc826435d0122dd8` |
+| `artifacts\bin\sources\TerraFX.Core\Debug\net11.0\TerraFX.Core.dll` | `91c5d63487b0971e4965c13714f53218ad4028530e8cee660cc52124985108cf` |
+| `artifacts\bin\sources\TerraFX.Core\Release\net11.0\TerraFX.Core.dll` | `8800c7994c3e6892536abd7382b731be591dccc45b615bb232f51da5d018f3a9` |
+| `sources\TerraFX.Runtime\Entities\World.cs` | `45291c235c234214ddcf4fef45e02d1416d5f1effd3e39a1729c4396199fa36c` |
+| `sources\TerraFX.Runtime\Entities\World.PersistenceAdmission.cs` | `1dbac6f5d3da19a6e616bdd03e8f4a9f885cf74cc0fd40d4f3e34adac5da62b4` |
+| `sources\TerraFX.Runtime\Entities\World.Publications.cs` | `ec1e3c92ae6e0e3f30a8dde7aa90ce4cc11141741286eccd753185c648a6d6fe` |
+| `sources\TerraFX.Runtime\Entities\WorldAdmissionDomain.cs` | `0afbc247e5ce649edbd6f26a01f67bd291d7f23cd1529dd5cd735e89dffd70f7` |
+| `sources\TerraFX.Runtime\Entities\WorldAdmissionDomain.SceneStorage.cs` | `c8595af75dcdb5b7128ab6c180a0c07c53e5d8109bbe481f96b4da3634375608` |
+| `sources\TerraFX.Runtime\Entities\WorldDomainReservation.cs` | `d6cdd6105850b8076d40891b0ed1f583d9fcde6ee190444a7d570879964403dc` |
+| `sources\TerraFX.Runtime\Entities\WorldLifetimeControl.cs` | `5a304aaf8b2353e28f6f743d5587e82f12e979dcf0dfebf55103e075ccaf54f2` |
+| `sources\TerraFX.Runtime\Entities\WorldConstructionPlan.cs` | `c159737cdd73b36ebda75fc5503ef0146b5ac76317d452517d550bdfd0354764` |
+| `sources\TerraFX.Runtime\Entities\WorldFrameReadLease.cs` | `d2516ee9b4845210bdf97ab6c52200213a18b5c70c8ac14d6350ec863f3d1af6` |
+| `sources\TerraFX.Runtime\Entities\World.CpuExtraction.cs` | `eb717590a5cc31d05fa576e985f2d2e7fc20c029f561df4fcac1167b5cb96840` |
+| `sources\TerraFX.Runtime\Hosting\EngineHost.cs` | `2fd506f286e9d69e1f67b144cd113c4d023edb8ad9f8bfdfd079d4db417c6fa2` |
+| `sources\TerraFX.Runtime\Rendering\RenderSnapshot.cs` | `8b75010ceef75e39ce2a5c35ced6da33ebfcac4385513772282581c68bb6fe16` |
+| `sources\TerraFX.Runtime\Rendering\RenderSnapshotAssetPins.cs` | `8417756ea5d9dc6363d71c6274b2b6b8849c179bffda0d1133a4ffb81fcd0a1c` |
+| `sources\TerraFX.Runtime\Rendering\RenderSkinnedNormalDiagnostic.cs` | `e7440481f66aa0882ee329d704082ee7348d7a15991dfd7483df98187fe057d0` |
+| `sources\TerraFX.Runtime\Rendering\Renderer.Submit.cs` | `3f4b232e7c777fcf458c7e17bfc8bec028716e912f68e40eea0993371441c9c3` |
+| `sources\TerraFX.Runtime\Rendering\Renderer.SubmissionAdmission.cs` | `8b456af38eed738e7a02bd233ffeb83438cbd114b59ca3967ba6103a1e082d14` |
+| `sources\TerraFX.Runtime\Rendering\Renderer.SkinnedNormalDiagnosticPipeline.cs` | `1eeb8c96a3f89f74f232a881ceea2ac3113f70db0a37b35c60beffbedc6159d2` |
+| `artifacts\bin\sources\TerraFX.Runtime\Debug\net11.0\TerraFX.Runtime.dll` | `dc63613d4a14006b5d4a6718b00b51327da922c14301b90c05e4d44c5e147a80` |
+| `artifacts\bin\sources\TerraFX.Runtime\Release\net11.0\TerraFX.Runtime.dll` | `2be9d71fc5b5affb313f7f314b6c43c36ec82b4ce7fedac1e81037fa64a25127` |
 | `docs\proposals\m05-diagnostics-retained-payload-accounting-addendum.md` | `8200267782bfb5a8058fb2a0537e5477ccd79368b2b76b63f64e4ee91200eaab` |
 | `docs\design\04-capacity-and-workload-profiles.md` | `60047dd1eacf26196b0bf23f16798e2aa265fd26cd36b9a0b4df1b79135730d7` |
 | `docs\design\28-diagnostics-performance-and-validation.md` | `0e3c895bee5f76118ce87d208170cb6e02e9a19de3f286b7e243b28165370d14` |
@@ -306,13 +423,15 @@ Refreshed on 2026-11-19 at Core source/worktree revision **`4069a0a706feabf4e66a
 | `docs\project\Building.md` | `f043a352870efb6c7d4a61998225e2508a8f4370a57e784483a41819d452075f` |
 | `docs\project\Building.Consumers.md` | `8af46079a9e11e01578cc9b76b695801b585f58148df36418ee5506ca4006442` |
 
-Review this proposal's exact bytes with these 30 inputs and its RC3 commit-pinned source links; recheck hashes before disposition and refreeze changed relevant inputs. The API links establish public guarantees and the runtime links establish only the stated implementation facts, not qualification.
+Review this proposal's exact bytes with these 49 inputs and its RC3 commit-pinned source links; recheck hashes before disposition and refreeze changed relevant inputs. The API links establish public guarantees and the runtime links establish only the stated implementation facts, not qualification.
 
 ## 7. Unresolved gates and concrete next action
 
 | Gate | State / remaining action |
 |---|---|
-| Complete protected/owner peak | **Open.** Close finite fault/counter representations and protected coexistence; name the capability/clock/account/producer payers and actual last-use credits. The fixed layouts and direct heap factors do not discharge P1-P2. |
+| P1 mandatory catalog/control semantics | **Open owner input.** Close the finite Critical producer/full-record mapping and exact counter membership/severity/polling behavior in section 4.7. `H_fault` is undefined, not zero; no numeric protected allowance is selected. |
+| P2 complete paid lifetime/composition | **Partially mapped, not closed.** Real initial World/domain/service payers and service-held node/account coverage exist; per-row formatting is bounded. Complete 4096/256 cohort contents, clock lifetime, source World/domain envelope, standalone cross-service baseline and escaped/pending receipts/returns remain open. |
+| Complete protected/owner peak | **Open.** Evaluate the section 4.7 equations only after those owner/funding inputs close, including old ring-held faults, counter replacement and bounded polling. No separately spendable quota is introduced. |
 | Numeric eligibility | **Not selected.** Current validator emission and fixed sizes are derived, but the complete existing-ceiling admission/ownership bound fails to close. Keep unknown/unqualified profiles closed. |
 | Owner disposition | **Open.** Review the frozen profile scope and bounds; tentative implementation guidance is not numeric acceptance or approval of a storage redesign. |
 | Final profile implementation and managed behavior | **Partial evidence only.** Managed Core regressions are reported 22/22 per configuration and the targeted Runtime selection 5/5 per configuration at `4069a0a7`. Complete protected funding, final profile implementation and exact byte-boundary checks remain open. No tests were run or result files verified here. |
@@ -320,4 +439,4 @@ Review this proposal's exact bytes with these 30 inputs and its RC3 commit-pinne
 
 This documentation-only update performed source and static PE/PDB inspection, not a build, test, allocation probe, heap inspection, native run, or AOT execution. Reported traffic and regression summaries remain attributed evidence, not runs performed or result files verified here. Independent dependency-ready work may continue; the blocked diagnostics prerequisite is not waived.
 
-**Next action:** close P1/P2's finite protected-root and control/producer funding inputs and the complete protected coexistence bound, then freeze matching final source/images for owner disposition and focused byte-boundary validation. Reuse the fixed-layout derivation only where the relevant metadata/runtime layout remains unchanged; do not rerun traffic to choose constants. Until all of that closes, select no numeric eligibility and retain fail-closed behavior.
+**Next action:** obtain the concrete mandatory Critical/counter decisions and actual lifetime credit route identified in section 4.7, then close the initial/escaped funding batch before implementing and pricing protected roots. Freeze the resulting source/images for owner disposition and focused boundaries; reuse only unchanged layout facts and do not rerun traffic to choose constants. C1-C3 remain closed. Until P1/P2 close, select no numeric eligibility and retain the explicit fail-closed producer/work boundary.
