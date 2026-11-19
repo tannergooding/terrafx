@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace TerraFX.Entities;
 
-internal sealed class WorldGuidRegistry
+internal sealed partial class WorldGuidRegistry
 {
     internal const int MaximumBindingCells = 65_536;
     internal const int MaximumChargedBytes = 67_108_864;
@@ -691,6 +691,7 @@ internal sealed class WorldGuidRegistry
         if ((keyCell._worldGuid != grant.WorldGuid)
          || (ownerUseCell._state != CellStateReserved)
          || (bindingCell._independentUseCount != 0)
+         || (bindingCell._terminalDomain is not null)
          || (bindingCell._worldOwnerBound && (permit?.IsConsumedFor(this, grant) != true)))
         {
             return false;
@@ -1160,6 +1161,11 @@ internal sealed class WorldGuidRegistry
             if ((bindingCell._keyCellIndex != grant.KeyCellIndex)
                 || (bindingCell._keyGeneration != grant.KeyGeneration)
                 || (bindingCell._state != CellStateRevoked))
+            {
+                return false;
+            }
+
+            if (bindingCell._terminalDomain is not null)
             {
                 return false;
             }
@@ -2096,6 +2102,20 @@ internal sealed class WorldGuidRegistry
         internal int _freeNextIndex;
         internal int _independentUseCount;
         internal bool _worldOwnerBound;
+        internal WorldAdmissionDomain? _terminalDomain;
+        internal Exception? _terminalFailure;
+        internal int _terminalState;
+        // Keep the managed array stride at its charged 128-byte value.
+        internal long _terminalReserved0;
+        internal long _terminalReserved1;
+        internal long _terminalReserved2;
+        internal long _terminalReserved3;
+        internal long _terminalReserved4;
+        internal long _terminalReserved5;
+        internal long _terminalReserved6;
+        internal long _terminalReserved7;
+        internal long _terminalReserved8;
+        internal long _terminalReserved9;
     }
 
     private struct GrowthTicket

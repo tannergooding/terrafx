@@ -474,6 +474,19 @@ internal sealed class WorldSceneReceiverTests
             ("_freeNextIndex", typeof(int)),
             ("_independentUseCount", typeof(int)),
             ("_worldOwnerBound", typeof(bool)),
+            ("_terminalDomain", typeof(WorldAdmissionDomain)),
+            ("_terminalFailure", typeof(Exception)),
+            ("_terminalState", typeof(int)),
+            ("_terminalReserved0", typeof(long)),
+            ("_terminalReserved1", typeof(long)),
+            ("_terminalReserved2", typeof(long)),
+            ("_terminalReserved3", typeof(long)),
+            ("_terminalReserved4", typeof(long)),
+            ("_terminalReserved5", typeof(long)),
+            ("_terminalReserved6", typeof(long)),
+            ("_terminalReserved7", typeof(long)),
+            ("_terminalReserved8", typeof(long)),
+            ("_terminalReserved9", typeof(long)),
         ];
         Assert.That(
             bindingType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)

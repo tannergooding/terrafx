@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -254,6 +255,11 @@ public sealed partial class WorldAdmissionDomain : IDisposable
     }
 
     /// <summary>Closes new domain admissions without synchronously waiting for current Worlds.</summary>
+    /// <exception cref="InvalidOperationException">A WorldGuid terminal anchor is still retained.</exception>
+    [SuppressMessage(
+        "Design",
+        "CA1065:Do not raise exceptions in unexpected locations",
+        Justification = "A live terminal anchor must not be dropped by ordinary domain disposal before its original issuer commits or retains it.")]
     public void Dispose()
     {
         var completeRetirement = false;
@@ -263,6 +269,11 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         {
             if (!_isDisposed)
             {
+                if (_terminalAnchorState != TerminalAnchorStateNone)
+                {
+                    throw new InvalidOperationException("The domain cannot close while its WorldGuid terminal anchor is retained.");
+                }
+
                 _isDisposed = true;
                 completeRetirement = (_activeInterestCount == 0) && (_activeOperationCreditCount == 0);
 

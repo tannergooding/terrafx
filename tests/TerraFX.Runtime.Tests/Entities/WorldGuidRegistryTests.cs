@@ -1,7 +1,9 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Entities;
@@ -11,6 +13,41 @@ namespace TerraFX.Runtime.Tests;
 [TestFixture]
 internal sealed class WorldGuidRegistryTests
 {
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The preclaimed WorldGuid binding cell is the strong owner observed by this test.")]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<WorldAdmissionDomain> CreatePreparedTerminalAnchor(
+        WorldGuidRegistry registry,
+        Guid worldGuid,
+        out WorldGuidGrant grant)
+    {
+        if (!registry.TryReserveFresh(worldGuid, out grant, out _))
+        {
+            throw new InvalidOperationException("The terminal-anchor test could not reserve its WorldGuid.");
+        }
+
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+
+        try
+        {
+            if (!domain.TryAttachTerminalAnchor(registry, in grant))
+            {
+                throw new InvalidOperationException("The terminal-anchor test could not bind its exact WorldGuid.");
+            }
+
+            return new WeakReference<WorldAdmissionDomain>(domain);
+        }
+        catch
+        {
+            _ = domain.TryCancelTerminalAnchor();
+            _ = registry.TryReleaseFresh(grant);
+            domain.Dispose();
+            throw;
+        }
+    }
+
     private static Guid FindGuidForIndexBucket(int bucket, Guid excluded = default)
     {
         var indexMask = (uint)((WorldGuidRegistry.MaximumWorldGuidKeys * 2) - 1);
@@ -115,6 +152,53 @@ internal sealed class WorldGuidRegistryTests
         }
 
         Assert.That(ReferenceEquals(WorldGuidRegistry.GetSelected(), selectedRegistry), Is.True);
+    }
+
+    [Test]
+    public void DomainTerminalAnchorRootsExactDomainUntilPrepublicationCancellation()
+    {
+        var cellType = typeof(WorldGuidRegistry).GetNestedType("BindingCell", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The WorldGuid binding cell is missing.");
+        var sizeOf = typeof(Unsafe).GetMethod(
+            nameof(Unsafe.SizeOf),
+            BindingFlags.Public | BindingFlags.Static,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null)
+            ?? throw new InvalidOperationException("The managed size observation is unavailable.");
+        var cellStride = (int)(sizeOf.MakeGenericMethod(cellType).Invoke(null, null)
+            ?? throw new InvalidOperationException("The managed size observation returned no result."));
+        Assert.That(cellStride, Is.EqualTo(128));
+
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+        var weakDomain = CreatePreparedTerminalAnchor(registry, worldGuid, out var grant);
+
+        try
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            Assert.That(weakDomain.TryGetTarget(out var target), Is.True);
+            var domain = target
+                ?? throw new InvalidOperationException("The terminal-anchor registry cell did not retain its domain.");
+            Assert.That(registry.TryReleaseFresh(grant), Is.False);
+            _ = Assert.Throws<InvalidOperationException>(domain.Dispose);
+            Assert.That(domain.Retirement.IsCompleted, Is.False);
+            Assert.That(domain.TryCancelTerminalAnchor(), Is.True);
+            Assert.That(registry.TryReleaseFresh(grant), Is.True);
+            domain.Dispose();
+        }
+        finally
+        {
+            if (weakDomain.TryGetTarget(out var domain))
+            {
+                _ = domain.TryCancelTerminalAnchor();
+                _ = registry.TryReleaseFresh(grant);
+                domain.Dispose();
+            }
+        }
     }
 
     [Test]
