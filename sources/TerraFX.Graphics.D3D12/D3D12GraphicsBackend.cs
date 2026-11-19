@@ -2365,8 +2365,8 @@ public static unsafe class D3D12GraphicsBackend
                                             pipeline,
                                             [],
                                             [],
-                                            storageBufferBindings.ToImmutable(),
-                                            storageImageBindings.ToImmutable(),
+                                            storageBufferBindings.MoveToImmutable(),
+                                            storageImageBindings.MoveToImmutable(),
                                             []);
                                         descriptorSets[descriptorSetCount] = descriptorSet;
                                         descriptorSetCount++;
@@ -2495,10 +2495,25 @@ public static unsafe class D3D12GraphicsBackend
                                             ?? throw new InvalidOperationException("A recorded binding set has no preceding D3D12 pipeline.");
                                         var bindings = command.Bindings
                                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                                        var uniformBufferBindingCount = 0;
+                                        var storageBufferBindingCount = 0;
+
+                                        foreach (var binding in bindings.Buffers)
+                                        {
+                                            if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                                            {
+                                                uniformBufferBindingCount++;
+                                            }
+                                            else
+                                            {
+                                                storageBufferBindingCount++;
+                                            }
+                                        }
+
                                         var uniformBufferBindings =
-                                            ImmutableArray.CreateBuilder<D3D12BackendUniformBufferBinding>(bindings.Buffers.Length);
+                                            ImmutableArray.CreateBuilder<D3D12BackendUniformBufferBinding>(uniformBufferBindingCount);
                                         var storageBufferBindings =
-                                            ImmutableArray.CreateBuilder<D3D12BackendStorageBufferBinding>(bindings.Buffers.Length);
+                                            ImmutableArray.CreateBuilder<D3D12BackendStorageBufferBinding>(storageBufferBindingCount);
 
                                         foreach (var binding in bindings.Buffers)
                                         {
@@ -2524,10 +2539,25 @@ public static unsafe class D3D12GraphicsBackend
                                             }
                                         }
 
+                                        var sampledImageBindingCount = 0;
+                                        var storageImageBindingCount = 0;
+
+                                        foreach (var binding in bindings.Textures)
+                                        {
+                                            if (binding.Kind == ShaderResourceKind.SampledImage)
+                                            {
+                                                sampledImageBindingCount++;
+                                            }
+                                            else
+                                            {
+                                                storageImageBindingCount++;
+                                            }
+                                        }
+
                                         var sampledImageBindings =
-                                            ImmutableArray.CreateBuilder<D3D12BackendSampledImageBinding>(bindings.Textures.Length);
+                                            ImmutableArray.CreateBuilder<D3D12BackendSampledImageBinding>(sampledImageBindingCount);
                                         var storageImageBindings =
-                                            ImmutableArray.CreateBuilder<D3D12BackendStorageImageBinding>(bindings.Textures.Length);
+                                            ImmutableArray.CreateBuilder<D3D12BackendStorageImageBinding>(storageImageBindingCount);
 
                                         foreach (var binding in bindings.Textures)
                                         {
@@ -2575,11 +2605,11 @@ public static unsafe class D3D12GraphicsBackend
 
                                         var descriptorSet = CreateDescriptorSet(
                                             pipeline,
-                                            uniformBufferBindings.ToImmutable(),
-                                            sampledImageBindings.ToImmutable(),
-                                            storageBufferBindings.ToImmutable(),
-                                            storageImageBindings.ToImmutable(),
-                                            samplerBindings.ToImmutable());
+                                            uniformBufferBindings.MoveToImmutable(),
+                                            sampledImageBindings.MoveToImmutable(),
+                                            storageBufferBindings.MoveToImmutable(),
+                                            storageImageBindings.MoveToImmutable(),
+                                            samplerBindings.MoveToImmutable());
                                         descriptorSets[descriptorSetCount] = descriptorSet;
                                         descriptorSetCount++;
 
