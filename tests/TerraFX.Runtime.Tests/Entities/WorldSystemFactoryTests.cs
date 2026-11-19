@@ -334,6 +334,46 @@ internal sealed class WorldSystemFactoryTests
     }
 
     [Test]
+    public void WorldDisposeRetainsTerminalAnchorAfterSystemReleaseFailure()
+    {
+        var sourceState = new WorldSystemSourceStateDeclaration(typeof(ProbeSystem), []);
+        var releaseFailure = new ReleaseFailureCounter();
+        var binding = WorldSystemFactoryBinding.Stateless<ProbeSystem, ProbeSystemCreate, ProbeSystemReleaseFailure>(
+            Guid.NewGuid(),
+            1,
+            sourceState,
+            default,
+            new ProbeSystemReleaseFailure(releaseFailure));
+        var builder = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([]));
+        _ = builder.RegisterSystem(
+            new SystemDescription(
+                Guid.NewGuid(),
+                0,
+                SimulationStage.Input,
+                [],
+                [],
+                [],
+                SystemThreadMode.OwnerThread),
+            new ProbeSystemFactory(binding));
+        var worldGuid = Guid.NewGuid();
+        var registry = WorldGuidRegistry.GetSelected();
+        using var world = World.Create(new WorldOptions(builder.Build()) {
+            WorldGuid = worldGuid,
+        });
+
+        Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.True);
+
+        var exception = Assert.Throws<WorldSystemCleanupException>(world.Dispose);
+        Assert.That(exception!.SystemCleanupReport.FailureCount, Is.EqualTo(1));
+        Assert.That(releaseFailure.ReleaseCount, Is.EqualTo(1));
+        Assert.That(registry.TryReserveFresh(worldGuid, out _, out var refusal), Is.False);
+        Assert.That(refusal.Code, Is.EqualTo(WorldGuidRefusal.GuidAlreadyRetained));
+
+        world.Dispose();
+        Assert.That(releaseFailure.ReleaseCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public void WorldsRejectAReleasedSystemObjectWhileItsFactoryRetainsIt()
     {
         var sourceState = new WorldSystemSourceStateDeclaration(typeof(ProbeSystem), []);

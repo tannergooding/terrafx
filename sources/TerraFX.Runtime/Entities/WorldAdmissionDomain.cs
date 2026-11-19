@@ -269,7 +269,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         {
             if (!_isDisposed)
             {
-                if (_terminalAnchorState != TerminalAnchorStateNone)
+                if (_terminalAnchorState is not (TerminalAnchorStateNone or TerminalAnchorStateInvoking))
                 {
                     throw new InvalidOperationException("The domain cannot close while its WorldGuid terminal anchor is retained.");
                 }
@@ -678,7 +678,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 refusal = WorldAdmissionRefusal.DomainClosed;
                 return false;
@@ -926,6 +926,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed
+                || (_terminalAnchorState != TerminalAnchorStateNone)
                 || !IsActiveWorldReservation(reservation)
                 || ((uint)grant.Index >= (uint)_lineages.Length)
                 || (_activeInterestCount > (MaximumInterests - 2))
@@ -1315,7 +1316,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 grant = default;
                 refusal = WorldAdmissionRefusal.DomainClosed;
@@ -1345,7 +1346,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 grant = default;
                 refusal = WorldAdmissionRefusal.DomainClosed;
@@ -1658,7 +1659,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 credits = null;
                 refusal = WorldAdmissionRefusal.DomainClosed;
@@ -1706,6 +1707,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed
+                || (_terminalAnchorState != TerminalAnchorStateNone)
                 || (_activeOperationCreditCount >= MaximumReservations)
                 || (bytes > _maximumBytes - _registryCharge - _pendingGrowthBytes - _worldBytes))
             {
@@ -1962,6 +1964,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed
+                || (_terminalAnchorState != TerminalAnchorStateNone)
                 || (_activeInterestCount >= MaximumInterests)
                 || (bytes > _maximumBytes - _registryCharge - _pendingGrowthBytes - _worldBytes))
             {
@@ -2170,6 +2173,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed
+                || (_terminalAnchorState != TerminalAnchorStateNone)
                 || !IsActiveWorldReservation(grant.Reservation!)
                 || ((uint)grant.Index >= (uint)_lineages.Length)
                 || (_activeInterestCount >= MaximumInterests))
@@ -2673,7 +2677,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 return false;
             }
@@ -2704,7 +2708,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
     {
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 return false;
             }
@@ -2733,7 +2737,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 return false;
             }
@@ -2849,7 +2853,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 return false;
             }
@@ -3117,7 +3121,27 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
     private void PublishRetirement()
     {
-        _ = _retirement.TrySetResult();
+        var published = _retirement.TrySetResult();
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_terminalAnchorState == TerminalAnchorStateEscrowed)
+            {
+                if (!published)
+                {
+                    throw new InvalidOperationException("The admission-domain retirement publisher could not publish its terminal task.");
+                }
+
+                _terminalAnchorState = TerminalAnchorStatePublished;
+                return;
+            }
+
+            if (_terminalAnchorState != TerminalAnchorStateNone)
+            {
+                throw new InvalidOperationException("The admission-domain retirement publisher cannot release a retained terminal anchor.");
+            }
+        }
+
         _ = Interlocked.Exchange(ref _registryCharge, 0);
     }
 
@@ -3437,7 +3461,7 @@ public sealed partial class WorldAdmissionDomain : IDisposable
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_isDisposed)
+            if (_isDisposed || (_terminalAnchorState != TerminalAnchorStateNone))
             {
                 domainClosed = true;
                 return false;

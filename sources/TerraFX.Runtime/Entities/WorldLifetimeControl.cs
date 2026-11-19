@@ -74,9 +74,14 @@ internal sealed partial class WorldLifetimeControl : IWorldGuidRetentionOwner
         }
     }
 
+    internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
+
     internal WorldDefaultDomainOwner? DefaultDomainOwner => _defaultDomainOwner;
 
     internal bool HasCommittedHistory => Volatile.Read(ref _hasCommittedHistory);
+
+    internal bool HasTerminalAnchor
+        => _admissionDomain.IsTerminalAnchorBound(_registry, _worldGuidGrant, this);
 
     internal bool IsQuarantined => Volatile.Read(ref _state) == StateQuarantined;
 
@@ -85,6 +90,8 @@ internal sealed partial class WorldLifetimeControl : IWorldGuidRetentionOwner
     internal bool IsRetirementPending => Volatile.Read(ref _state) == StateRetirementPending;
 
     internal WorldGuidRegistry Registry => _registry;
+
+    internal WorldGuidRetirementPermit RetirementPermit => _retirementPermit;
 
     internal WorldGuidGrant WorldGuidGrant => _worldGuidGrant;
 
@@ -220,12 +227,17 @@ internal sealed partial class WorldLifetimeControl : IWorldGuidRetentionOwner
                 return false;
             }
 
-            if (!_registry.TryRetire(_retirementPermit, out var deferred))
+            var terminalAnchorBound = _admissionDomain.IsTerminalAnchorBound(_registry, _worldGuidGrant, this);
+            var deferred = false;
+
+            if (terminalAnchorBound
+                ? !_admissionDomain.TryEscrowTerminalRetirement(this, _retirementPermit)
+                : !_registry.TryRetire(_retirementPermit, out deferred))
             {
                 return false;
             }
 
-            if (deferred)
+            if (!terminalAnchorBound && deferred)
             {
                 _state = StateRetirementPending;
                 return true;
@@ -368,6 +380,25 @@ internal sealed partial class WorldLifetimeControl : IWorldGuidRetentionOwner
                 replacement._hasCommittedHistory = true;
             }
         }
+    }
+
+    internal bool TryAttachTerminalAnchor(WorldDomainReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        lock (_gate)
+        {
+            if ((_state != StateActive)
+                || (_defaultDomainOwner is null)
+                || !_defaultDomainOwner.IsCurrentFor(_admissionDomain, _worldGuidGrant)
+                || !reservation.IsOwnedBy(_admissionDomain)
+                || !ReferenceEquals(_domainReservation, reservation))
+            {
+                return false;
+            }
+        }
+
+        return _admissionDomain.TryAttachTerminalAnchor(this, reservation);
     }
 
     private bool CompleteDeferredRetirementUnderGate()

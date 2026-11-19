@@ -9,14 +9,76 @@ public sealed partial class WorldAdmissionDomain
 {
     private const int TerminalAnchorStateBinding = 1;
     private const int TerminalAnchorStateDetaching = 3;
+    private const int TerminalAnchorStateEscrowed = 6;
+    private const int TerminalAnchorStateInvoking = 5;
     private const int TerminalAnchorStateNone = 0;
     private const int TerminalAnchorStatePrepared = 2;
+    private const int TerminalAnchorStatePublished = 7;
     private const int TerminalAnchorStateRetained = 4;
+    private const int TerminalAnchorStateReturned = 8;
 
     private int _terminalAnchorState;
     private Exception? _terminalFailure;
     private WorldGuidGrant _terminalGrant;
+    private WorldLifetimeControl? _terminalLifetime;
     private WorldGuidRegistry? _terminalRegistry;
+
+    internal bool IsTerminalAnchorBound(WorldGuidRegistry registry, in WorldGuidGrant grant, WorldLifetimeControl lifetime)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(lifetime);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            return ReferenceEquals(_terminalRegistry, registry)
+                && _terminalGrant.Equals(grant)
+                && ReferenceEquals(_terminalLifetime, lifetime)
+                && (_terminalAnchorState is not TerminalAnchorStateNone and not TerminalAnchorStateBinding);
+        }
+    }
+
+    internal bool TryAcceptTerminalCallerReturn(WorldLifetimeControl lifetime)
+    {
+        ArgumentNullException.ThrowIfNull(lifetime);
+
+        WorldGuidRegistry registry;
+        WorldGuidGrant grant;
+        WorldGuidRetirementPermit permit;
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStatePublished)
+                || !ReferenceEquals(_terminalLifetime, lifetime))
+            {
+                return false;
+            }
+
+            registry = _terminalRegistry
+                ?? throw new InvalidOperationException("The published terminal anchor lost its WorldGuid registry.");
+            grant = _terminalGrant;
+            permit = lifetime.RetirementPermit;
+        }
+
+        if (!registry.TryMarkTerminalPublisherReturned(permit, grant, this))
+        {
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStatePublished)
+                || !ReferenceEquals(_terminalRegistry, registry)
+                || !_terminalGrant.Equals(grant)
+                || !ReferenceEquals(_terminalLifetime, lifetime))
+            {
+                throw new InvalidOperationException("The terminal anchor changed while accepting its enclosing caller return.");
+            }
+
+            _terminalAnchorState = TerminalAnchorStateReturned;
+        }
+
+        return true;
+    }
 
     internal bool TryAttachTerminalAnchor(WorldGuidRegistry registry, in WorldGuidGrant grant)
     {
@@ -31,6 +93,7 @@ public sealed partial class WorldAdmissionDomain
 
             _terminalRegistry = registry;
             _terminalGrant = grant;
+            _terminalLifetime = null;
             _terminalAnchorState = TerminalAnchorStateBinding;
         }
 
@@ -39,6 +102,7 @@ public sealed partial class WorldAdmissionDomain
             using var scope = ReentrantGate.EnterScope(ref _gate);
             _terminalRegistry = null;
             _terminalGrant = default;
+            _terminalLifetime = null;
             _terminalAnchorState = TerminalAnchorStateNone;
             return false;
         }
@@ -51,6 +115,124 @@ public sealed partial class WorldAdmissionDomain
             }
 
             _terminalAnchorState = TerminalAnchorStatePrepared;
+        }
+
+        return true;
+    }
+
+    internal bool TryAttachTerminalAnchor(WorldLifetimeControl lifetime, WorldDomainReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(lifetime);
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        var registry = lifetime.Registry;
+        var grant = lifetime.WorldGuidGrant;
+
+        if (!grant.IsOwnedBy(registry)
+            || !reservation.IsOwnedBy(this))
+        {
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed
+                || (_terminalAnchorState != TerminalAnchorStateNone)
+                || (_activeInterestCount != 1)
+                || (_activeOperationCreditCount != 0)
+                || (_activeReservationCount != 0)
+                || (_pendingGrowthBytes != 0)
+                || (_prospectiveInterestCount != 0)
+                || (_worldUseRawTicket.State == WorldUseRawPending)
+                || !IsActiveWorldReservation(reservation))
+            {
+                return false;
+            }
+
+            ref var interest = ref _interests[reservation.InterestIndex];
+
+            if (!ReferenceEquals(interest.WorldLifetime, lifetime)
+                || (interest.WorldCloseProgress != 0)
+                || (interest.WorldReturnPartCount != 0)
+                || (interest.SceneConstructionBytes != 0)
+                || (interest.SceneStorageBytes != 0)
+                || (interest.PendingSceneConstructionBytes != 0)
+                || (interest.SceneConstructorCount != 0)
+                || (reservation.IndependentUseBytes != 0))
+            {
+                return false;
+            }
+
+            _terminalRegistry = registry;
+            _terminalGrant = grant;
+            _terminalLifetime = lifetime;
+            _terminalAnchorState = TerminalAnchorStateBinding;
+        }
+
+        if (!registry.TryAttachTerminalAnchor(grant, this, lifetime))
+        {
+            using var scope = ReentrantGate.EnterScope(ref _gate);
+            _terminalRegistry = null;
+            _terminalGrant = default;
+            _terminalLifetime = null;
+            _terminalAnchorState = TerminalAnchorStateNone;
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_terminalAnchorState != TerminalAnchorStateBinding)
+            {
+                throw new InvalidOperationException("The terminal anchor changed during its binding transaction.");
+            }
+
+            _terminalAnchorState = TerminalAnchorStatePrepared;
+        }
+
+        return true;
+    }
+
+    internal bool TryBeginTerminalInvocation(WorldGuidRegistry registry, in WorldGuidGrant grant, WorldLifetimeControl lifetime)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(lifetime);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStatePrepared)
+                || !ReferenceEquals(_terminalRegistry, registry)
+                || !_terminalGrant.Equals(grant)
+                || !ReferenceEquals(_terminalLifetime, lifetime))
+            {
+                return false;
+            }
+
+            _terminalAnchorState = TerminalAnchorStateBinding;
+        }
+
+        if (!registry.TryBeginTerminalInvocation(grant, this))
+        {
+            using var scope = ReentrantGate.EnterScope(ref _gate);
+
+            if (_terminalAnchorState == TerminalAnchorStateBinding)
+            {
+                _terminalAnchorState = TerminalAnchorStatePrepared;
+            }
+
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStateBinding)
+                || !ReferenceEquals(_terminalRegistry, registry)
+                || !_terminalGrant.Equals(grant)
+                || !ReferenceEquals(_terminalLifetime, lifetime))
+            {
+                throw new InvalidOperationException("The terminal anchor changed while beginning its enclosing invocation.");
+            }
+
+            _terminalAnchorState = TerminalAnchorStateInvoking;
         }
 
         return true;
@@ -97,7 +279,89 @@ public sealed partial class WorldAdmissionDomain
 
             _terminalRegistry = null;
             _terminalGrant = default;
+            _terminalLifetime = null;
             _terminalAnchorState = TerminalAnchorStateNone;
+        }
+
+        return true;
+    }
+
+    internal bool TryCommitTerminalAnchorCompletion(WorldGuidRegistry registry, in WorldGuidGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStateReturned)
+                || !ReferenceEquals(_terminalRegistry, registry)
+                || !_terminalGrant.Equals(grant)
+                || (_terminalLifetime is null)
+                || !_isDisposed
+                || (_activeInterestCount != 0)
+                || (_activeOperationCreditCount != 0)
+                || (_activeReservationCount != 0)
+                || (_registryCharge != RegistrarControlBytes)
+                || !_retirement.Task.IsCompleted)
+            {
+                return false;
+            }
+
+            _registryCharge = 0;
+            _terminalRegistry = null;
+            _terminalGrant = default;
+            _terminalLifetime = null;
+            _terminalFailure = null;
+            _terminalAnchorState = TerminalAnchorStateNone;
+            return true;
+        }
+    }
+
+    internal bool TryEscrowTerminalRetirement(WorldLifetimeControl lifetime, WorldGuidRetirementPermit permit)
+    {
+        ArgumentNullException.ThrowIfNull(lifetime);
+        ArgumentNullException.ThrowIfNull(permit);
+
+        WorldGuidRegistry registry;
+        WorldGuidGrant grant;
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStateInvoking)
+                || !ReferenceEquals(_terminalLifetime, lifetime))
+            {
+                return false;
+            }
+
+            registry = _terminalRegistry
+                ?? throw new InvalidOperationException("The invoking terminal anchor lost its WorldGuid registry.");
+            grant = _terminalGrant;
+            _terminalAnchorState = TerminalAnchorStateBinding;
+        }
+
+        if (!registry.TryEscrowTerminalRetirement(permit, this, lifetime, grant))
+        {
+            using var scope = ReentrantGate.EnterScope(ref _gate);
+
+            if (_terminalAnchorState == TerminalAnchorStateBinding)
+            {
+                _terminalAnchorState = TerminalAnchorStateInvoking;
+            }
+
+            return false;
+        }
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((_terminalAnchorState != TerminalAnchorStateBinding)
+                || !ReferenceEquals(_terminalRegistry, registry)
+                || !_terminalGrant.Equals(grant)
+                || !ReferenceEquals(_terminalLifetime, lifetime))
+            {
+                throw new InvalidOperationException("The terminal anchor changed while escrowing its retirement permit.");
+            }
+
+            _terminalAnchorState = TerminalAnchorStateEscrowed;
         }
 
         return true;
@@ -111,7 +375,7 @@ public sealed partial class WorldAdmissionDomain
 
         using (ReentrantGate.EnterScope(ref _gate))
         {
-            if (_terminalAnchorState != TerminalAnchorStatePrepared)
+            if (_terminalAnchorState is TerminalAnchorStateNone or TerminalAnchorStateRetained)
             {
                 return false;
             }

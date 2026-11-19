@@ -69,6 +69,7 @@ public sealed partial class World : IDisposable
     private bool _isRestoreHierarchyInstalled;
     private int _isStructuralOperationActive;
     private int _isSystemCleanupActive;
+    private int _isTerminalCloseInvocation;
     private int _isTickActive;
     private Diagnostic? _lastFault;
     private WorldSystemCleanupReport? _lastSystemCleanupReport;
@@ -1337,6 +1338,14 @@ public sealed partial class World : IDisposable
             return;
         }
 
+        if (_lifetimeControl.HasTerminalAnchor
+            && (Volatile.Read(ref _isTerminalCloseInvocation) == 0))
+        {
+            EnsureOwnerThread();
+            _lifetimeControl.Registry.InvokeTerminalWorldClose(this, _lifetimeControl);
+            return;
+        }
+
         EnsureOwnerThread();
 
         if (Interlocked.CompareExchange(ref _isStructuralOperationActive, 1, 0) != 0)
@@ -1798,6 +1807,26 @@ public sealed partial class World : IDisposable
             message,
             []);
 
+    internal void DisposeWithinTerminalInvocation(WorldGuidRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        if (!ReferenceEquals(_lifetimeControl.Registry, registry)
+            || (Interlocked.CompareExchange(ref _isTerminalCloseInvocation, 1, 0) != 0))
+        {
+            throw new InvalidOperationException("The terminal close invocation does not own this World.");
+        }
+
+        try
+        {
+            Dispose();
+        }
+        finally
+        {
+            Volatile.Write(ref _isTerminalCloseInvocation, 0);
+        }
+    }
+
     internal SpatialFrame3 GetCurrentSceneHierarchyFrame(IWorldSceneParticipant participant)
     {
         ArgumentNullException.ThrowIfNull(participant);
@@ -1847,6 +1876,19 @@ public sealed partial class World : IDisposable
             && ReferenceEquals(_workerPool, workerPool)
             && ReferenceEquals(_diagnosticsCapability.Diagnostics, diagnostics)
             && ReferenceEquals(_admissionDomain, admissionDomain);
+
+    internal bool TryAttachTerminalAnchorForDefaultDomain()
+    {
+        EnsureOwnerThread();
+
+        if ((Volatile.Read(ref _disposed) != 0)
+            || (Volatile.Read(ref _isStructuralOperationActive) != 0))
+        {
+            return false;
+        }
+
+        return _lifetimeControl.TryAttachTerminalAnchor(_domainReservation);
+    }
 
     internal bool TryGetEntityByIdentityOrdinal(uint ordinal, out Entity entity)
     {

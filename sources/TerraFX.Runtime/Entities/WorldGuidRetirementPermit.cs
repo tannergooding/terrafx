@@ -10,6 +10,7 @@ internal sealed class WorldGuidRetirementPermit
     private const int StateAvailable = 0;
     private const int StateQuarantined = 2;
     private const int StateRetired = 1;
+    private const int StateTerminalEscrowed = 3;
 
     private readonly WorldGuidGrant _grant;
     private readonly WorldLifetimeControl _owner;
@@ -41,6 +42,13 @@ internal sealed class WorldGuidRetirementPermit
             && _owner.WorldGuidGrant.Equals(grant)
             && (Volatile.Read(ref _state) == StateRetired);
 
+    internal bool IsTerminalEscrowedFor(WorldGuidRegistry registry, in WorldGuidGrant grant)
+        => ReferenceEquals(_registry, registry)
+            && ReferenceEquals(_owner.Registry, registry)
+            && _grant.Equals(grant)
+            && _owner.WorldGuidGrant.Equals(grant)
+            && (Volatile.Read(ref _state) == StateTerminalEscrowed);
+
     internal bool TryConsume(WorldGuidRegistry registry, out WorldGuidGrant grant)
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -71,6 +79,19 @@ internal sealed class WorldGuidRetirementPermit
             && _owner.IsQuarantinePermitCurrent(_grant)
             && _grant.IsOwnedBy(registry)
             && (Interlocked.CompareExchange(ref _state, StateQuarantined, StateAvailable) == StateAvailable);
+    }
+
+    internal bool TryConsumeForTerminalEscrow(WorldGuidRegistry registry, in WorldGuidGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        return ReferenceEquals(_registry, registry)
+            && ReferenceEquals(_owner.Registry, registry)
+            && _owner.WorldGuidGrant.Equals(_grant)
+            && _grant.Equals(grant)
+            && _owner.IsRetirementPermitCurrent(_grant)
+            && _grant.IsOwnedBy(registry)
+            && (Interlocked.CompareExchange(ref _state, StateTerminalEscrowed, StateAvailable) == StateAvailable);
     }
 
     internal bool TryGetQuarantineGrant(WorldGuidRegistry registry, out WorldGuidGrant grant)

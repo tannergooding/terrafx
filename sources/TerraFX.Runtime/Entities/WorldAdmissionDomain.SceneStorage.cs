@@ -794,6 +794,7 @@ public sealed partial class WorldAdmissionDomain
 
     private bool IsOpenWorldReservation(WorldDomainReservation parent)
         => IsActiveWorldReservation(parent)
+            && (_terminalAnchorState == TerminalAnchorStateNone)
             && (_interests[parent.InterestIndex].WorldCloseProgress == 0);
 
     private bool MayReleaseWorldLineage(in WorldLineageGrant grant)

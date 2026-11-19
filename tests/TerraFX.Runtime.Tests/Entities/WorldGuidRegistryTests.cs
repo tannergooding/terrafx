@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TerraFX;
 using TerraFX.Entities;
 
 namespace TerraFX.Runtime.Tests;
@@ -13,6 +14,14 @@ namespace TerraFX.Runtime.Tests;
 [TestFixture]
 internal sealed class WorldGuidRegistryTests
 {
+    private static World CreateEmptyWorld(Guid worldGuid)
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        return World.Create(new WorldOptions(registration) {
+            WorldGuid = worldGuid,
+        });
+    }
+
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
@@ -422,5 +431,23 @@ internal sealed class WorldGuidRegistryTests
         Assert.That(registry.TryReleaseFresh(replacement), Is.True);
         Assert.That(registry.TryReserveFresh(worldGuid, out var next, out _), Is.True);
         Assert.That(registry.TryReleaseFresh(next), Is.True);
+    }
+
+    [Test]
+    public void TerminalAnchorReleasesExactBindingAfterEnclosingWorldDisposeReturns()
+    {
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+        using var world = CreateEmptyWorld(worldGuid);
+
+        Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.True);
+        Assert.That(registry.TryReserveFresh(worldGuid, out _, out var retainedRefusal), Is.False);
+        Assert.That(retainedRefusal.Code, Is.EqualTo(WorldGuidRefusal.GuidAlreadyRetained));
+        _ = Assert.Throws<InvalidOperationException>(() => world.AcquireGuidUse(0));
+
+        world.Dispose();
+
+        Assert.That(registry.TryReserveFresh(worldGuid, out var replacement, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(replacement), Is.True);
     }
 }

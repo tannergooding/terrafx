@@ -340,6 +340,14 @@ internal sealed partial class WorldGuidRegistry
                     return false;
                 }
 
+                ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+
+                if (bindingCell._terminalDomain is not null)
+                {
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                    return false;
+                }
+
                 if (GetAvailableCellCount(SlabCategoryUse) == 0)
                 {
                     continue;
@@ -352,7 +360,6 @@ internal sealed partial class WorldGuidRegistry
                 }
 
                 ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
-                ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
                 var useCellIndex = AllocateUseCell(
                     grant.KeyCellIndex,
                     grant.KeyGeneration,
@@ -526,6 +533,7 @@ internal sealed partial class WorldGuidRegistry
         if ((currentKeyCell._worldGuid != current.WorldGuid)
             || (replacementKeyCell._worldGuid != replacement.WorldGuid)
             || (currentBinding._state != CellStateActive)
+            || (currentBinding._terminalDomain is not null)
             || (currentBinding._keyCellIndex != current.KeyCellIndex)
             || (currentBinding._keyGeneration != current.KeyGeneration)
             || (currentOwnerUse._state != CellStateReserved)
@@ -993,6 +1001,7 @@ internal sealed partial class WorldGuidRegistry
 
                 if ((keyCell._worldGuid != current.WorldGuid)
                     || (bindingCell._state != CellStateActive)
+                    || (bindingCell._terminalDomain is not null)
                     || (bindingCell._keyCellIndex != current.KeyCellIndex)
                     || (bindingCell._keyGeneration != current.KeyGeneration)
                     || (ownerUseCell._state != CellStateReserved)
@@ -1121,6 +1130,7 @@ internal sealed partial class WorldGuidRegistry
 
             return (keyCell._worldGuid == grant.WorldGuid)
                 && (bindingCell._state == CellStateActive)
+                && (bindingCell._terminalDomain is null)
                 && (bindingCell._keyCellIndex == grant.KeyCellIndex)
                 && (bindingCell._keyGeneration == grant.KeyGeneration)
                 && (ownerUseCell._state == CellStateReserved)
@@ -1925,6 +1935,9 @@ internal sealed partial class WorldGuidRegistry
     {
         _bindingRoleCount--;
         cell._independentUseCount = 0;
+        cell._terminalDomain = null;
+        cell._terminalFailure = null;
+        cell._terminalState = TerminalAnchorStateNone;
         cell._worldOwnerBound = false;
 
         if (cell._generation == uint.MaxValue)
