@@ -1131,7 +1131,6 @@ public sealed partial class EngineHost : IAsyncDisposable
             try
             {
                 WaitForGraphicsTask(renderer.StopAndDrainSubmissionsAsync());
-                _renderer = null;
             }
             catch (Exception exception)
             {
