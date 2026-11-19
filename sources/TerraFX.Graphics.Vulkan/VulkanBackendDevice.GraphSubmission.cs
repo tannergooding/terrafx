@@ -614,7 +614,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         var colorAttachmentResourceCount = submission.ColorAttachmentResourceCount;
 
         var graphColorImageViews = new VkImageView[colorAttachmentResourceCount];
-        var graphImageViews = new List<VkImageView>(colorAttachmentResourceCount);
+        var graphImageViews = new VkImageView[colorAttachmentResourceCount];
+        var graphImageViewCount = 0;
         var acquiredImageIndex = 0u;
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
         var currentLayout = target.GetLayout(subresource);
@@ -708,7 +709,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                     ?? throw new InvalidOperationException("A graph color attachment is not a Vulkan texture.");
                 var imageView = CreateGraphColorImageView(_device, texture);
                 graphColorImageViews[index] = imageView;
-                graphImageViews.Add(imageView);
+                graphImageViews[graphImageViewCount] = imageView;
+                graphImageViewCount++;
             }
 
             BeginOneTimeCommands();
@@ -1600,6 +1602,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                     surface.GetRenderFinishedSemaphore(acquiredImageIndex));
             selectedGraphFrameSlot.FenceValue = checked((ulong)submittedFence);
             selectedGraphFrameSlot.ImageViews = graphImageViews;
+            selectedGraphFrameSlot.ImageViewCount = graphImageViewCount;
             selectedGraphFrameSlot.DescriptorSets = descriptorSets;
             selectedGraphFrameSlot.DescriptorSetCount = descriptorSetCount;
             ownsImageViews = false;
@@ -1834,9 +1837,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     RetainUncertainTexture(target);
 
-                    foreach (var imageView in graphImageViews)
+                    for (var index = 0; index < graphImageViewCount; index++)
                     {
-                        _uncertainGraphImageViews.Add(imageView);
+                        _uncertainGraphImageViews.Add(graphImageViews[index]);
                     }
 
                     ownsImageViews = false;
@@ -1858,7 +1861,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 if (ownsImageViews)
                 {
-                    for (var index = graphImageViews.Count - 1; index >= 0; index--)
+                    for (var index = graphImageViewCount - 1; index >= 0; index--)
                     {
                         VulkanApi.vkDestroyImageView(_device, graphImageViews[index], null);
                     }
@@ -2344,15 +2347,16 @@ internal sealed unsafe partial class VulkanBackendDevice
                 graphFrameSlot.DescriptorSetCount = 0;
             }
 
-            if (graphFrameSlot.ImageViews is List<VkImageView> imageViews)
+            if (graphFrameSlot.ImageViews is VkImageView[] imageViews)
             {
-                for (var index = imageViews.Count - 1; index >= 0; index--)
+                for (var index = graphFrameSlot.ImageViewCount - 1; index >= 0; index--)
                 {
                     VulkanApi.vkDestroyImageView(_device, imageViews[index], null);
                 }
 
-                imageViews.Clear();
+                Array.Clear(imageViews, 0, graphFrameSlot.ImageViewCount);
                 graphFrameSlot.ImageViews = null;
+                graphFrameSlot.ImageViewCount = 0;
             }
 
             graphFrameSlot.FenceValue = 0;

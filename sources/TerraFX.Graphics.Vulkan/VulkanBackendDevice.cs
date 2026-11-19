@@ -1548,7 +1548,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         internal int DescriptorSetCount;
         internal VulkanBackendDescriptorSet[]? DescriptorSets;
         internal ulong FenceValue;
-        internal List<VkImageView>? ImageViews;
+        internal int ImageViewCount;
+        internal VkImageView[]? ImageViews;
 
         internal VulkanGraphFrameSlot(VkCommandBuffer commandBuffer)
         {
