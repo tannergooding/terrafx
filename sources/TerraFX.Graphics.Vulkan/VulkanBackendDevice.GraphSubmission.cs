@@ -191,6 +191,35 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    public IGraphicsBackendGraphSubmissionStorage CreateGraphSubmissionStorage(GraphicsGraphSubmission submission)
+    {
+        ArgumentNullException.ThrowIfNull(submission);
+        var descriptorSetCapacity = 0;
+
+        foreach (var pass in submission.Passes)
+        {
+            var commandReadState = 0;
+            using var commandRead = pass.ReadCommands(ref commandReadState);
+
+            foreach (var command in commandRead.Commands)
+            {
+                if (command.Kind == GraphicsCommandKind.SetBindings)
+                {
+                    var bindings = command.Bindings
+                        ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                    descriptorSetCapacity = checked(
+                        descriptorSetCapacity + CountGraphDescriptorSets(bindings));
+                }
+            }
+        }
+
+        return new VulkanGraphSubmissionStorage(
+            descriptorSetCapacity,
+            submission.TextureImports.Length,
+            submission.BufferImports.Length,
+            submission.ColorAttachmentResourceCount);
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -201,6 +230,14 @@ internal sealed unsafe partial class VulkanBackendDevice
         submission.ValidateNativeRasterSubmission();
         EnsureOwnerThread();
         EnsureActive();
+
+        var graphStorage = submission.BackendStorage as VulkanGraphSubmissionStorage;
+
+        if (submission.RequiresDiagnosticQueueAdmission && (graphStorage is null))
+        {
+            throw new InvalidOperationException("The diagnostic graph has no preallocated Vulkan storage batch.");
+        }
+
         _graphSubmissionObserver?.Invoke(submission);
         var surfaceTarget = submission.SurfaceTarget;
         VulkanBackendSurface? surface = null;
@@ -240,31 +277,35 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new NotSupportedException("Vulkan Surface graph output requires a matching sRGB source format and CopySource usage.");
         }
 
-        var descriptorSetCapacity = 0;
+        var descriptorSetCapacity = graphStorage?.DescriptorSets.Length ?? 0;
 
-        foreach (var pass in submission.Passes)
+        if (graphStorage is null)
         {
-            var commandReadState = 0;
-            using var commandRead = pass.ReadCommands(ref commandReadState);
-
-            foreach (var command in commandRead.Commands)
+            foreach (var pass in submission.Passes)
             {
-                if (command.Kind == GraphicsCommandKind.SetBindings)
+                var commandReadState = 0;
+                using var commandRead = pass.ReadCommands(ref commandReadState);
+
+                foreach (var command in commandRead.Commands)
                 {
-                    var bindings = command.Bindings
-                        ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                    descriptorSetCapacity = checked(
-                        descriptorSetCapacity + CountGraphDescriptorSets(bindings));
+                    if (command.Kind == GraphicsCommandKind.SetBindings)
+                    {
+                        var bindings = command.Bindings
+                            ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                        descriptorSetCapacity = checked(
+                            descriptorSetCapacity + CountGraphDescriptorSets(bindings));
+                    }
                 }
             }
         }
 
-        var descriptorSets = new VulkanBackendDescriptorSet[descriptorSetCapacity];
+        var descriptorSets = graphStorage?.DescriptorSets ?? new VulkanBackendDescriptorSet[descriptorSetCapacity];
         var descriptorSetCount = 0;
         _ = _uncertainGraphDescriptorSets.EnsureCapacity(
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
-        var textureScopes = new VulkanGraphTextureScope[submission.TextureImports.Length];
+        var textureScopes = graphStorage?.TextureScopes
+            ?? new VulkanGraphTextureScope[submission.TextureImports.Length];
 
         for (var index = 1; index < submission.TextureImports.Length; index++)
         {
@@ -415,12 +456,12 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
         }
 
-        var graphBufferScopes = new (
+        var graphBufferScopes = graphStorage?.GraphBufferScopes ?? new (
             VulkanBackendBuffer Buffer,
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask)[submission.BufferImports.Length];
         var graphBufferScopeCount = 0;
-        var currentBufferScopes = new (
+        var currentBufferScopes = graphStorage?.CurrentBufferScopes ?? new (
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask)[submission.BufferImports.Length];
 
@@ -613,8 +654,10 @@ internal sealed unsafe partial class VulkanBackendDevice
             ?? throw new InvalidOperationException("Vulkan graph command frame slots are exhausted before graphics admission.");
         var colorAttachmentResourceCount = submission.ColorAttachmentResourceCount;
 
-        var graphColorImageViews = new VkImageView[colorAttachmentResourceCount];
-        var graphImageViews = new VkImageView[colorAttachmentResourceCount];
+        var graphColorImageViews = graphStorage?.GraphColorImageViews
+            ?? new VkImageView[colorAttachmentResourceCount];
+        var graphImageViews = graphStorage?.GraphImageViews
+            ?? new VkImageView[colorAttachmentResourceCount];
         var graphImageViewCount = 0;
         var acquiredImageIndex = 0u;
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
@@ -2422,6 +2465,45 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
 
             graphFrameSlot.FenceValue = 0;
+        }
+    }
+
+    private sealed class VulkanGraphSubmissionStorage : IGraphicsBackendGraphSubmissionStorage
+    {
+        internal VulkanGraphSubmissionStorage(
+            int descriptorSetCapacity,
+            int textureImportCapacity,
+            int bufferImportCapacity,
+            int colorAttachmentCapacity)
+        {
+            DescriptorSets = new VulkanBackendDescriptorSet[descriptorSetCapacity];
+            TextureScopes = new VulkanGraphTextureScope[textureImportCapacity];
+            GraphBufferScopes = new (VulkanBackendBuffer Buffer, VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[bufferImportCapacity];
+            CurrentBufferScopes = new (VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[bufferImportCapacity];
+            GraphColorImageViews = new VkImageView[colorAttachmentCapacity];
+            GraphImageViews = new VkImageView[colorAttachmentCapacity];
+        }
+
+        internal (VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[] CurrentBufferScopes { get; }
+
+        internal VulkanBackendDescriptorSet[] DescriptorSets { get; }
+
+        internal (VulkanBackendBuffer Buffer, VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask)[] GraphBufferScopes { get; }
+
+        internal VkImageView[] GraphColorImageViews { get; }
+
+        internal VkImageView[] GraphImageViews { get; }
+
+        internal VulkanGraphTextureScope[] TextureScopes { get; }
+
+        public void Dispose()
+        {
+            Array.Clear(DescriptorSets);
+            Array.Clear(TextureScopes);
+            Array.Clear(GraphBufferScopes);
+            Array.Clear(CurrentBufferScopes);
+            Array.Clear(GraphColorImageViews);
+            Array.Clear(GraphImageViews);
         }
     }
 

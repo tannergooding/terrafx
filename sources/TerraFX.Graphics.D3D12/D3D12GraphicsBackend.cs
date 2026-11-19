@@ -1420,6 +1420,30 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            public IGraphicsBackendGraphSubmissionStorage CreateGraphSubmissionStorage(GraphicsGraphSubmission submission)
+            {
+                ArgumentNullException.ThrowIfNull(submission);
+                var descriptorSetCapacity = 0;
+
+                foreach (var pass in submission.Passes)
+                {
+                    var commandReadState = 0;
+                    using var commandRead = pass.ReadCommands(ref commandReadState);
+
+                    foreach (var command in commandRead.Commands)
+                    {
+                        if (command.Kind == GraphicsCommandKind.SetBindings)
+                        {
+                            descriptorSetCapacity = checked(descriptorSetCapacity + 1);
+                        }
+                    }
+                }
+
+                return new D3D12GraphSubmissionStorage(
+                    descriptorSetCapacity,
+                    submission.ColorAttachmentResourceCount);
+            }
+
             public IGraphicsBackendPipeline CreatePipeline(
                 PipelineDescription description,
                 ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
@@ -1887,6 +1911,13 @@ public static unsafe class D3D12GraphicsBackend
                 ArgumentNullException.ThrowIfNull(submission);
                 submission.ValidateNativeRasterSubmission();
                 EnsureOwnerThread();
+                var graphStorage = submission.BackendStorage as D3D12GraphSubmissionStorage;
+
+                if (submission.RequiresDiagnosticQueueAdmission && (graphStorage is null))
+                {
+                    throw new InvalidOperationException("The diagnostic graph has no preallocated D3D12 storage batch.");
+                }
+
                 _graphSubmissionObserver?.Invoke(submission);
                 var target = submission.OutputColorTarget.ResourceOwner.BackendResource as D3D12BackendTexture
                     ?? throw new ArgumentException("The graph output target is not a D3D12 texture.", nameof(submission));
@@ -1910,23 +1941,26 @@ public static unsafe class D3D12GraphicsBackend
 
                 var transferQueue = GetTransferQueue();
                 _ = GetCompletedGraphFence();
-                var descriptorSetCapacity = 0;
+                var descriptorSetCapacity = graphStorage?.DescriptorSets.Length ?? 0;
 
-                foreach (var pass in submission.Passes)
+                if (graphStorage is null)
                 {
-                    var commandReadState = 0;
-                    using var commandRead = pass.ReadCommands(ref commandReadState);
-
-                    foreach (var command in commandRead.Commands)
+                    foreach (var pass in submission.Passes)
                     {
-                        if (command.Kind == GraphicsCommandKind.SetBindings)
+                        var commandReadState = 0;
+                        using var commandRead = pass.ReadCommands(ref commandReadState);
+
+                        foreach (var command in commandRead.Commands)
                         {
-                            descriptorSetCapacity = checked(descriptorSetCapacity + 1);
+                            if (command.Kind == GraphicsCommandKind.SetBindings)
+                            {
+                                descriptorSetCapacity = checked(descriptorSetCapacity + 1);
+                            }
                         }
                     }
                 }
 
-                var descriptorSets = new D3D12BackendDescriptorSet[descriptorSetCapacity];
+                var descriptorSets = graphStorage?.DescriptorSets ?? new D3D12BackendDescriptorSet[descriptorSetCapacity];
                 var descriptorSetCount = 0;
                 _ = _uncertainGraphDescriptorSets.EnsureCapacity(
                     checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
@@ -1942,7 +1976,8 @@ public static unsafe class D3D12GraphicsBackend
                 };
                 var heapId = typeof(ID3D12DescriptorHeap).GUID;
                 ID3D12DescriptorHeap* renderTargetHeap = null;
-                var renderTargetViews = new D3D12_CPU_DESCRIPTOR_HANDLE[renderTargetResourceCount];
+                var renderTargetViews = graphStorage?.RenderTargetViews
+                    ?? new D3D12_CPU_DESCRIPTOR_HANDLE[renderTargetResourceCount];
                 var graphSubmissionAccepted = false;
                 var graphFrameSlotIndex = -1;
 

@@ -49,6 +49,7 @@ internal sealed class GraphicsGraphSubmission
     private const ushort TextureStorageResourceFlag = 1 << 5;
 
     private readonly int[] _accessPairIndex;
+    private IGraphicsBackendGraphSubmissionStorage? _backendStorage;
     private readonly int[] _bufferAliasingAfterIndex;
     private readonly int[] _bufferImportIndex;
     private readonly ColorAttachmentResourceIndexEntry[] _colorAttachmentResourceIndex;
@@ -206,6 +207,9 @@ internal sealed class GraphicsGraphSubmission
     internal ImmutableArray<GraphResourceAccess> Accesses { get; }
 
     internal ImmutableArray<GraphResourceAliasingBarrier> AliasingBarriers { get; }
+
+    internal IGraphicsBackendGraphSubmissionStorage? BackendStorage
+        => Volatile.Read(ref _backendStorage);
 
     internal long BufferAliasingAfterIndexBackingByteCharge
         => CalculateBufferAliasingAfterIndexBackingByteCharge(_bufferAliasingAfterIndex.LongLength);
@@ -1343,6 +1347,20 @@ internal sealed class GraphicsGraphSubmission
             throw new OutOfMemoryException("The graph preflight workspace exceeds its CPU component allowance.");
         }
     }
+
+    internal void AttachBackendStorage(IGraphicsBackendGraphSubmissionStorage storage)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+
+        if (Interlocked.CompareExchange(ref _backendStorage, storage, null) is not null)
+        {
+            storage.Dispose();
+            throw new InvalidOperationException("The graph submission already owns backend storage.");
+        }
+    }
+
+    internal void DisposeBackendStorage()
+        => Interlocked.Exchange(ref _backendStorage, null)?.Dispose();
 
     internal void DisposeRecordedPassCommandLists()
     {

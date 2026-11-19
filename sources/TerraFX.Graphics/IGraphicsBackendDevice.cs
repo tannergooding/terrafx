@@ -31,6 +31,9 @@ internal interface IGraphicsBackendDevice : IDisposable
         GraphicsResourceAllocationInfo allocationInfo)
         => throw new NotSupportedException("The selected backend does not support shared transient buffer allocations.");
 
+    IGraphicsBackendGraphSubmissionStorage CreateGraphSubmissionStorage(GraphicsGraphSubmission submission)
+        => throw new NotSupportedException("The selected backend does not support preallocated graph submission storage.");
+
     IGraphicsBackendPipeline CreatePipeline(
         PipelineDescription description,
         ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases);

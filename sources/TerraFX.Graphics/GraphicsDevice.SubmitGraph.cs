@@ -158,6 +158,13 @@ public sealed partial class GraphicsDevice
             useLeases = resourceUseLeases.TransferToSubmission(submission);
             submission.ValidateNativeRasterSubmission();
 
+            if (submission.RequiresDiagnosticQueueAdmission)
+            {
+                var backendDevice = _backendDevice
+                    ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+                submission.AttachBackendStorage(backendDevice.CreateGraphSubmissionStorage(submission));
+            }
+
             var request = new SubmitGraphRequest(this, submission, useLeases, frameSlotReservation);
             ownershipTransferred = true;
 
@@ -206,7 +213,14 @@ public sealed partial class GraphicsDevice
                     }
                     finally
                     {
-                        frameSlotReservation.Dispose();
+                        try
+                        {
+                            submission.DisposeBackendStorage();
+                        }
+                        finally
+                        {
+                            frameSlotReservation.Dispose();
+                        }
                     }
                 }
             }
@@ -538,6 +552,7 @@ public sealed partial class GraphicsDevice
 
             ReleaseUseLeases(_useLeases);
             _submission.DisposeRecordedPassCommandLists();
+            _submission.DisposeBackendStorage();
             ReleaseFrameSlot();
         }
     }
