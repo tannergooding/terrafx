@@ -13,6 +13,16 @@ internal sealed class SceneExternalSlot
         bool required,
         bool allowNull,
         ImmutableArray<ContentSchemaReference> requiredComponents)
+        : this(slotId, required, allowNull, requiredComponents, copyRequiredComponents: true)
+    {
+    }
+
+    private SceneExternalSlot(
+        Guid slotId,
+        bool required,
+        bool allowNull,
+        ImmutableArray<ContentSchemaReference> requiredComponents,
+        bool copyRequiredComponents)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(slotId, Guid.Empty);
 
@@ -29,7 +39,7 @@ internal sealed class SceneExternalSlot
         SlotId = slotId;
         Required = required;
         AllowNull = allowNull;
-        RequiredComponents = [.. requiredComponents];
+        RequiredComponents = copyRequiredComponents ? [.. requiredComponents] : requiredComponents;
     }
 
     internal bool AllowNull { get; }
@@ -39,4 +49,11 @@ internal sealed class SceneExternalSlot
     internal ImmutableArray<ContentSchemaReference> RequiredComponents { get; }
 
     internal Guid SlotId { get; }
+
+    internal static SceneExternalSlot CreateOwned(
+        Guid slotId,
+        bool required,
+        bool allowNull,
+        ImmutableArray<ContentSchemaReference> requiredComponents)
+        => new(slotId, required, allowNull, requiredComponents, copyRequiredComponents: false);
 }

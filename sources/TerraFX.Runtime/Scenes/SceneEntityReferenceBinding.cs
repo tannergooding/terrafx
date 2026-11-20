@@ -13,6 +13,16 @@ internal sealed class SceneEntityReferenceBinding
         ContentSchemaReference componentSchema,
         ImmutableArray<ScenePropertyPathSegment> propertyPath,
         SceneReferenceTarget target)
+        : this(source, componentSchema, propertyPath, target, copyPropertyPath: true)
+    {
+    }
+
+    private SceneEntityReferenceBinding(
+        SceneEntitySelector source,
+        ContentSchemaReference componentSchema,
+        ImmutableArray<ScenePropertyPathSegment> propertyPath,
+        SceneReferenceTarget target,
+        bool copyPropertyPath)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(componentSchema.SchemaId, Guid.Empty);
         ArgumentNullException.ThrowIfNull(target);
@@ -24,7 +34,7 @@ internal sealed class SceneEntityReferenceBinding
 
         Source = source;
         ComponentSchema = componentSchema;
-        PropertyPath = [.. propertyPath];
+        PropertyPath = copyPropertyPath ? [.. propertyPath] : propertyPath;
         Target = target;
     }
 
@@ -35,4 +45,11 @@ internal sealed class SceneEntityReferenceBinding
     internal SceneEntitySelector Source { get; }
 
     internal SceneReferenceTarget Target { get; }
+
+    internal static SceneEntityReferenceBinding CreateOwned(
+        SceneEntitySelector source,
+        ContentSchemaReference componentSchema,
+        ImmutableArray<ScenePropertyPathSegment> propertyPath,
+        SceneReferenceTarget target)
+        => new(source, componentSchema, propertyPath, target, copyPropertyPath: false);
 }

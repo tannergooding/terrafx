@@ -2,7 +2,6 @@
 
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using TerraFX;
@@ -60,7 +59,6 @@ internal static class AnimationAssetReader
 
         var joints = ImmutableArray.CreateBuilder<SkeletonJoint>(checked((int)jointField.Count));
         var bindModels = new Matrix4x4[checked((int)jointField.Count)];
-        var jointIndices = new Dictionary<Guid, int>(checked((int)jointField.Count));
         var hierarchyDepths = new int[checked((int)jointField.Count)];
 
         for (var index = 0; index < joints.Capacity; index++)
@@ -77,9 +75,12 @@ internal static class AnimationAssetReader
                 throw new InvalidDataException("A Skeleton JointId cannot be empty.");
             }
 
-            if (!jointIndices.TryAdd(jointId, index))
+            for (var previousIndex = 0; previousIndex < joints.Count; previousIndex++)
             {
-                throw new InvalidDataException("Skeleton JointIds must be unique.");
+                if (joints[previousIndex].JointId == jointId)
+                {
+                    throw new InvalidDataException("Skeleton JointIds must be unique.");
+                }
             }
 
             if ((parentIndex < -1) || (parentIndex >= index))
@@ -123,7 +124,18 @@ internal static class AnimationAssetReader
 
             var selectedRoot = new Guid(rootMotionField.Payload, bigEndian: true);
 
-            if (!jointIndices.TryGetValue(selectedRoot, out var rootIndex)
+            var rootIndex = -1;
+
+            for (var index = 0; index < joints.Count; index++)
+            {
+                if (joints[index].JointId == selectedRoot)
+                {
+                    rootIndex = index;
+                    break;
+                }
+            }
+
+            if ((rootIndex < 0)
                 || (joints[rootIndex].ParentIndex != -1)
                 || (joints[rootIndex].BindScale != Vector3.One))
             {
@@ -198,23 +210,22 @@ internal static class AnimationAssetReader
             throw new InvalidDataException($"Animation record field {tag} does not contain one Matrix4x4.");
         }
 
-        var rows = new Vector4[4];
-
-        for (var row = 0; row < rows.Length; row++)
-        {
-            var offset = row * 16;
-            rows[row] = new Vector4(
-                EbinPrimitives.Single(field.Payload[offset..]),
-                EbinPrimitives.Single(field.Payload[(offset + 4)..]),
-                EbinPrimitives.Single(field.Payload[(offset + 8)..]),
-                EbinPrimitives.Single(field.Payload[(offset + 12)..]));
-        }
-
-        var value = new Matrix4x4(rows[0], rows[1], rows[2], rows[3]);
+        var row0 = ReadMatrixRow(field.Payload, 0);
+        var row1 = ReadMatrixRow(field.Payload, 16);
+        var row2 = ReadMatrixRow(field.Payload, 32);
+        var row3 = ReadMatrixRow(field.Payload, 48);
+        var value = new Matrix4x4(row0, row1, row2, row3);
         return value.IsFinite().All()
             ? value
             : throw new InvalidDataException($"Animation record field {tag} must be finite.");
     }
+
+    private static Vector4 ReadMatrixRow(scoped ReadOnlySpan<byte> payload, int offset)
+        => new(
+            EbinPrimitives.Single(payload[offset..]),
+            EbinPrimitives.Single(payload[(offset + 4)..]),
+            EbinPrimitives.Single(payload[(offset + 8)..]),
+            EbinPrimitives.Single(payload[(offset + 12)..]));
 
     private static Quaternion ReadQuaternion(EbinRecordReadView record, uint tag)
     {

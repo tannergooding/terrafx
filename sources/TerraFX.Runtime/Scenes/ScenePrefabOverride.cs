@@ -15,6 +15,18 @@ internal sealed class ScenePrefabOverride
         ScenePrefabOverrideOperation operation,
         SceneAuthoredRecord? value,
         SceneReferenceTarget? referenceValue)
+        : this(target, componentSchema, propertyPath, operation, value, referenceValue, copyPropertyPath: true)
+    {
+    }
+
+    private ScenePrefabOverride(
+        SceneEntitySelector target,
+        ContentSchemaReference componentSchema,
+        ImmutableArray<ScenePropertyPathSegment> propertyPath,
+        ScenePrefabOverrideOperation operation,
+        SceneAuthoredRecord? value,
+        SceneReferenceTarget? referenceValue,
+        bool copyPropertyPath)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(componentSchema.SchemaId, Guid.Empty);
 
@@ -40,7 +52,7 @@ internal sealed class ScenePrefabOverride
 
         Target = target;
         ComponentSchema = componentSchema;
-        PropertyPath = [.. propertyPath];
+        PropertyPath = copyPropertyPath ? [.. propertyPath] : propertyPath;
         Operation = operation;
         Value = value;
         ReferenceValue = referenceValue;
@@ -57,4 +69,20 @@ internal sealed class ScenePrefabOverride
     internal SceneEntitySelector Target { get; }
 
     internal SceneAuthoredRecord? Value { get; }
+
+    internal static ScenePrefabOverride CreateOwned(
+        SceneEntitySelector target,
+        ContentSchemaReference componentSchema,
+        ImmutableArray<ScenePropertyPathSegment> propertyPath,
+        ScenePrefabOverrideOperation operation,
+        SceneAuthoredRecord? value,
+        SceneReferenceTarget? referenceValue)
+        => new(
+            target,
+            componentSchema,
+            propertyPath,
+            operation,
+            value,
+            referenceValue,
+            copyPropertyPath: false);
 }

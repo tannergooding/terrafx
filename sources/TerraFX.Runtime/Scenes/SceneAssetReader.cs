@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
 
@@ -640,7 +641,7 @@ internal static class SceneAssetReader
             throw new InvalidDataException("A Prefab Internal Entity-reference target must be occurrence-relative.");
         }
 
-        return new SceneEntityReferenceBinding(source, componentSchema, propertyPath, target);
+        return SceneEntityReferenceBinding.CreateOwned(source, componentSchema, propertyPath, target);
     }
 
     private static ImmutableArray<SceneEntityReferenceBinding> ReadEntityReferenceBindings(
@@ -752,7 +753,11 @@ internal static class SceneAssetReader
             previousSchema = schema;
         }
 
-        return new SceneExternalSlot(slotId, required, allowNull, requiredComponents.MoveToImmutable());
+        return SceneExternalSlot.CreateOwned(
+            slotId,
+            required,
+            allowNull,
+            requiredComponents.MoveToImmutable());
     }
 
     private static ImmutableArray<SceneExternalSlot> ReadExternalSlots(
@@ -1056,7 +1061,7 @@ internal static class SceneAssetReader
             throw new InvalidDataException("An Omit PrefabPlacement override cannot carry a value or reference target.");
         }
 
-        return new ScenePrefabOverride(
+        return ScenePrefabOverride.CreateOwned(
             target,
             componentSchema,
             propertyPath,
@@ -1155,7 +1160,7 @@ internal static class SceneAssetReader
             allowInternalOverrideReferences,
             allowInstanceAbsoluteOverrideTargets);
         var slotBindings = ReadPlacementSlotBindings(record, slotBindingField, limits);
-        var encodedRecord = ImmutableArray.CreateRange(record.EncodedBytes.ToArray());
+        var encodedRecord = ImmutableCollectionsMarshal.AsImmutableArray(record.EncodedBytes.ToArray());
         return new ScenePrefabPlacement(
             placementId,
             prefabAssetId,
