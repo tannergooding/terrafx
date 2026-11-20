@@ -48,7 +48,21 @@ If package replacement occurs between count and build, the existing cache contin
 
 Let `CachePrefix(n)` denote a **monotone, qualified charge function**, not a new budget. It must cover constructor/comparer work and charged bucket/entry capacities, including old-plus-new growth at every allocation-reaching prefix. Keep its temporary/return terms distinct from the exact retained cache.
 
-`SceneHierarchyValidatorTests` contains shell and growth tests using `80 + 256*n` for the closed dictionary type through 65,536 insertions. The growth test measures warmed, cumulative thread allocation with **null lease values**. It does not establish cold-state costs, the prescribed `64 + RoundUp16` charged-array ledger, lease/Prefab graphs, `.Values` collection construction during cleanup, faults, or exact surviving capacity. No test was run for this proposal. That existing allowance is a candidate to investigate, not an accepted `CachePrefix` or retained-data amount.
+`SceneHierarchyValidatorTests` contains shell and growth tests using `80 + 256*n` for the closed dictionary type through 65,536 insertions. After the input freeze, a targeted Runtime selection passed **4/4 in Debug and Release**, including both cache cases. The shallow shell assertion is 80 B; the growth test passes the cumulative-allocation bound with **null lease values**. This confirms only the dictionary carrier/growth candidate. It does not establish cold-state costs, the prescribed `64 + RoundUp16` charged-array ledger, lease/Prefab graphs, `.Values` collection construction during cleanup, faults, or exact surviving capacity. Therefore it is not an accepted `CachePrefix` or retained-data amount.
+
+| Configuration | Runtime assembly (MVID; SHA-256) | Test assembly (MVID; SHA-256) | TRX (path; SHA-256) |
+|---|---|---|---|
+| Debug | `62d263b1-740a-414e-862d-1465f7ad10c2`; `C68EF8E8C5834D724F38C0325759BCE8EA4352897B5FC46A304CB66D92DCC928` | `3fc8bfa8-25af-4b8d-bd53-29b01931b22a`; `214963112BB3A9D366F886077E34BCD71574877A5FC52DBDE197F49F14221A55` | `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_11_51_19_net11.0.trx`; `D856BBC58B3F5F735C79E6F452EA8149188A3802B012A9F827AFC59481543CAD` |
+| Release | `94a49a9f-934f-4705-9aff-fd3cf461c79d`; `F942A806D60D0EF0A837BEC41D929A84444E2802C7E1FABEA92F80BF8A664915` | `10ce38dc-a896-47b7-88a2-2024601053bc`; `D408B459387202594D64317A7BB330CB4F7E8CB982A4002106EDA87FB026EC10` | `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_11_51_25_net11.0.trx`; `D68028AD7C32279503D307974BF15BD012BF9F5878832DDC129DED12E5308FC8` |
+
+These are managed dictionary-shell/growth observations only. They exercised no Scene package, lease value, replacement, Store close, preclaim, receiver transfer, or actual-return path.
+
+| Configuration | Runtime assembly (MVID; SHA-256) | Test assembly (MVID; SHA-256) | TRX (path; SHA-256) |
+|---|---|---|---|
+| Debug | `62d263b1-740a-414e-862d-1465f7ad10c2`; `C68EF8E8C5834D724F38C0325759BCE8EA4352897B5FC46A304CB66D92DCC928` | `3fc8bfa8-25af-4b8d-bd53-29b01931b22a`; `214963112BB3A9D366F886077E34BCD71574877A5FC52DBDE197F49F14221A55` | `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_11_51_19_net11.0.trx`; `D856BBC58B3F5F735C79E6F452EA8149188A3802B012A9F827AFC59481543CAD` |
+| Release | `94a49a9f-934f-4705-9aff-fd3cf461c79d`; `F942A806D60D0EF0A837BEC41D929A84444E2802C7E1FABEA92F80BF8A664915` | `10ce38dc-a896-47b7-88a2-2024601053bc`; `D408B459387202594D64317A7BB330CB4F7E8CB982A4002106EDA87FB026EC10` | `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_11_51_25_net11.0.trx`; `D68028AD7C32279503D307974BF15BD012BF9F5878832DDC129DED12E5308FC8` |
+
+These are managed dictionary-shell/growth observations only. They exercised no Scene package, lease value, replacement, Store close, preclaim, receiver transfer, or actual-return path.
 
 ## Possible implementation sequence
 
