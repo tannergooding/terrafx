@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T09:51:49.452977Z`; HEAD `5b894adeb57e8eead63643e5fbd673b68da07dd9`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T09:57:04.402829Z`; HEAD `bf9031e54358cec37f0ef092e80d31ca06d33efb`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -422,16 +422,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `61d9531dbfa8d3a889eb24b29a615539170cc574ed46f66a7aa0c080721ca9d9` |
-| P | 10 | `63118f6821ae18d01bdc78ca66052eae1e8cfbebd2661666abfba97d28d3122e` |
+| P | 10 | `8fa085f2c00d7f0a349385a28a5b0013c4308e1e6f55c2c603b53c86293902f0` |
 | A | 25 | `a3ddf491d41d54061c6a9cced5fc9632de0ef1327800474b32447fae43ffe6a9` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 18 | `c2ded1985fa781db98bdff3e8179385b56d3899c8658b8e61204903959c83d45` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 8 | `eaf9406eab12e78238fd38139b90fb2d2ee1633c662d74c759e8990d7311a0d9` |
+| T | 8 | `1bfa7ee8e35d6a90219899ac51f2efa6e6b83e828dbe0d8e601d7e50176318e9` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 119 | `a6194eebe2e39fdd190b07a8bc9aa2dd48637ce73d58c1e3dbbbb848223cda82` |
+| ALL | 119 | `7c209d04c3b15349e596c83f9f38ddc0c0ecbe1b4064741df42594530558e074` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
@@ -454,4 +454,4 @@ The five preexisting dirty files are preservation inputs, **not acceptance of th
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The planner now uses an inline maximum-depth AssetId path, defers exact output builders/reference-list allocation until after its reservation callback, and avoids replacement empty builders after immutable ownership moves; the root builder and Prefab cache remain unclaimed before counting. Measured-layout regressions fix the PreparedScene root at 488 bytes, SceneExpansionBuilder at 448 bytes, SceneExpansionPlan at 160 bytes, and the Prefab lease Dictionary shell at 80 bytes on the selected .NET 11 x64 runner; a 65,536-entry collection-only test keeps Dictionary object plus cumulative backing-allocation traffic within `80 + 256*n` at every prefix. The Assets test project passes 69/69, the focused Scene hierarchy workspace/planner selection passes 12/12, a separate seven-test nested expansion/typed-read/refusal selection passes, the maximum-depth path/cycle selection passes 4/4, and the complete Scene hierarchy/workspace/carrier selection passes 16/16 in Debug and Release. These observations cover fixed-buffer scan partitions, hierarchy and planner/cache carrier measurements, shared sixteen-byte array sizing and the Planner's depth boundary; they do not prove the PreparedScene constructor's referenced objects, lease, decoded Prefab, operation, or Scene funding. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
+Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The planner now uses an inline maximum-depth AssetId path, defers exact output builders/reference-list allocation until after its reservation callback, and avoids replacement empty builders after immutable ownership moves; the root builder and Prefab cache remain unclaimed before counting. Measured-layout regressions fix the PreparedScene root at 488 bytes, its `TaskCompletionSource<PreparedScene>`/Task pair at 96 bytes, SceneExpansionBuilder at 448 bytes, SceneExpansionPlan at 160 bytes, and the Prefab lease Dictionary shell at 80 bytes on the selected .NET 11 x64 runner; a 65,536-entry collection-only test keeps Dictionary object plus cumulative backing-allocation traffic within `80 + 256*n` at every prefix. The Assets test project passes 69/69, the focused Scene hierarchy workspace/planner selection passes 12/12, a separate seven-test nested expansion/typed-read/refusal selection passes, the maximum-depth path/cycle selection passes 4/4, and the complete Scene hierarchy/workspace/carrier selection passes 17/17 in Debug and Release. These observations cover fixed-buffer scan partitions, hierarchy and planner/cache carrier measurements, shared sixteen-byte array sizing and the Planner's depth boundary; they do not prove the PreparedScene constructor's callbacks/fault array, lease, decoded Prefab, operation, or Scene funding. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.

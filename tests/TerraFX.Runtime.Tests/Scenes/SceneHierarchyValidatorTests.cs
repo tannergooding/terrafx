@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Assets;
 using TerraFX.Scenes;
@@ -178,6 +179,33 @@ internal sealed class SceneHierarchyValidatorTests
         GC.KeepAlive(measuredInstances);
 
         Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedPreparedSceneCarrierBytes));
+    }
+
+    [Test]
+    public void PreparedSceneCompletionSourceAndTaskAllocationMatchesSelectedRuntime()
+    {
+        const int SampleCount = 64;
+        const int ExpectedCompletionSourceAndTaskBytes = 96;
+        var completionSources = new TaskCompletionSource<PreparedScene>[SampleCount];
+        var tasks = new Task<PreparedScene>[SampleCount];
+        var warmSource = new TaskCompletionSource<PreparedScene>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var warmTask = warmSource.Task;
+        GC.KeepAlive(warmTask);
+        GC.KeepAlive(warmSource);
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < completionSources.Length; index++)
+        {
+            completionSources[index] = new TaskCompletionSource<PreparedScene>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            tasks[index] = completionSources[index].Task;
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(completionSources);
+        GC.KeepAlive(tasks);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedCompletionSourceAndTaskBytes));
     }
 
     [Test]
