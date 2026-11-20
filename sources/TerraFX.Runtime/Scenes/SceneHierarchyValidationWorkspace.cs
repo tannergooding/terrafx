@@ -7,6 +7,10 @@ namespace TerraFX.Scenes;
 
 internal sealed class SceneHierarchyValidationWorkspace
 {
+    private const int ManagedObjectHeaderPointerCount = 2;
+    private const int WorkspaceArrayFieldCount = 8;
+    private const int WorkspaceScalarFieldBytes = (2 * sizeof(int)) + sizeof(long);
+
     private readonly ushort[] _depths;
     private readonly Guid[] _entityIds;
     private readonly byte[] _entityMembershipCounts;
@@ -62,7 +66,7 @@ internal sealed class SceneHierarchyValidationWorkspace
         ArgumentOutOfRangeException.ThrowIfNegative(placementCount);
 
         return checked(
-            64L
+            GetWorkspaceObjectBytes()
             + ArrayBytes(entityCount, Unsafe.SizeOf<Guid>())
             + ArrayBytes(placementCount, Unsafe.SizeOf<SceneHierarchyPlacement>())
             + ArrayBytes(entityCount, sizeof(byte))
@@ -76,8 +80,13 @@ internal sealed class SceneHierarchyValidationWorkspace
     private static long ArrayBytes(int count, int elementSize)
     {
         var payloadBytes = checked((long)count * elementSize);
-        return checked(64L + ((payloadBytes + 7L) & ~7L));
+        return checked(64L + ((payloadBytes + 15L) & ~15L));
     }
+
+    private static long GetWorkspaceObjectBytes()
+        => checked(
+            (((long)ManagedObjectHeaderPointerCount + WorkspaceArrayFieldCount) * IntPtr.Size)
+            + WorkspaceScalarFieldBytes);
 
     internal void Reset()
     {

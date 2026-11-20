@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using NUnit.Framework;
 using TerraFX.Scenes;
 
@@ -132,6 +133,54 @@ internal sealed class SceneHierarchyValidatorTests
             256);
 
         Assert.That(duplicateResult.Error, Is.EqualTo(SceneHierarchyValidationError.DuplicateMembership));
+    }
+
+    [Test]
+    public void WorkspaceByteReservationMatchesCompiledObjectAndArrayLayout()
+    {
+        const int SampleCount = 64;
+        var workspaceType = typeof(SceneHierarchyValidationWorkspace);
+        var warmInstances = new object[SampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(workspaceType);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(workspaceType);
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(measuredInstances);
+        var expectedObjectBytes = checked(
+            ((2L + 8L) * IntPtr.Size)
+            + (2L * sizeof(int))
+            + sizeof(long));
+
+        static long ArrayBytes<T>(int count)
+        {
+            var payloadBytes = checked((long)count * Unsafe.SizeOf<T>());
+            return checked(64L + ((payloadBytes + 15L) & ~15L));
+        }
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(expectedObjectBytes));
+        Assert.That(
+            SceneHierarchyValidationWorkspace.GetRequiredByteReservation(1, 1),
+            Is.EqualTo(expectedObjectBytes
+                + ArrayBytes<Guid>(1)
+                + ArrayBytes<SceneHierarchyPlacement>(1)
+                + ArrayBytes<byte>(1)
+                + ArrayBytes<byte>(1)
+                + ArrayBytes<int>(1)
+                + ArrayBytes<byte>(1)
+                + ArrayBytes<ushort>(1)
+                + ArrayBytes<int>(1)));
     }
 
     private static class HierarchyFixture
