@@ -310,6 +310,64 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetLeasePackageLoadPreCancellationReturnsTemporaryBackingReference()
+    {
+        var registration = CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 10)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 20)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration),
+            CancellationToken.None).ConfigureAwait(false);
+        var backingField = typeof(AssetStore).GetField("_currentBacking", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The selected package backing field is missing.");
+        var referenceCountField = typeof(AssetPackageBacking).GetField("_referenceCount", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The package backing reference count field is missing.");
+
+        try
+        {
+            using var source = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            var backing = backingField.GetValue(store) as AssetPackageBacking
+                ?? throw new InvalidOperationException("The selected package backing is missing.");
+            var referenceCountBefore = (int)(referenceCountField.GetValue(backing)
+                ?? throw new InvalidOperationException("The package backing reference count is unavailable."));
+            using var cancellationSource = new CancellationTokenSource();
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+
+            var cancellationException = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await source.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(2),
+                    cancellationSource.Token).ConfigureAwait(false));
+
+            Assert.That(cancellationException?.CancellationToken, Is.EqualTo(cancellationSource.Token));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBefore));
+
+            using var packageLease = store.AcquirePackageLease();
+            var referenceCountBeforePackageRead = (int)(referenceCountField.GetValue(backing)
+                ?? throw new InvalidOperationException("The package backing reference count is unavailable."));
+            var packageCancellationException = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await packageLease.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(2),
+                    cancellationSource.Token).ConfigureAwait(false));
+
+            Assert.That(packageCancellationException?.CancellationToken, Is.EqualTo(cancellationSource.Token));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+
+            using var child = await source.LoadFromPackageAsync<TestAssetValue>(
+                new AssetId(2),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(child.Value.Marker, Is.EqualTo(20));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead + 1));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task AssetLeaseRetainsAndLoadsFromItsAnchoredPackageAcrossReplacement()
     {
         var registration = CreateRegistration();

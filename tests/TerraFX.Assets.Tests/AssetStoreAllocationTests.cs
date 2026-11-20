@@ -61,6 +61,10 @@ internal sealed class AssetStoreAllocationTests
             ("AssetPackageLease.LeaseState", packageLeaseStateType, 56),
             (nameof(Lock), typeof(Lock), 40),
             ("ObjectGate", typeof(object), 24),
+            (nameof(AssetStore), typeof(AssetStore), 96),
+            (nameof(AssetStoreRegistration), typeof(AssetStoreRegistration), 48),
+            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 160),
+            (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
         ];
 
         foreach (var (name, type, expectedBytes) in carrierTypes)
