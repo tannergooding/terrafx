@@ -2075,7 +2075,8 @@ internal static class ScenePrefabExpansionPlanner
             ImmutableArray<int>.Builder childOccurrenceIndicesByPlacement)
         {
             var placement = source.Placements[placementIndex];
-            var childPrefab = await GetPrefabAsync(placement.PrefabAssetId).ConfigureAwait(false);
+            _cancellationToken.ThrowIfCancellationRequested();
+            var childPrefab = GetCachedPrefab(placement.PrefabAssetId);
             var childOccurrenceIndex = await ExpandOccurrenceAsync(
                 new SceneExpansionSource(childPrefab),
                 checked(prefabDepth + 1),
@@ -2184,7 +2185,7 @@ internal static class ScenePrefabExpansionPlanner
             }
 
             var placement = source.Placements[placementIndex];
-            var childPrefab = await GetPrefabAsync(placement.PrefabAssetId).ConfigureAwait(false);
+            var childPrefab = GetCachedPrefab(placement.PrefabAssetId);
             return await FillOccurrenceRootCountsAsync(
                 new SceneExpansionSource(childPrefab),
                 checked(prefabDepth + 1),
@@ -2217,6 +2218,19 @@ internal static class ScenePrefabExpansionPlanner
             }
 
             return -1;
+        }
+
+        private ScenePrefabAsset GetCachedPrefab(AssetId assetId)
+        {
+            var prefabLeases = _prefabLeases
+                ?? throw new ObjectDisposedException(nameof(SceneExpansionBuilder));
+
+            if (!prefabLeases.TryGetValue(assetId, out var lease))
+            {
+                throw new InvalidOperationException("The counted Scene expansion is missing its retained Prefab lease.");
+            }
+
+            return lease.Value;
         }
 
         private async ValueTask<ScenePrefabAsset> GetPrefabAsync(AssetId assetId)
