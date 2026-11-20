@@ -94,7 +94,7 @@ All rows remain open; these are existing owner obligations, not new acceptance I
 
 ## Frozen raw-input manifest
 
-Freeze completed **2026-11-20T20:05:59.0940481Z**, HEAD **`b6d95f643363da05eb090a89c09f11e4ed6dea59`**. The input set is these 47 evidence/guidance files plus the five preservation files below. SHA-256 covers raw file bytes without newline/BOM normalization. Paths are repository-relative. Whole-file hashes bind even where only relevant ranges were inspected; prior proposals' embedded historical hashes/results are not adopted.
+Freeze completed **2026-11-20T20:11:39.5586466Z**, HEAD **`e3d54ec27c30909ec3f091f91460626ea4f9322c`**. The input set is these 47 evidence/guidance files plus the five preservation files below. SHA-256 covers raw file bytes without newline/BOM normalization. Paths are repository-relative. Whole-file hashes bind even where only relevant ranges were inspected; prior proposals' embedded historical hashes/results are not adopted.
 
 This is a task-scoped review freeze, not a repository-wide inventory, runtime manifest, new acceptance pipeline, or claim of qualification. The new proposal is the output, not its own input.
 
@@ -115,8 +115,8 @@ b0bfa5771f1029bdfb21a0e01556467d3169953f71cbfdf18a06381a11cee461  docs\design\27
 49598161138febbf889f2a5176e3504af8d8bb8481d2157fbcfbbd94d2b46604  docs\design\29-project-setup-build-and-deployment.md
 d4f622d69ed58ab96118c36fbbf4e2d31e062a3cbf3ce3ba1d64309f662fe4ed  docs\design\30-public-api-review-surface.md
 24eec6e92b7ad904d552f290ef748ffc8fce13b6b94a89ebd9f39487d4584d87  docs\design\35-implementation-roadmap.md
-32f039b929226b5849d2ba5f68519429a475b78b868f7d3f0cb0f708f381cf35  docs\proposals\m03b-scene-assets-original-p-operation-and-return-closure.md
-93e79e7d77d5ba007b260614152c90fb6eb369794731e3f218287e171d5434bb  docs\proposals\m03b-scene-assets-allocation-site-catalogue-addendum.md
+f3ddeeb0b6933590ba928646555f179f20c2be8c5d12cd725c8bf1cd9bdb7836  docs\proposals\m03b-scene-assets-original-p-operation-and-return-closure.md
+33e215adf1ee057c0e9809f2ab83829020e08a6920c331af81792db450e81e17  docs\proposals\m03b-scene-assets-allocation-site-catalogue-addendum.md
 aa32cf9b40d034a94b6972f8b716519710a70d9f797f91830dc616f71b1db9e4  sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs
 4903a86fc323ed906a0045288bebab68b37c5b6beeff6312ea0440a9d05d453c  sources\TerraFX.Runtime\Scenes\SceneLoader.cs
 8a822c991792d18bbcf3d58718c7c420833c45a261f406487c7a6dd2e2ef3df0  sources\TerraFX.Runtime\Scenes\PreparedScene.cs
