@@ -209,6 +209,64 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void PreparedSceneFaultPairAllocationMatchesSelectedRuntime()
+    {
+        const int SampleCount = 64;
+        const int ExpectedFaultPairArrayBytes = 40;
+        var faultPairs = new Exception[SampleCount][];
+        var warmFaultPair = new Exception[2];
+        GC.KeepAlive(warmFaultPair);
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < faultPairs.Length; index++)
+        {
+            faultPairs[index] = new Exception[2];
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(faultPairs);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedFaultPairArrayBytes));
+    }
+
+    [Test]
+    public void PreparedSceneReadyCallbacksMatchSelectedRuntimeAllocation()
+    {
+        const int SampleCount = 64;
+        const int ExpectedPreparedSceneCallbackBytes = 112;
+        var preparationType = typeof(PreparedScene);
+        var planReadyMethod = preparationType.GetMethod("OnPlanPrepared", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The PreparedScene plan callback is unavailable.");
+        var resourcesReadyMethod = preparationType.GetMethod("OnResourcesPrepared", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The PreparedScene resources callback is unavailable.");
+        var targetInstances = new object[SampleCount];
+
+        for (var index = 0; index < targetInstances.Length; index++)
+        {
+            targetInstances[index] = RuntimeHelpers.GetUninitializedObject(preparationType);
+        }
+
+        var callbacks = new Action[2 * SampleCount];
+        var warmPlanReady = planReadyMethod.CreateDelegate<Action>(targetInstances[0]);
+        var warmResourcesReady = resourcesReadyMethod.CreateDelegate<Action>(targetInstances[0]);
+        GC.KeepAlive(warmPlanReady);
+        GC.KeepAlive(warmResourcesReady);
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < targetInstances.Length; index++)
+        {
+            callbacks[2 * index] = planReadyMethod.CreateDelegate<Action>(targetInstances[index]);
+            callbacks[(2 * index) + 1] = resourcesReadyMethod.CreateDelegate<Action>(targetInstances[index]);
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(callbacks);
+        GC.KeepAlive(targetInstances);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedPreparedSceneCallbackBytes));
+    }
+
+    [Test]
     public void RejectsCyclesAndHierarchyDepthBeyondTheConfiguredLimit()
     {
         var firstEntityId = new Guid("10000000-0000-4000-8000-000000000001");
