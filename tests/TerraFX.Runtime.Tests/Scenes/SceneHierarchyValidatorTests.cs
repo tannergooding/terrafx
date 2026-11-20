@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
 using TerraFX.Scenes;
@@ -158,6 +159,37 @@ internal sealed class SceneHierarchyValidatorTests
             256);
 
         Assert.That(duplicateResult.Error, Is.EqualTo(SceneHierarchyValidationError.DuplicateMembership));
+    }
+
+    [Test]
+    public void SceneExpansionBuilderCarrierMatchesSelectedRuntimeLayout()
+    {
+        const int SampleCount = 64;
+        const int ExpectedBuilderCarrierBytes = 448;
+        var builderType = typeof(ScenePrefabExpansionPlanner).GetNestedType(
+            "SceneExpansionBuilder",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The Scene expansion builder type is unavailable.");
+        var warmInstances = new object[SampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(builderType);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(builderType);
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(measuredInstances);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedBuilderCarrierBytes));
     }
 
     [Test]
