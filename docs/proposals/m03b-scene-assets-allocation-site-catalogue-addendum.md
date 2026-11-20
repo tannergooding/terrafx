@@ -242,7 +242,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T18:53:38.9860755Z`; HEAD `d962a294809a84049eba29298e59cf3c19c11cf7`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 remains `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, ordinary `AssetPackageBacking` shell, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Bounded-port-specific source files and this proposal artifact are excluded; the updated backing source and allocation test remain included because they determine the ordinary backing shell and constructor measurements.
+UTC `2026-11-20T19:11:42.6370919Z`; HEAD `d64536d83b3c9d91e615b86ef75f1ba7d7491f18`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 remains `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, ordinary `AssetPackageBacking` shell, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Bounded-port-specific source files and this proposal artifact are excluded; the updated backing source and allocation test remain included because they determine the ordinary backing shell and constructor measurements.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -305,9 +305,9 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| BASE | 96 | `6c0b09a1d5d063c5b15b410f7cbe77b7d931925f4f2053a87ecf46fb1581bd27` |
+| BASE | 96 | `7fd7c60ab6e63a25dc97d157a2095d6bf791496e471aaa2f5dc1471b0ff339eb` |
 | ADD | 54 | `71e3aafebad2a2c95c817cb9777c6899769b6a737abec62bb32bcd64622dc7c8` |
-| ALL | 150 | `3272053d9c92a7ec7020c13a15c13619209122f81cd9c17f7073b97ebd514a5c` |
+| ALL | 150 | `89b92ce2e4ed246cca7caa6b531620257241ed7d87bf6c19818167f16a119b7c` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|

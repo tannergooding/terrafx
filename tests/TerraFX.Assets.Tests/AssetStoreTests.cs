@@ -329,6 +329,127 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeRefusesInsufficientReferenceStorage()
+    {
+        var registration = CreateRegistration();
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(1),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var envelope = CreateAssetEnvelope(
+            1,
+            CreateAssetRecordWithReference(123, 2, s_assetSchema.SchemaId, checked((uint)s_assetSchema.Major)));
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            EbinReadLimits.Foundation,
+            [],
+            [],
+            [],
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Reference));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Invariant));
+            Assert.That(value.Marker, Is.Zero);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeRejectsContextRootMismatch()
+    {
+        var registration = CreateRegistration();
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(2),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var envelope = CreateAssetEnvelope(1, CreateAssetRecord(123));
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            EbinReadLimits.Foundation,
+            [],
+            [],
+            [],
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Header));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Invariant));
+            Assert.That(value.Marker, Is.Zero);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeUsesCallerReferenceStorage()
+    {
+        var registration = CreateRegistration();
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(1),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var envelope = CreateAssetEnvelope(
+            1,
+            CreateAssetRecordWithReference(123, 2, s_assetSchema.SchemaId, checked((uint)s_assetSchema.Major)));
+        var referenceWorkspace = new AssetReference[1];
+        var referenceIndexWorkspace = new int[1];
+        var uniqueReferences = new AssetReference[1];
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            EbinReadLimits.Foundation,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+            Assert.That(value.Marker, Is.EqualTo(123));
+            Assert.That(referenceCount, Is.EqualTo(1));
+            Assert.That(uniqueReferences[0], Is.EqualTo(new AssetReference(new AssetId(2), s_assetSchema.SchemaId, 1)));
+        });
+    }
+
+    [Test]
     public async Task AssetLeasePackageLoadPreCancellationReturnsTemporaryBackingReference()
     {
         var profileOrigin = typeof(ProfiledTestAssetOrigin);

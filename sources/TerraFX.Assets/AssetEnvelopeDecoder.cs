@@ -67,6 +67,90 @@ internal static class AssetEnvelopeDecoder
         return BinaryRecordStatus.Complete;
     }
 
+    internal static AssetBoundedFailureFact DecodeBounded<T>(
+        scoped ReadOnlySpan<byte> source,
+        AssetId expectedAssetId,
+        AssetStoreRegistration.IAssetCodec<T> codec,
+        AssetCodecContext context,
+        EbinReadLimits limits,
+        AssetReference[] referenceWorkspace,
+        int[] referenceIndexWorkspace,
+        AssetReference[] uniqueReferences,
+        AssetBoundedFileDisposition fileDisposition,
+        [MaybeNull] out T value,
+        out int referenceCount)
+    {
+        ArgumentNullException.ThrowIfNull(codec);
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(referenceWorkspace);
+        ArgumentNullException.ThrowIfNull(referenceIndexWorkspace);
+        ArgumentNullException.ThrowIfNull(uniqueReferences);
+        value = default;
+        referenceCount = 0;
+
+        if (!expectedAssetId.IsValid || (context.RootAssetId != expectedAssetId))
+        {
+            return CreateBoundedDecodeFailure(
+                AssetBoundedFailureStage.Header,
+                AssetBoundedFailureKind.Invariant,
+                fileDisposition);
+        }
+
+        var action = new BoundedDecodeAction<T>(
+            expectedAssetId,
+            codec,
+            context,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            fileDisposition);
+        var readStatus = EbinStructuralReader.Read(
+            source,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out var bytesConsumed,
+            out _);
+
+        if (readStatus is not EbinReadStatus.Complete)
+        {
+            return CreateBoundedDecodeFailure(
+                AssetBoundedFailureStage.Decode,
+                (readStatus is EbinReadStatus.UnsupportedSchema)
+                    ? AssetBoundedFailureKind.UnsupportedContent
+                    : AssetBoundedFailureKind.Layout,
+                fileDisposition);
+        }
+
+        if (bytesConsumed != source.Length)
+        {
+            return CreateBoundedDecodeFailure(
+                AssetBoundedFailureStage.Decode,
+                AssetBoundedFailureKind.Layout,
+                fileDisposition);
+        }
+
+        if (action.Failure.Kind is not AssetBoundedFailureKind.None)
+        {
+            return action.Failure;
+        }
+
+        var decodedValue = action.Value;
+
+        if (decodedValue is null)
+        {
+            return CreateBoundedDecodeFailure(
+                AssetBoundedFailureStage.Decode,
+                AssetBoundedFailureKind.Invariant,
+                fileDisposition);
+        }
+
+        value = decodedValue;
+        referenceCount = action.ReferenceCount;
+        return default;
+    }
+
     internal static BinaryRecordStatus Inspect(
         scoped ReadOnlySpan<byte> source,
         AssetId expectedAssetId,
@@ -114,6 +198,20 @@ internal static class AssetEnvelopeDecoder
         payloadSchema = action.PayloadSchema;
         return BinaryRecordStatus.Complete;
     }
+
+    private static AssetBoundedFailureFact CreateBoundedDecodeFailure(
+        AssetBoundedFailureStage stage,
+        AssetBoundedFailureKind kind,
+        AssetBoundedFileDisposition fileDisposition,
+        BinarySchemaDiagnostic? schemaDiagnostic = null)
+        => new(
+            stage,
+            kind,
+            AssetBoundedNativeApi.None,
+            0,
+            schemaDiagnostic?.SchemaId ?? Guid.Empty,
+            schemaDiagnostic?.Tag ?? 0,
+            fileDisposition);
 
     private static DataSchema FindEnvelopeSchema()
     {
@@ -194,6 +292,150 @@ internal static class AssetEnvelopeDecoder
         && (field.IsRequired == descriptor.IsRequired)
         && (field.Count >= descriptor.MinimumCount)
         && (field.Count <= descriptor.MaximumCount);
+
+    private struct BoundedDecodeAction<T> : IAction<EbinRecordReadView>
+    {
+        private readonly AssetCodecContext _context;
+        private readonly AssetStoreRegistration.IAssetCodec<T> _codec;
+        private readonly AssetId _expectedAssetId;
+        private readonly AssetBoundedFileDisposition _fileDisposition;
+        private readonly AssetReference[] _referenceWorkspace;
+        private readonly int[] _referenceIndexWorkspace;
+        private readonly AssetReference[] _uniqueReferences;
+        private int _referenceCount;
+        private AssetBoundedFailureFact _failure;
+        private T? _value;
+
+        internal BoundedDecodeAction(
+            AssetId expectedAssetId,
+            AssetStoreRegistration.IAssetCodec<T> codec,
+            AssetCodecContext context,
+            AssetReference[] referenceWorkspace,
+            int[] referenceIndexWorkspace,
+            AssetReference[] uniqueReferences,
+            AssetBoundedFileDisposition fileDisposition)
+        {
+            _expectedAssetId = expectedAssetId;
+            _codec = codec;
+            _context = context;
+            _fileDisposition = fileDisposition;
+            _referenceWorkspace = referenceWorkspace;
+            _referenceIndexWorkspace = referenceIndexWorkspace;
+            _uniqueReferences = uniqueReferences;
+            _referenceCount = 0;
+            _failure = default;
+            _value = default;
+        }
+
+        internal readonly AssetBoundedFailureFact Failure => _failure;
+
+        internal readonly int ReferenceCount => _referenceCount;
+
+        internal readonly T? Value => _value;
+
+        public void Invoke(scoped EbinRecordReadView envelope)
+        {
+            var status = InspectEnvelope(
+                envelope,
+                _expectedAssetId,
+                _context.Schemas,
+                out var payloadSchema,
+                out var dataSchema,
+                out _);
+
+            if (status is not BinaryRecordStatus.Complete)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Header,
+                    (status is BinaryRecordStatus.UnsupportedSchema)
+                        ? AssetBoundedFailureKind.UnsupportedContent
+                        : AssetBoundedFailureKind.Layout,
+                    _fileDisposition);
+                return;
+            }
+
+            if (_codec.Schema != payloadSchema)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.UnsupportedContent,
+                    _fileDisposition);
+                return;
+            }
+
+            if (dataSchema is null)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.UnsupportedContent,
+                    _fileDisposition);
+                return;
+            }
+
+            var payload = envelope.GetRecord(2);
+            var referenceOccurrenceCount = AssetReferenceScanner.CountAssetIds(
+                payload,
+                dataSchema,
+                _context.Schemas);
+
+            if ((referenceOccurrenceCount > _referenceWorkspace.Length)
+                || (referenceOccurrenceCount > _referenceIndexWorkspace.Length)
+                || (referenceOccurrenceCount > _uniqueReferences.Length))
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Reference,
+                    AssetBoundedFailureKind.Invariant,
+                    _fileDisposition);
+                return;
+            }
+
+            var workspace = _referenceWorkspace.AsSpan(0, referenceOccurrenceCount);
+            var indexWorkspace = _referenceIndexWorkspace.AsSpan(0, referenceOccurrenceCount);
+            var uniqueCount = AssetReferenceScanner.ScanInto(
+                payload,
+                dataSchema,
+                _context.Schemas,
+                workspace,
+                indexWorkspace);
+            AssetReferenceScanner.CopyUniqueReferences(
+                workspace,
+                indexWorkspace[..uniqueCount],
+                _uniqueReferences.AsSpan(0, uniqueCount));
+            var codecStatus = _codec.Read(
+                payload.EncodedBytes,
+                _context,
+                out var value,
+                out var bytesConsumed,
+                out var diagnostic);
+
+            if (codecStatus is not BinaryRecordStatus.Complete)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    (codecStatus is BinaryRecordStatus.UnsupportedSchema)
+                        ? AssetBoundedFailureKind.UnsupportedContent
+                        : AssetBoundedFailureKind.TypedRecord,
+                    _fileDisposition,
+                    diagnostic);
+                return;
+            }
+
+            if ((bytesConsumed != payload.EncodedBytes.Length)
+                || (value is null)
+                || (diagnostic is not null))
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.TypedRecord,
+                    _fileDisposition,
+                    diagnostic);
+                return;
+            }
+
+            _value = value!;
+            _referenceCount = uniqueCount;
+        }
+    }
 
     private struct DecodeAction<T> : IAction<EbinRecordReadView>
     {
