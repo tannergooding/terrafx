@@ -2253,11 +2253,12 @@ internal static class ScenePrefabExpansionPlanner
                 : await sceneLease.LoadDescribedFromPackageAsync<ScenePrefabAsset>(
                     SceneSupport.DescribePrefabAssetRead(sceneLease, assetId),
                     _cancellationToken).ConfigureAwait(false);
-            var value = lease.Value;
             var retained = false;
 
             try
             {
+                var value = lease.Value;
+
                 if (!ReferenceEquals(value.Schemas, sceneLease.Value.Schemas)
                     || !ReferenceEquals(value.ReadLimits, sceneLease.Value.ReadLimits))
                 {
