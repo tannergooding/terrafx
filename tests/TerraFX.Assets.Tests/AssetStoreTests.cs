@@ -10,6 +10,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -593,6 +594,55 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public void AssetReferenceScannerCopyUniqueReferencesRejectsDestinationOverlappingIndexWorkspace()
+    {
+        var overlapBytes = new byte[Unsafe.SizeOf<AssetReference>()];
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanTestHelpers.CopyUniqueReferencesWithOverlappingIndexWorkspace(overlapBytes));
+    }
+
+    [Test]
+    public void AssetReferenceScannerCopyUniqueReferencesRejectsDestinationOverlappingReferenceWorkspace()
+    {
+        AssetReference[] references = [
+            new(new AssetId(2), new Guid("ffffffff-0000-4000-8000-000000000001"), 1),
+        ];
+        int[] uniqueIndices = [0];
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanner.CopyUniqueReferences(
+                references,
+                uniqueIndices,
+                references));
+    }
+
+    [Test]
+    public void AssetReferenceScannerCopyUniqueReferencesRejectsOverlappingReferenceAndIndexWorkspaces()
+    {
+        var overlapBytes = new byte[Unsafe.SizeOf<AssetReference>()];
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanTestHelpers.CopyUniqueReferencesWithOverlappingWorkspaces(overlapBytes));
+    }
+
+    [Test]
+    public void AssetReferenceScannerCopyUniqueReferencesRejectsShortDestination()
+    {
+        AssetReference[] references = [
+            new(new AssetId(2), new Guid("ffffffff-0000-4000-8000-000000000001"), 1),
+            new(new AssetId(2), new Guid("11111111-0000-4000-8000-000000000002"), 1),
+        ];
+        int[] uniqueIndices = [0, 1];
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanner.CopyUniqueReferences(
+                references,
+                uniqueIndices,
+                new AssetReference[1]));
+    }
+
+    [Test]
     [TestCase(0, 0)]
     [TestCase(1, 1)]
     [TestCase(2, 1)]
@@ -601,62 +651,25 @@ internal sealed class AssetStoreTests
         int referenceCount,
         int expectedUniqueCount)
     {
-        var rootIdentity = new ContentSchemaIdentityAssignment("test/asset-reference-scan-root");
-        var assetReferenceSchema = FindAssetReferenceSchema();
-        var rootSchema = new DataSchema(
-            new ContentSchemaReference(rootIdentity.SchemaId, 1, 0, ContentSchemaScope.Content),
-            rootIdentity,
-            ContentSchemaRole.NativeAsset,
-            ContentSchemaOwner.Application,
-            ContentSchemaStorage.NotComponent,
-            ContentTransientRestore.NotApplicable,
-            [
-                new ContentFieldDescriptor(
-                    1,
-                    3,
-                    0,
-                    true,
-                    1,
-                    1,
-                    [],
-                    0,
-                    ContentUnit.None,
-                    ContentReferenceKind.None,
-                    ContentAuthoring.None,
-                    null),
-                .. CreateOptionalAssetReferenceFields(assetReferenceSchema),
-            ]);
-        var schemas = new CompiledContentSchemaRegistry([
-            .. NativeAssetSchemaCatalogue.Schemas,
-            rootSchema,
-        ]);
-        var firstSchemaId = new Guid("ffffffff-0000-4000-8000-000000000001");
-        var secondSchemaId = new Guid("11111111-0000-4000-8000-000000000002");
-        byte[][] allEncodedReferences = [
-            CreateAssetReferenceRecord(2, firstSchemaId, 1),
-            CreateAssetReferenceRecord(2, firstSchemaId, 1),
-            CreateAssetReferenceRecord(2, secondSchemaId, 1),
-        ];
-        var encodedReferences = allEncodedReferences[..referenceCount];
-        var encodedRecord = CreateReferenceRootRecord(rootSchema.Schema, encodedReferences);
-        var referenceWorkspace = new AssetReference[encodedReferences.Length];
-        var indexWorkspace = new int[encodedReferences.Length];
-        var action = new AssetReferenceScanAction(
-            rootSchema,
-            schemas,
+        var fixture = AssetReferenceScanTestHelpers.CreateFixture(referenceCount);
+        var referenceWorkspace = new AssetReference[referenceCount];
+        var indexWorkspace = new int[referenceCount];
+        var action = new AssetReferenceScanTestHelpers.AssetReferenceScanAction(
+            fixture.RootSchema,
+            fixture.Schemas,
             referenceWorkspace,
             indexWorkspace);
 
         Assert.That(
             EbinStructuralReader.Read(
-                encodedRecord,
+                fixture.EncodedRecord,
                 EbinReadLimits.Foundation,
                 EbinReadPolicy.Canonical,
                 ref action,
                 out var bytesConsumed,
                 out var diagnostic),
             Is.EqualTo(EbinReadStatus.Complete));
-        Assert.That(bytesConsumed, Is.EqualTo(encodedRecord.Length));
+        Assert.That(bytesConsumed, Is.EqualTo(fixture.EncodedRecord.Length));
         Assert.That(diagnostic, Is.Null);
         Assert.That(action.UniqueCount, Is.EqualTo(expectedUniqueCount));
 
@@ -667,15 +680,58 @@ internal sealed class AssetStoreTests
             references);
         AssetReference[] expectedReferences = referenceCount switch {
             0 => [],
-            1 or 2 => [new AssetReference(new AssetId(2), firstSchemaId, 1)],
+            1 or 2 => [new AssetReference(new AssetId(2), fixture.FirstSchemaId, 1)],
             _ => [
-                new AssetReference(new AssetId(2), firstSchemaId, 1),
-                new AssetReference(new AssetId(2), secondSchemaId, 1),
+                new AssetReference(new AssetId(2), fixture.FirstSchemaId, 1),
+                new AssetReference(new AssetId(2), fixture.SecondSchemaId, 1),
             ],
         };
         Assert.That(
             references,
             Is.EqualTo(expectedReferences));
+    }
+
+    [Test]
+    public void AssetReferenceScannerRejectsOverlappingReferenceAndIndexWorkspaces()
+    {
+        var fixture = AssetReferenceScanTestHelpers.CreateFixture(3);
+        var overlapBytes = new byte[checked(3 * Unsafe.SizeOf<AssetReference>())];
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanTestHelpers.ExecuteWithWorkspaceOverlap(fixture, overlapBytes));
+    }
+
+    [Test]
+    public void AssetReferenceScannerRejectsShortIndexWorkspace()
+    {
+        var fixture = AssetReferenceScanTestHelpers.CreateFixture(3);
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanTestHelpers.Execute(
+                fixture,
+                new AssetReference[3],
+                new int[2]));
+    }
+
+    [Test]
+    public void AssetReferenceScannerRejectsShortReferenceWorkspace()
+    {
+        var fixture = AssetReferenceScanTestHelpers.CreateFixture(3);
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanTestHelpers.Execute(
+                fixture,
+                new AssetReference[2],
+                new int[3]));
+    }
+
+    [Test]
+    public void AssetReferenceScannerRejectsWorkspaceOverlappingEncodedRecord()
+    {
+        var fixture = AssetReferenceScanTestHelpers.CreateFixture(3);
+
+        _ = Assert.Throws<ArgumentException>(
+            () => AssetReferenceScanTestHelpers.ExecuteWithRecordOverlap(fixture));
     }
 
     [Test]
@@ -1729,35 +1785,237 @@ internal sealed class AssetStoreTests
         }
     }
 
-    private struct AssetReferenceScanAction : IAction<EbinRecordReadView>
+    private static class AssetReferenceScanTestHelpers
     {
-        private readonly int[] _indexWorkspace;
-        private readonly AssetReference[] _referenceWorkspace;
-        private readonly DataSchema _rootSchema;
-        private readonly CompiledContentSchemaRegistry _schemas;
+        internal static void CopyUniqueReferencesWithOverlappingIndexWorkspace(byte[] workspaceBytes)
+        {
+            AssetReference[] referenceWorkspace = [
+                new(new AssetId(2), new Guid("ffffffff-0000-4000-8000-000000000001"), 1),
+            ];
+            var indexWorkspace = MemoryMarshal.Cast<byte, int>(workspaceBytes.AsSpan(0, sizeof(int)));
+            var destination = MemoryMarshal.Cast<byte, AssetReference>(
+                workspaceBytes.AsSpan(0, Unsafe.SizeOf<AssetReference>()));
+            AssetReferenceScanner.CopyUniqueReferences(
+                referenceWorkspace,
+                indexWorkspace,
+                destination);
+        }
 
-        internal AssetReferenceScanAction(
-            DataSchema rootSchema,
-            CompiledContentSchemaRegistry schemas,
+        internal static void CopyUniqueReferencesWithOverlappingWorkspaces(byte[] workspaceBytes)
+        {
+            var referenceWorkspace = MemoryMarshal.Cast<byte, AssetReference>(
+                workspaceBytes.AsSpan(0, Unsafe.SizeOf<AssetReference>()));
+            var indexWorkspace = MemoryMarshal.Cast<byte, int>(workspaceBytes.AsSpan(0, sizeof(int)));
+            AssetReferenceScanner.CopyUniqueReferences(
+                referenceWorkspace,
+                indexWorkspace,
+                new AssetReference[1]);
+        }
+
+        internal static AssetReferenceScanFixture CreateFixture(int referenceCount)
+        {
+            var rootIdentity = new ContentSchemaIdentityAssignment("test/asset-reference-scan-root");
+            var assetReferenceSchema = FindAssetReferenceSchema();
+            var rootSchema = new DataSchema(
+                new ContentSchemaReference(rootIdentity.SchemaId, 1, 0, ContentSchemaScope.Content),
+                rootIdentity,
+                ContentSchemaRole.NativeAsset,
+                ContentSchemaOwner.Application,
+                ContentSchemaStorage.NotComponent,
+                ContentTransientRestore.NotApplicable,
+                [
+                    new ContentFieldDescriptor(
+                        1,
+                        3,
+                        0,
+                        true,
+                        1,
+                        1,
+                        [],
+                        0,
+                        ContentUnit.None,
+                        ContentReferenceKind.None,
+                        ContentAuthoring.None,
+                        null),
+                    .. CreateOptionalAssetReferenceFields(assetReferenceSchema),
+                ]);
+            var schemas = new CompiledContentSchemaRegistry([
+                .. NativeAssetSchemaCatalogue.Schemas,
+                rootSchema,
+            ]);
+            var firstSchemaId = new Guid("ffffffff-0000-4000-8000-000000000001");
+            var secondSchemaId = new Guid("11111111-0000-4000-8000-000000000002");
+            byte[][] allEncodedReferences = [
+                CreateAssetReferenceRecord(2, firstSchemaId, 1),
+                CreateAssetReferenceRecord(2, firstSchemaId, 1),
+                CreateAssetReferenceRecord(2, secondSchemaId, 1),
+            ];
+            var encodedReferences = allEncodedReferences[..referenceCount];
+            return new AssetReferenceScanFixture(
+                rootSchema,
+                schemas,
+                CreateReferenceRootRecord(rootSchema.Schema, encodedReferences),
+                firstSchemaId,
+                secondSchemaId);
+        }
+
+        internal static void Execute(
+            AssetReferenceScanFixture fixture,
             AssetReference[] referenceWorkspace,
             int[] indexWorkspace)
         {
-            _rootSchema = rootSchema;
-            _schemas = schemas;
-            _referenceWorkspace = referenceWorkspace;
-            _indexWorkspace = indexWorkspace;
+            var action = new AssetReferenceScanAction(
+                fixture.RootSchema,
+                fixture.Schemas,
+                referenceWorkspace,
+                indexWorkspace);
+            _ = EbinStructuralReader.Read(
+                fixture.EncodedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out _);
         }
 
-        internal int UniqueCount { get; private set; }
-
-        public void Invoke(scoped EbinRecordReadView argument)
+        internal static void ExecuteWithRecordOverlap(AssetReferenceScanFixture fixture)
         {
-            UniqueCount = AssetReferenceScanner.ScanInto(
-                argument,
-                _rootSchema,
-                _schemas,
-                _referenceWorkspace,
-                _indexWorkspace);
+            var action = new AssetReferenceScanOverlapAction(
+                fixture.RootSchema,
+                fixture.Schemas,
+                fixture.EncodedRecord,
+                3,
+                true,
+                new int[3],
+                null);
+            _ = EbinStructuralReader.Read(
+                fixture.EncodedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out _);
+        }
+
+        internal static void ExecuteWithWorkspaceOverlap(
+            AssetReferenceScanFixture fixture,
+            byte[] workspaceBytes)
+        {
+            var action = new AssetReferenceScanOverlapAction(
+                fixture.RootSchema,
+                fixture.Schemas,
+                fixture.EncodedRecord,
+                3,
+                false,
+                null,
+                workspaceBytes);
+            _ = EbinStructuralReader.Read(
+                fixture.EncodedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out _);
+        }
+
+        internal struct AssetReferenceScanAction : IAction<EbinRecordReadView>
+        {
+            private readonly int[] _indexWorkspace;
+            private readonly AssetReference[] _referenceWorkspace;
+            private readonly DataSchema _rootSchema;
+            private readonly CompiledContentSchemaRegistry _schemas;
+
+            internal AssetReferenceScanAction(
+                DataSchema rootSchema,
+                CompiledContentSchemaRegistry schemas,
+                AssetReference[] referenceWorkspace,
+                int[] indexWorkspace)
+            {
+                _rootSchema = rootSchema;
+                _schemas = schemas;
+                _referenceWorkspace = referenceWorkspace;
+                _indexWorkspace = indexWorkspace;
+            }
+
+            internal int UniqueCount { get; private set; }
+
+            public void Invoke(scoped EbinRecordReadView argument)
+            {
+                UniqueCount = AssetReferenceScanner.ScanInto(
+                    argument,
+                    _rootSchema,
+                    _schemas,
+                    _referenceWorkspace,
+                    _indexWorkspace);
+            }
+        }
+
+        internal readonly record struct AssetReferenceScanFixture(
+            DataSchema RootSchema,
+            CompiledContentSchemaRegistry Schemas,
+            byte[] EncodedRecord,
+            Guid FirstSchemaId,
+            Guid SecondSchemaId);
+
+        private readonly struct AssetReferenceScanOverlapAction : IAction<EbinRecordReadView>
+        {
+            private readonly byte[] _encodedRecord;
+            private readonly int[]? _indexWorkspace;
+            private readonly int _occurrenceCount;
+            private readonly bool _overlapRecord;
+            private readonly DataSchema _rootSchema;
+            private readonly CompiledContentSchemaRegistry _schemas;
+            private readonly byte[]? _workspaceBytes;
+
+            internal AssetReferenceScanOverlapAction(
+                DataSchema rootSchema,
+                CompiledContentSchemaRegistry schemas,
+                byte[] encodedRecord,
+                int occurrenceCount,
+                bool overlapRecord,
+                int[]? indexWorkspace,
+                byte[]? workspaceBytes)
+            {
+                _rootSchema = rootSchema;
+                _schemas = schemas;
+                _encodedRecord = encodedRecord;
+                _occurrenceCount = occurrenceCount;
+                _overlapRecord = overlapRecord;
+                _indexWorkspace = indexWorkspace;
+                _workspaceBytes = workspaceBytes;
+            }
+
+            public readonly void Invoke(scoped EbinRecordReadView argument)
+            {
+                var referenceByteLength = checked(_occurrenceCount * Unsafe.SizeOf<AssetReference>());
+
+                if (_overlapRecord)
+                {
+                    var referenceWorkspace = MemoryMarshal.Cast<byte, AssetReference>(
+                        _encodedRecord.AsSpan(0, referenceByteLength));
+                    _ = AssetReferenceScanner.ScanInto(
+                        argument,
+                        _rootSchema,
+                        _schemas,
+                        referenceWorkspace,
+                        _indexWorkspace
+                            ?? throw new InvalidOperationException("The index workspace is missing."));
+                    return;
+                }
+
+                var workspaceBytes = _workspaceBytes
+                    ?? throw new InvalidOperationException("The overlapping workspace is missing.");
+                var referenceWorkspaceFromSharedBytes = MemoryMarshal.Cast<byte, AssetReference>(
+                    workspaceBytes.AsSpan(0, referenceByteLength));
+                var indexWorkspaceFromSharedBytes = MemoryMarshal.Cast<byte, int>(
+                    workspaceBytes.AsSpan(0, checked(_occurrenceCount * sizeof(int))));
+                _ = AssetReferenceScanner.ScanInto(
+                    argument,
+                    _rootSchema,
+                    _schemas,
+                    referenceWorkspaceFromSharedBytes,
+                    indexWorkspaceFromSharedBytes);
+            }
         }
     }
 
