@@ -2332,6 +2332,7 @@ internal static class ScenePrefabExpansionPlanner
                     _limits.RootExternalBindingCount,
                     Unsafe.SizeOf<SceneExternalBindingCaptureRow>()));
             requiredBytes = checked(requiredBytes + (checked((long)prefabLeases.Count) * 256L));
+            requiredBytes = checked(requiredBytes + IntPtr.Size); // The retained SceneExpansionPlan disposal-failure field.
             return checked(requiredBytes + 2048L);
         }
 

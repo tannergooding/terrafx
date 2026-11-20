@@ -1602,6 +1602,54 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The Scene plan adopts the probe and retains it after its deliberate cleanup failure.")]
+    public async Task RepeatedPlanDisposeRethrowsCleanupFailureWithoutRetry()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(3));
+        var package = Package.CreatePackage(new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                var plan = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+                var failure = new InvalidOperationException("The prepared Scene resource could not be released.");
+                var cleanup = new ScenePlanCleanupProbe(failure);
+                plan.AttachPreparedAssets(cleanup);
+
+                var firstFailure = Assert.Throws<InvalidOperationException>(plan.Dispose);
+                var repeatedFailure = Assert.Throws<InvalidOperationException>(plan.Dispose);
+
+                Assert.Multiple(() => {
+                    Assert.That(firstFailure, Is.SameAs(failure));
+                    Assert.That(repeatedFailure, Is.SameAs(firstFailure));
+                    Assert.That(cleanup.DisposeCalls, Is.EqualTo(1));
+                });
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     public void ReservesEveryNestedOverrideRewriteAndFixedArrayCopy()
     {
         var fieldTag = new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 1);
@@ -3825,5 +3873,16 @@ internal sealed partial class SceneAssetStoreTests
         }
 
         internal readonly record struct Entry(uint AssetId, byte[] Payload);
+    }
+
+    private sealed class ScenePlanCleanupProbe(Exception failure) : IDisposable
+    {
+        internal int DisposeCalls { get; private set; }
+
+        public void Dispose()
+        {
+            DisposeCalls++;
+            throw failure;
+        }
     }
 }

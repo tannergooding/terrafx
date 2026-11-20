@@ -15,7 +15,13 @@ namespace TerraFX.Scenes;
 
 internal sealed class SceneExpansionPlan : IDisposable
 {
+    private const int DisposeStateActive = 0;
+    private const int DisposeStateComplete = 2;
+    private const int DisposeStateFailed = 3;
+    private const int DisposeStateRunning = 1;
+
     private readonly ImmutableArray<int> _childOccurrenceIndicesByPlacement;
+    private ExceptionDispatchInfo? _disposeFailure;
     private int _disposed;
     private readonly ImmutableArray<SceneExpandedEntity> _entities;
     private readonly Guid[] _entityAssignmentKeys;
@@ -284,9 +290,24 @@ internal sealed class SceneExpansionPlan : IDisposable
         Justification = "Independent prepared resources and package leases are attempted before retained storage is released.")]
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        var state = Interlocked.CompareExchange(ref _disposed, DisposeStateRunning, DisposeStateActive);
+
+        if (state is DisposeStateRunning or DisposeStateComplete)
         {
             return;
+        }
+
+        if (state is DisposeStateFailed)
+        {
+            (Volatile.Read(ref _disposeFailure)
+                ?? throw new InvalidOperationException("The failed Scene expansion disposal lost its original failure."))
+                .Throw();
+            return;
+        }
+
+        if (state is not DisposeStateActive)
+        {
+            throw new InvalidOperationException("The Scene expansion disposal state is invalid.");
         }
 
         Exception? firstFailure = null;
@@ -365,8 +386,13 @@ internal sealed class SceneExpansionPlan : IDisposable
 
         if (firstFailure is not null)
         {
-            ExceptionDispatchInfo.Capture(firstFailure).Throw();
+            var failure = ExceptionDispatchInfo.Capture(firstFailure);
+            Volatile.Write(ref _disposeFailure, failure);
+            Volatile.Write(ref _disposed, DisposeStateFailed);
+            failure.Throw();
         }
+
+        Volatile.Write(ref _disposed, DisposeStateComplete);
     }
 
     internal PreparedAssetsLifetime.Lease? AcquirePreparedAssets()

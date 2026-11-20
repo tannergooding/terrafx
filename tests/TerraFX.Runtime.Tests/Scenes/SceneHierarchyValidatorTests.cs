@@ -547,7 +547,7 @@ internal sealed class SceneHierarchyValidatorTests
     public void SceneExpansionPlanCarrierMatchesSelectedRuntimeLayout()
     {
         const int SampleCount = 64;
-        const int ExpectedSceneExpansionPlanCarrierBytes = 160;
+        const int ExpectedSceneExpansionPlanCarrierBytes = 168;
         var planType = typeof(SceneExpansionPlan);
         var warmInstances = new object[SampleCount];
 
