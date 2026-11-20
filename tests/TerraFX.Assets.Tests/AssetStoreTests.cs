@@ -920,6 +920,7 @@ internal sealed class AssetStoreTests
     [TestCase(1, 1, 176, 96)]
     [TestCase(3, 2, 224, 112)]
     [TestCase(4, 4, 240, 160)]
+    [TestCase(257, 257, 7344, 6240)]
     public void AssetReferenceScannerMeasuresFixedScanDataBytes(
         int referenceCount,
         int uniqueCount,

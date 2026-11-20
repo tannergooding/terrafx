@@ -6,6 +6,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using NUnit.Framework;
+using TerraFX.Assets;
+using TerraFX.Numerics;
 using TerraFX.Rendering;
 
 namespace TerraFX.Runtime.Tests.Scenes;
@@ -306,5 +308,22 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         TestContext.WriteLine(
             $"RenderMeshAsset={meshShellBytes}; RenderMaterialAsset={materialShellBytes}; "
             + $"RuntimeMvid={typeof(RenderMeshAsset).Module.ModuleVersionId};");
+    }
+
+    [Test]
+    public void TypedAssetResultArrayElementStridesMatchSelectedRuntime()
+    {
+        if (IntPtr.Size != 8)
+        {
+            Assert.Ignore("The bounded static-Mesh allocation profile is x64-only.");
+        }
+
+        Assert.Multiple(() => {
+            Assert.That(Unsafe.SizeOf<Vector2>(), Is.EqualTo(8));
+            Assert.That(Unsafe.SizeOf<Vector3>(), Is.EqualTo(12));
+            Assert.That(Unsafe.SizeOf<Vector4>(), Is.EqualTo(16));
+            Assert.That(Unsafe.SizeOf<RenderMeshGroup>(), Is.EqualTo(12));
+            Assert.That(Unsafe.SizeOf<AssetId>(), Is.EqualTo(4));
+        });
     }
 }
