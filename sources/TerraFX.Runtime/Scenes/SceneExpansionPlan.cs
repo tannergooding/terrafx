@@ -119,6 +119,15 @@ internal sealed class SceneExpansionPlan : IDisposable
         _storageReservation = storageReservation;
     }
 
+    internal AssetPackageBackingToken BackingToken
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return (_sceneLease ?? throw new ObjectDisposedException(nameof(SceneExpansionPlan))).BackingToken;
+        }
+    }
+
     internal ImmutableArray<SceneExpandedEntity> Entities
     {
         get

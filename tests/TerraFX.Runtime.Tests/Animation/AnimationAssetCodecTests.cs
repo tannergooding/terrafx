@@ -317,12 +317,17 @@ internal sealed partial class SceneAssetStoreTests
         const uint validClipAssetId = 903;
         const uint invalidSceneClipAssetId = 904;
         const uint invalidAtlasClipAssetId = 905;
+        const uint mismatchedSceneAssetId = 906;
+        const uint mismatchedSceneClipAssetId = 907;
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(checked((int)sceneAssetId)));
         var initialPackageBytes = Package.CreatePackage(new Package.Entry(
             sceneAssetId,
             Package.CreateEnvelope(sceneAssetId, sceneRecord)));
         var initialPackagePath = Package.WritePackage(initialPackageBytes);
         AssetStore? initialStore = null;
+        SceneExpansionPlan? earlierScenePlan = null;
+        AssetStore? assets = null;
+        string? packagePath = null;
         Guid expandedEntityKey;
 
         try
@@ -331,90 +336,126 @@ internal sealed partial class SceneAssetStoreTests
                 initialPackagePath,
                 SHA256.HashData(initialPackageBytes),
                 registrationBuilder.Build())).ConfigureAwait(false);
-            using var sceneLease = await initialStore.LoadAsync<SceneAsset>(new AssetId(checked((int)sceneAssetId)))
-                .ConfigureAwait(false);
-            using var scenePlan = await ScenePrefabExpansionPlanner.PrepareTakingLeaseAsync(
-                sceneLease.Retain(),
+            using var initialSceneLease = await initialStore.LoadAsync<SceneAsset>(
+                new AssetId(checked((int)sceneAssetId))).ConfigureAwait(false);
+            earlierScenePlan = await ScenePrefabExpansionPlanner.PrepareTakingLeaseAsync(
+                initialSceneLease.Retain(),
                 SceneExpansionLimits.Default).ConfigureAwait(false);
-            expandedEntityKey = scenePlan.Entities[0].ExpandedEntityKey;
-        }
-        finally
-        {
-            try
-            {
-                if (initialStore is { } selectedStore)
-                {
-                    await selectedStore.DisposeAsync().ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                File.Delete(initialPackagePath);
-            }
-        }
+            expandedEntityKey = earlierScenePlan.Entities[0].ExpandedEntityKey;
 
-        var frameId = new Guid("80000000-0000-4000-8000-000000000001");
-        var validTracks = new[] {
+            var frameId = new Guid("80000000-0000-4000-8000-000000000001");
+            var validTracks = new[] {
                 CreateTransformTrack(expandedEntityKey, targetDomain: 0),
                 CreateSpriteTrack(expandedEntityKey, [CreateSpriteKey(atlasAssetId, frameId)]),
             };
-        var validClip = CreateAnimationClipRecord(validTracks, [], sceneReference: CreateSceneReference(sceneAssetId));
-        var invalidSceneClip = CreateAnimationClipRecord(
-            [CreateTransformTrack(new Guid("90000000-0000-4000-8000-000000000001"), targetDomain: 0)],
-            [],
-            sceneReference: CreateSceneReference(sceneAssetId));
-        var invalidAtlasClip = CreateAnimationClipRecord(
-            [
-                CreateTransformTrack(expandedEntityKey, targetDomain: 0),
+            var validClip = CreateAnimationClipRecord(validTracks, [], sceneReference: CreateSceneReference(sceneAssetId));
+            var invalidSceneClip = CreateAnimationClipRecord(
+                [CreateTransformTrack(new Guid("90000000-0000-4000-8000-000000000001"), targetDomain: 0)],
+                [],
+                sceneReference: CreateSceneReference(sceneAssetId));
+            var invalidAtlasClip = CreateAnimationClipRecord(
+                [
+                    CreateTransformTrack(expandedEntityKey, targetDomain: 0),
                     CreateSpriteTrack(
                         expandedEntityKey,
                         [CreateSpriteKey(atlasAssetId, new Guid("80000000-0000-4000-8000-000000000002"))]),
                 ],
-            [],
-            sceneReference: CreateSceneReference(sceneAssetId));
-        var atlasRecord = CreateAtlasRecord(textureAssetId, frameId);
-        var textureRecord = CreateTextureRecord();
-        var packageBytes = Package.CreatePackage(
-            new Package.Entry(sceneAssetId, Package.CreateEnvelope(sceneAssetId, sceneRecord)),
-            new Package.Entry(textureAssetId, Package.CreateEnvelope(textureAssetId, EbinPrimitives.Encode(textureRecord))),
-            new Package.Entry(atlasAssetId, Package.CreateEnvelope(atlasAssetId, EbinPrimitives.Encode(atlasRecord))),
-            new Package.Entry(validClipAssetId, Package.CreateEnvelope(validClipAssetId, EbinPrimitives.Encode(validClip))),
-            new Package.Entry(invalidSceneClipAssetId, Package.CreateEnvelope(invalidSceneClipAssetId, EbinPrimitives.Encode(invalidSceneClip))),
-            new Package.Entry(invalidAtlasClipAssetId, Package.CreateEnvelope(invalidAtlasClipAssetId, EbinPrimitives.Encode(invalidAtlasClip))));
-        var packagePath = Package.WritePackage(packageBytes);
-        AssetStore? assets = null;
-
-        try
-        {
+                [],
+                sceneReference: CreateSceneReference(sceneAssetId));
+            var mismatchedSceneClip = CreateAnimationClipRecord(
+                [CreateTransformTrack(expandedEntityKey, targetDomain: 0)],
+                [],
+                sceneReference: CreateSceneReference(mismatchedSceneAssetId));
+            var atlasRecord = CreateAtlasRecord(textureAssetId, frameId);
+            var textureRecord = CreateTextureRecord();
+            var packageBytes = Package.CreatePackage(
+                new Package.Entry(sceneAssetId, Package.CreateEnvelope(sceneAssetId, sceneRecord)),
+                new Package.Entry(textureAssetId, Package.CreateEnvelope(textureAssetId, EbinPrimitives.Encode(textureRecord))),
+                new Package.Entry(atlasAssetId, Package.CreateEnvelope(atlasAssetId, EbinPrimitives.Encode(atlasRecord))),
+                new Package.Entry(validClipAssetId, Package.CreateEnvelope(validClipAssetId, EbinPrimitives.Encode(validClip))),
+                new Package.Entry(invalidSceneClipAssetId, Package.CreateEnvelope(invalidSceneClipAssetId, EbinPrimitives.Encode(invalidSceneClip))),
+                new Package.Entry(invalidAtlasClipAssetId, Package.CreateEnvelope(invalidAtlasClipAssetId, EbinPrimitives.Encode(invalidAtlasClip))),
+                new Package.Entry(
+                    mismatchedSceneAssetId,
+                    Package.CreateEnvelope(
+                        mismatchedSceneAssetId,
+                        SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(checked((int)mismatchedSceneAssetId))))),
+                new Package.Entry(mismatchedSceneClipAssetId, Package.CreateEnvelope(mismatchedSceneClipAssetId, EbinPrimitives.Encode(mismatchedSceneClip))));
+            packagePath = Package.WritePackage(packageBytes);
             assets = await AssetStore.CreateAsync(
                 new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), registrationBuilder.Build()))
                 .ConfigureAwait(false);
+            using var sceneLease = await assets.LoadAsync<SceneAsset>(new AssetId(checked((int)sceneAssetId)))
+                .ConfigureAwait(false);
+            using var scenePlan = await ScenePrefabExpansionPlanner.PrepareTakingLeaseAsync(
+                sceneLease.Retain(),
+                SceneExpansionLimits.Default).ConfigureAwait(false);
             using var validClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)validClipAssetId)))
                 .ConfigureAwait(false);
+            await AnimationClipAssetBinding.ValidatePackageBindingsAsync(validClipLease, scenePlan).ConfigureAwait(false);
             await AnimationClipAssetBinding.ValidatePackageBindingsAsync(validClipLease).ConfigureAwait(false);
 
             using var invalidSceneClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)invalidSceneClipAssetId)))
                 .ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
-                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(invalidSceneClipLease).ConfigureAwait(false));
+                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(invalidSceneClipLease, scenePlan).ConfigureAwait(false));
 
             using var invalidAtlasClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)invalidAtlasClipAssetId)))
                 .ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
-                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(invalidAtlasClipLease).ConfigureAwait(false));
+                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(invalidAtlasClipLease, scenePlan).ConfigureAwait(false));
+
+            using var mismatchedSceneClipLease = await assets.LoadAsync<AnimationClipAsset>(
+                new AssetId(checked((int)mismatchedSceneClipAssetId))).ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(
+                    mismatchedSceneClipLease,
+                    scenePlan).ConfigureAwait(false));
+
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(
+                    validClipLease,
+                    earlierScenePlan).ConfigureAwait(false));
         }
         finally
         {
             try
             {
-                if (assets is { } selectedAssets)
-                {
-                    await selectedAssets.DisposeAsync().ConfigureAwait(false);
-                }
+                earlierScenePlan?.Dispose();
             }
             finally
             {
-                File.Delete(packagePath);
+                try
+                {
+                    if (assets is { } selectedAssets)
+                    {
+                        await selectedAssets.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        if (initialStore is { } selectedInitialStore)
+                        {
+                            await selectedInitialStore.DisposeAsync().ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (packagePath is not null)
+                            {
+                                File.Delete(packagePath);
+                            }
+                        }
+                        finally
+                        {
+                            File.Delete(initialPackagePath);
+                        }
+                    }
+                }
             }
         }
     }

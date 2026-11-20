@@ -93,6 +93,44 @@ internal static class AnimationClipAssetBinding
         }
     }
 
+    internal static async Task ValidatePackageBindingsAsync(
+        AssetLease<AnimationClipAsset> clipLease,
+        SceneExpansionPlan scenePlan,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(clipLease);
+        ArgumentNullException.ThrowIfNull(scenePlan);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var retainedClipLease = clipLease.Retain();
+        var clip = retainedClipLease.Value;
+
+        if (!ReferenceEquals(retainedClipLease.BackingToken, scenePlan.BackingToken))
+        {
+            throw new InvalidDataException("An Animation Clip and Scene expansion must retain the exact package backing.");
+        }
+
+        var skeletonLease = await LoadSkeletonAsync(retainedClipLease, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (clip.SceneAssetId is { } sceneAssetId)
+            {
+                if (scenePlan.SceneAssetId != sceneAssetId)
+                {
+                    throw new InvalidDataException("An Animation Clip must validate against its exact selected Scene expansion.");
+                }
+
+                ValidateSceneTargets(clip, scenePlan, cancellationToken);
+            }
+
+            await ValidateAtlasFramesAsync(clip, retainedClipLease, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            skeletonLease?.Dispose();
+        }
+    }
+
     private static async Task ValidateAtlasFramesAsync(
         AnimationClipAsset clip,
         AssetLease<AnimationClipAsset> clipLease,
