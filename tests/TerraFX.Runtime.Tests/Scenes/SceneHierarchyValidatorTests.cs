@@ -2,10 +2,12 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
+using TerraFX.Assets;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Scenes;
@@ -72,6 +74,34 @@ internal sealed class SceneHierarchyValidatorTests
         Assert.That(
             ScenePreparationDataBounds.ArrayBytes(count, elementSize),
             Is.EqualTo(expectedBytes));
+    }
+
+    [Test]
+    public void PrefabLeaseCacheCarrierMatchesSelectedRuntimeLayout()
+    {
+        const int SampleCount = 64;
+        const int ExpectedPrefabLeaseCacheCarrierBytes = 80;
+        var cacheType = typeof(Dictionary<AssetId, AssetLease<ScenePrefabAsset>>);
+        var warmInstances = new object[SampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(cacheType);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(cacheType);
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(measuredInstances);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedPrefabLeaseCacheCarrierBytes));
     }
 
     [Test]
