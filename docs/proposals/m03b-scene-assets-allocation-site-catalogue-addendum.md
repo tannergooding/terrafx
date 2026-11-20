@@ -229,7 +229,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T06:17:26.0672488Z`; HEAD `196f69cf54af1aa7e501d659526a2d0f00b81167`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
+UTC `2026-11-20T06:41:40.939684Z`; HEAD `d5ded3bf78e767363b112f764cb3aaf59b93c3f6`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -288,8 +288,8 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 | Set | Files | SHA-256 |
 |---|---:|---|
 | BASE | 96 | `6412c940c8b71ddcf09ae7b1ebba6209ca8b4ae5ae3cc1d2d7229a29fc55897e` |
-| ADD | 49 | `f89e86c30ff36b0b7f7b30d1e51494d05b6a4f7d27e624fe65b8888c0e862da9` |
-| ALL | 145 | `5422b7dba4c56b91021658d48121e0c990899f6a3ae22882a1bddf51318d2845` |
+| ADD | 49 | `a32d646d9cb2c0661719fe46f2ddedcc02f5475be3d3c45945ec56be298f2f71` |
+| ALL | 145 | `b55193ad0873a97e0c1bb7e4651c7410717cf7ad2f6dbadd59ae5da28390eaac` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|
