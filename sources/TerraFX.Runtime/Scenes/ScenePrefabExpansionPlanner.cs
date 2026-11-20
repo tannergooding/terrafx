@@ -276,7 +276,7 @@ internal static class ScenePrefabExpansionPlanner
         private int _placementOccurrenceCount;
         private readonly PreparedScene? _preparationOwner;
         private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases = [];
-        private List<SceneExpandedReferenceBinding> _referenceBindings = [];
+        private readonly List<SceneExpandedReferenceBinding> _referenceBindings = [];
         private long _overrideComponentArrayBytes;
         private long _overrideComponentRecordBytes;
         private long _overrideLayerBytes;
@@ -993,11 +993,7 @@ internal static class ScenePrefabExpansionPlanner
             _storageReservation = null;
 
             _preparationOwner?.CommitPreparationOwner(this);
-            _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
-            _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
-            _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
-            _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
-            _referenceBindings = [];
+            _referenceBindings.Clear();
             _occurrenceIdentities = [];
             _rootCounts = [];
             return plan;
