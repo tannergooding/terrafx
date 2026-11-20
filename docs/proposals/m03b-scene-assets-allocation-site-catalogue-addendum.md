@@ -63,7 +63,7 @@ The present scanner's `ScanPeak` is therefore **not numerical**: `G_List(u) + G_
 
 ### Implemented allocation-free scanner primitive
 
-`AssetReferenceScanner.ScanInto` and `CopyUniqueReferences` now provide the fixed-capacity scan as an internal primitive. `ScanInto` requires caller-owned `AssetReference[r]` and `int[r]` spans, counts then copies the existing visitor's occurrences, heap-sorts indices by the full `(AssetId, SchemaId, SchemaMajor)` tuple with source index as a tie-breaker, compacts the first index per tuple, then sorts the retained indices back into source order. This avoids the open-addressing proposal's quadratic collision worst case and gives O(r log r) work. `CopyUniqueReferences` copies into a caller-owned exact `AssetReference[u]` destination without another backing allocation. The regression exercises 0-, 1-, 2- and 3-occurrence cases; short and overlapping caller-span refusal remain untested.
+`AssetReferenceScanner.ScanInto` and `CopyUniqueReferences` now provide the fixed-capacity scan as an internal primitive. `ScanInto` requires caller-owned `AssetReference[r]` and `int[r]` spans, counts then copies the existing visitor's occurrences, heap-sorts indices by the full `(AssetId, SchemaId, SchemaMajor)` tuple with source index as a tie-breaker, compacts the first index per tuple, then sorts the retained indices back into source order. This avoids the open-addressing proposal's quadratic collision worst case and gives O(r log r) work. `CopyUniqueReferences` copies into a caller-owned exact `AssetReference[u]` destination without another backing allocation. `AssetStoreTests` now covers the 0-, 1-, 2- and 3-occurrence cases, short exact-capacity refusals, record/workspace overlap, and each prohibited pairwise overlap for `CopyUniqueReferences`; the focused scanner selection passes 12/12 and the full Assets suite passes 62/62 in Debug and Release. These are helper precondition and ordering observations, not selection by an installed owner.
 
 The data peak for a selected operation is the checked, source-derived:
 
@@ -229,7 +229,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T06:41:40.939684Z`; HEAD `d5ded3bf78e767363b112f764cb3aaf59b93c3f6`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
+UTC `2026-11-20T06:52:29.314488Z`; HEAD `308686583b1c5a259ed8f21df433b3e591a632fc`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -287,9 +287,9 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| BASE | 96 | `6412c940c8b71ddcf09ae7b1ebba6209ca8b4ae5ae3cc1d2d7229a29fc55897e` |
+| BASE | 96 | `6b459ae5030378d6ab8df3a2a225526d7d32616f8d0c38f1e37f10d57d70cd0f` |
 | ADD | 49 | `a32d646d9cb2c0661719fe46f2ddedcc02f5475be3d3c45945ec56be298f2f71` |
-| ALL | 145 | `b55193ad0873a97e0c1bb7e4651c7410717cf7ad2f6dbadd59ae5da28390eaac` |
+| ALL | 145 | `53b837109e65fcdb807e14c4ea453bdd8ed763ec44cbc406416dad6a857ff2c8` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|
@@ -307,4 +307,4 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-The source and Roadmap now include a fixed-buffer scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb exact Mesh predicates, and package-pin construction before backing-reference/lease-count commit. These changes do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
+The source and Roadmap now include a fixed-buffer scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb exact Mesh predicates, and package-pin construction before backing-reference/lease-count commit. The full Assets suite passes 62/62 in Debug and Release, including the scanner workspace-boundary cases. These changes do not select the fixed-buffer scanner in `AssetEnvelopeDecoder`, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.

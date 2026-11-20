@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T06:42:18.525541Z`; HEAD `d5ded3bf78e767363b112f764cb3aaf59b93c3f6`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T06:52:35.729071Z`; HEAD `308686583b1c5a259ed8f21df433b3e591a632fc`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -418,16 +418,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `61d9531dbfa8d3a889eb24b29a615539170cc574ed46f66a7aa0c080721ca9d9` |
-| P | 10 | `0e23bd964c3b617315a73e77ca3221130a1ebd06a9267d0206b66155680c8e8c` |
+| P | 10 | `cb329979aaaeeafccaf5384938401bd121a04472c9f2f4ee8fe09c23d40ad8d4` |
 | A | 25 | `b3e70c5f210ee6c68f6829ca2e71967a9c1aa07a288b4db8e061c80e0fdf9752` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 15 | `80cf118edb0a1303db7359a756c577036cf78db8c3cce3d9650377dcf09b07d8` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 7 | `9b24c42a6775eb3f19f7e09cd44c9a627e1103e5f8ebd206ee8fc16663f3e3f5` |
+| T | 7 | `08f944799d2c51967188ee54a3c7e3aaf38308e6e91880357fdec227808122ba` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 115 | `8ef1954656a77dba2560c7fe656decd0226a5f8099ea13d056c2680d84e88f84` |
+| ALL | 115 | `3167429c11baf7c7f616c2b5700aaade58ae8ecfbe4efec11528a4583c739085` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
@@ -450,4 +450,4 @@ The five preexisting dirty files are preservation inputs, **not acceptance of th
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The Assets test project passes 54/54 in Debug and Release. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
+Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The Assets test project passes 62/62 in Debug and Release, including the fixed-buffer reference scan's exact, short, ordering, and overlap cases. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
