@@ -2,8 +2,8 @@
 
 using System;
 using System.Buffers.Binary;
-using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Numerics;
@@ -57,11 +57,12 @@ internal static class AnimationAssetReader
             throw new InvalidDataException("A Skeleton must contain between one and 256 joints.");
         }
 
-        var joints = ImmutableArray.CreateBuilder<SkeletonJoint>(checked((int)jointField.Count));
-        var bindModels = new Matrix4x4[checked((int)jointField.Count)];
-        var hierarchyDepths = new int[checked((int)jointField.Count)];
+        var jointCount = checked((int)jointField.Count);
+        var joints = new SkeletonJoint[jointCount];
+        var bindModels = new Matrix4x4[jointCount];
+        var hierarchyDepths = new int[jointCount];
 
-        for (var index = 0; index < joints.Capacity; index++)
+        for (var index = 0; index < jointCount; index++)
         {
             var jointRecord = record.GetRecordArrayElement(1, index);
             ValidateHeader(jointRecord, s_jointSchemaId, fieldCounts: [4]);
@@ -75,7 +76,7 @@ internal static class AnimationAssetReader
                 throw new InvalidDataException("A Skeleton JointId cannot be empty.");
             }
 
-            for (var previousIndex = 0; previousIndex < joints.Count; previousIndex++)
+            for (var previousIndex = 0; previousIndex < index; previousIndex++)
             {
                 if (joints[previousIndex].JointId == jointId)
                 {
@@ -101,13 +102,13 @@ internal static class AnimationAssetReader
                 * Matrix4x4.CreateTranslation(bindTranslation);
             bindModels[index] = (parentIndex < 0) ? localMatrix : localMatrix * bindModels[parentIndex];
             ValidateInverseBind(inverseBind, bindModels[index]);
-            joints.Add(new SkeletonJoint(
+            joints[index] = new SkeletonJoint(
                 jointId,
                 parentIndex,
                 bindTranslation,
                 bindRotation,
                 bindScale,
-                inverseBind));
+                inverseBind);
         }
 
         Guid? rootMotionJointId = null;
@@ -126,7 +127,7 @@ internal static class AnimationAssetReader
 
             var rootIndex = -1;
 
-            for (var index = 0; index < joints.Count; index++)
+            for (var index = 0; index < jointCount; index++)
             {
                 if (joints[index].JointId == selectedRoot)
                 {
@@ -148,7 +149,7 @@ internal static class AnimationAssetReader
         return new SkeletonAsset(
             context.RootAssetId,
             rootMotionJointId,
-            joints.MoveToImmutable(),
+            ImmutableCollectionsMarshal.AsImmutableArray(joints),
             [.. record.EncodedBytes]);
     }
 
