@@ -24,7 +24,8 @@ internal sealed class SubmitGraphAsyncTaskRetentionTests
         Justification = "The actual SubmitGraphAsync task completes before the test disposes the target and GraphicsDevice.")]
     private static (
         Task<GraphicsGraphSubmissionResult> Task,
-        WeakReference<GraphicsGraphSubmission> Submission) StartSubmitGraphAsync()
+        WeakReference<GraphicsGraphSubmission> Submission) StartSubmitGraphAsync(
+            CancellationToken cancellationToken = default)
     {
         var registration = VulkanGraphicsBackend.CreateRegistration();
         GraphicsDevice? device = null;
@@ -69,7 +70,8 @@ internal sealed class SubmitGraphAsyncTaskRetentionTests
                     mipLevels: 1,
                     TextureFormat.Rgba8Unorm,
                     TextureUsage.ColorAttachment | TextureUsage.CopySource,
-                    debugName: "submit-graph-task-retention"))
+                    debugName: "submit-graph-task-retention"),
+                CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
             var extent = new PixelSize(4, 4);
@@ -124,7 +126,7 @@ internal sealed class SubmitGraphAsyncTaskRetentionTests
                     submission,
                     resourceUseLeases,
                     frameSlotReservation,
-                    CancellationToken.None);
+                    cancellationToken);
                 submissionTransferred = true;
                 submission = null;
                 resourceUseLeases = null;
@@ -134,9 +136,18 @@ internal sealed class SubmitGraphAsyncTaskRetentionTests
                     + $"{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; "
                     + $"SubmitGraphTask={submitTask.GetType().FullName}; "
                     + $"StatusBeforeCompletion={submitTask.Status}");
-                var result = submitTask.GetAwaiter().GetResult();
-                Assert.That(result.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
-                Assert.That(result.SubmissionSequence, Is.GreaterThan(0));
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    Assert.That(submitTask.Status, Is.EqualTo(TaskStatus.Canceled));
+                }
+                else
+                {
+                    var result = submitTask.GetAwaiter().GetResult();
+                    Assert.That(result.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                    Assert.That(result.SubmissionSequence, Is.GreaterThan(0));
+                }
+
                 return (submitTask, weakSubmission);
             }
             finally
@@ -188,6 +199,19 @@ internal sealed class SubmitGraphAsyncTaskRetentionTests
         TestContext.WriteLine($"SubmitGraphSubmissionRetainedAfterTaskDrop={retainedAfterTaskDrop}");
 
         Assert.That(retainedAfterTaskDrop, Is.False);
+        GC.KeepAlive(submitTask);
+    }
+
+    [Test]
+    public void PreCanceledSubmitGraphTaskPreservesCancellationToken()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        cancellationSource.Cancel();
+        var (submitTask, _) = StartSubmitGraphAsync(cancellationSource.Token);
+
+        Assert.That(submitTask.Status, Is.EqualTo(TaskStatus.Canceled));
+        var exception = Assert.Throws<OperationCanceledException>(() => submitTask.GetAwaiter().GetResult());
+        Assert.That(exception?.CancellationToken, Is.EqualTo(cancellationSource.Token));
         GC.KeepAlive(submitTask);
     }
 }
