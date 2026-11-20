@@ -994,6 +994,89 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    [TestCase(SceneExpansionLimits.MaximumSupportedPrefabDepth, true)]
+    [TestCase(SceneExpansionLimits.MaximumSupportedPrefabDepth + 1, false)]
+    public async Task ExpandsPrefabChainAtTheSupportedAssetPathDepth(int prefabDepth, bool shouldExpand)
+    {
+        static Guid CreatePlacementId(int value)
+        {
+            Span<byte> bytes = stackalloc byte[16];
+            bytes.Clear();
+            BinaryPrimitives.WriteInt32BigEndian(bytes[12..], value);
+            return new Guid(bytes, bigEndian: true);
+        }
+
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var sceneAssetId = new AssetId(1000);
+        var entries = new Package.Entry[checked(prefabDepth + 1)];
+
+        for (var index = 0; index < prefabDepth; index++)
+        {
+            var assetId = new AssetId(checked(index + 1));
+            var record = (index + 1 < prefabDepth)
+                ? SceneAssetReaderTests.Fixtures.CreatePrefab(
+                    assetId,
+                    placementId: CreatePlacementId(index + 2),
+                    placementRootPoses: [],
+                    placementPrefabAssetId: new AssetId(checked(index + 2)))
+                : SceneAssetReaderTests.Fixtures.CreatePrefab(assetId);
+            var packageEntryId = checked((uint)assetId.Value);
+            entries[index] = new Package.Entry(
+                packageEntryId,
+                Package.CreateEnvelope(packageEntryId, record));
+        }
+
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            sceneAssetId,
+            CreatePlacementId(1));
+        entries[prefabDepth] = new Package.Entry(
+            checked((uint)sceneAssetId.Value),
+            Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord));
+        var packageBytes = Package.CreatePackage(entries);
+        var packagePath = Package.WritePackage(packageBytes);
+        AssetStore? store = null;
+
+        try
+        {
+            store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), registration)).ConfigureAwait(false);
+
+            if (shouldExpand)
+            {
+                using var plan = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    sceneAssetId,
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+                Assert.That(plan.Occurrences, Has.Length.EqualTo(prefabDepth + 1));
+                Assert.That(plan.Entities, Is.Empty);
+            }
+            else
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(
+                        store,
+                        sceneAssetId,
+                        SceneExpansionLimits.Default).ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            try
+            {
+                if (store is { } selectedStore)
+                {
+                    await selectedStore.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Test]
     public async Task LoadsSceneAndPrefabThroughRegisteredCodecs()
     {
         var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();

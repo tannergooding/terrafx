@@ -7,6 +7,8 @@ namespace TerraFX.Scenes;
 
 internal readonly struct SceneExpansionLimits
 {
+    internal const int MaximumSupportedPrefabDepth = 32;
+
     internal SceneExpansionLimits(
         int maximumExpandedEntities,
         int maximumPrefabEntities,
@@ -25,7 +27,7 @@ internal readonly struct SceneExpansionLimits
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumExpandedOccurrences);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumExpandedOccurrences, 1_048_576);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumPrefabDepth);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumPrefabDepth, 32);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumPrefabDepth, MaximumSupportedPrefabDepth);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumHierarchyDepth);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumHierarchyDepth, 256);
         ArgumentOutOfRangeException.ThrowIfNegative(rootExternalBindingCount);
@@ -45,7 +47,8 @@ internal readonly struct SceneExpansionLimits
         ReserveWorkspace = reserveWorkspace;
     }
 
-    internal static SceneExpansionLimits Default => new(1_048_576, 65_536, 1_048_576, 32, 256, WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
+    internal static SceneExpansionLimits Default
+        => new(1_048_576, 65_536, 1_048_576, MaximumSupportedPrefabDepth, 256, WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
 
     internal long MaximumExpandedBytes { get; }
 

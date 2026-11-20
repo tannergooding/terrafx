@@ -253,7 +253,9 @@ internal static class ScenePrefabExpansionPlanner
 
     private sealed class SceneExpansionBuilder : IDisposable
     {
-        private readonly List<AssetId> _assetPath = [];
+        private const int MaximumAssetPathLength = SceneExpansionLimits.MaximumSupportedPrefabDepth + 1;
+        private AssetPathBuffer _assetPath;
+        private int _assetPathCount;
         private int _buildChildPlacementCursor;
         private int _buildEntityCursor;
         private int _buildEntityMapCursor;
@@ -262,30 +264,30 @@ internal static class ScenePrefabExpansionPlanner
         private readonly CancellationToken _cancellationToken;
         private Exception? _disposeFailure;
         private int _disposeState;
-        private ImmutableArray<SceneExpandedEntity>.Builder _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
+        private SceneExpansionArrayBuilder<SceneExpandedEntity> _entities;
         private int _entityCount;
-        private ImmutableArray<int>.Builder _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
+        private SceneExpansionArrayBuilder<int> _entityIndicesByOccurrence;
         private int _externalSlotBindingCount;
         private long _externalSlotBindingResolutionBytes;
-        private ImmutableArray<SceneExpandedExternalSlotBinding>.Builder _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>();
+        private SceneExpansionArrayBuilder<SceneExpandedExternalSlotBinding> _externalSlotBindings;
         private readonly SceneExpansionLimits _limits;
         private int _occurrenceCount;
         private readonly WorldGuidUseControl? _useControl;
         private Guid[] _occurrenceIdentities = [];
-        private ImmutableArray<SceneExpandedOccurrence>.Builder _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
+        private SceneExpansionArrayBuilder<SceneExpandedOccurrence> _occurrences;
         private int _placementOccurrenceCount;
         private readonly PreparedScene? _preparationOwner;
         private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases = [];
-        private readonly List<SceneExpandedReferenceBinding> _referenceBindings = [];
         private long _overrideComponentArrayBytes;
         private long _overrideComponentRecordBytes;
         private long _overrideLayerBytes;
         private int _referenceBindingCount;
         private long _referenceBindingValidationBytes;
+        private List<SceneExpandedReferenceBinding>? _referenceBindings;
         private int _rootCountCursor;
         private int[] _rootCounts = [];
         private int _rootEntityIndexCount;
-        private ImmutableArray<int>.Builder _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
+        private SceneExpansionArrayBuilder<int> _rootEntityIndicesByOccurrence;
         private long _rootPoseComponentArrayBytes;
         private long _rootPoseTargetScratchBytes;
         private long _rootPositionComponentBytes;
@@ -311,6 +313,10 @@ internal static class ScenePrefabExpansionPlanner
                 _useControl?.SetRetainedOwner(this);
             }
         }
+
+        private List<SceneExpandedReferenceBinding> ReferenceBindings
+            => _referenceBindings
+                ?? throw new InvalidOperationException("The Scene expanded-reference binding list is not initialized.");
 
         private static ImmutableArray<SceneAuthoredComponentRecord> ApplyRootPoseComponents(
             ImmutableArray<SceneAuthoredComponentRecord> sourceComponents,
@@ -530,6 +536,22 @@ internal static class ScenePrefabExpansionPlanner
             return (comparison != 0) ? comparison : left.Scope.CompareTo(right.Scope);
         }
 
+        private static bool ContainsAssetPath(
+            ref AssetPathBuffer assetPath,
+            int assetPathCount,
+            AssetId assetId)
+        {
+            for (var index = 0; index < assetPathCount; index++)
+            {
+                if (assetPath[index] == assetId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static bool ContainsExternalSlot(ImmutableArray<SceneExternalSlot> externalSlots, Guid slotId)
         {
             var low = 0;
@@ -602,7 +624,7 @@ internal static class ScenePrefabExpansionPlanner
         }
 
         private static int FindExpandedExternalSlotBindingIndex(
-            ImmutableArray<SceneExpandedExternalSlotBinding>.Builder bindings,
+            SceneExpansionArrayBuilder<SceneExpandedExternalSlotBinding> bindings,
             int occurrenceIndex,
             Guid slotId)
         {
@@ -744,6 +766,31 @@ internal static class ScenePrefabExpansionPlanner
             return true;
         }
 
+        private static void PopAssetPath(ref AssetPathBuffer assetPath, ref int assetPathCount)
+        {
+            if (assetPathCount <= 0)
+            {
+                throw new InvalidOperationException("The Scene expansion AssetId path is empty.");
+            }
+
+            assetPathCount--;
+            assetPath[assetPathCount] = default;
+        }
+
+        private static void PushAssetPath(
+            ref AssetPathBuffer assetPath,
+            ref int assetPathCount,
+            AssetId assetId)
+        {
+            if ((uint)assetPathCount >= MaximumAssetPathLength)
+            {
+                throw new InvalidOperationException("The Scene expansion AssetId path exceeded its fixed capacity.");
+            }
+
+            assetPath[assetPathCount] = assetId;
+            assetPathCount = checked(assetPathCount + 1);
+        }
+
         [SuppressMessage(
             "Usage",
             "CA1031:Do not catch general exception types",
@@ -839,6 +886,10 @@ internal static class ScenePrefabExpansionPlanner
             Volatile.Write(ref _disposeState, 2);
         }
 
+        [SuppressMessage(
+            "Style",
+            "IDE0028",
+            Justification = "The reference-binding list is allocated to its counted capacity to prevent implicit growth.")]
         internal async Task<SceneExpansionPlan> BuildAsync(AssetLease<SceneAsset> sceneLease)
         {
             var (sceneSource, rootCount, requiredBytes) = await CountAndMeasureAsync(sceneLease).ConfigureAwait(false);
@@ -867,13 +918,13 @@ internal static class ScenePrefabExpansionPlanner
                 throw new InvalidOperationException("Scene expansion root-count preflight was inconsistent.");
             }
 
-            _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>(_entityCount);
-            _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>(_occurrenceCount);
-            _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>(_entityCount);
-            _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>(_externalSlotBindingCount);
-            _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>(_rootEntityIndexCount);
+            _entities.Initialize(_entityCount);
+            _occurrences.Initialize(_occurrenceCount);
+            _entityIndicesByOccurrence.Initialize(_entityCount);
+            _externalSlotBindings.Initialize(_externalSlotBindingCount);
+            _rootEntityIndicesByOccurrence.Initialize(_rootEntityIndexCount);
             var childOccurrenceIndicesByPlacement = ImmutableArray.CreateBuilder<int>(_placementOccurrenceCount);
-            _ = _referenceBindings.EnsureCapacity(_referenceBindingCount);
+            _referenceBindings = new List<SceneExpandedReferenceBinding>(_referenceBindingCount);
             _occurrenceIdentities = new Guid[_occurrenceCount];
 
             for (var index = 0; index < _entityCount; index++)
@@ -932,7 +983,7 @@ internal static class ScenePrefabExpansionPlanner
                 allowInstanceAbsoluteSources: true);
             BuildResolvedExternalSlotBindings(childOccurrenceIndicesByPlacement);
             ValidateExpandedReferenceBindings(childOccurrenceIndicesByPlacement);
-            _ = _referenceBindings.RemoveAll(static binding => !binding.IsPresent);
+            _ = ReferenceBindings.RemoveAll(static binding => !binding.IsPresent);
 
             var entityAssignmentKeys = new Guid[_entityCount];
             var entityIndicesByAssignmentOrdinal = new int[_entityCount];
@@ -969,7 +1020,7 @@ internal static class ScenePrefabExpansionPlanner
                 _entityIndicesByOccurrence.MoveToImmutable(),
                 childOccurrenceIndicesByPlacement.MoveToImmutable(),
                 _rootEntityIndicesByOccurrence.MoveToImmutable(),
-                [.. _referenceBindings],
+                [.. ReferenceBindings],
                 _externalSlotBindings.MoveToImmutable(),
                 entityAssignmentKeys,
                 entityIndicesByAssignmentOrdinal,
@@ -993,7 +1044,7 @@ internal static class ScenePrefabExpansionPlanner
             _storageReservation = null;
 
             _preparationOwner?.CommitPreparationOwner(this);
-            _referenceBindings.Clear();
+            ReferenceBindings.Clear();
             _occurrenceIdentities = [];
             _rootCounts = [];
             return plan;
@@ -1073,7 +1124,7 @@ internal static class ScenePrefabExpansionPlanner
                 }
 
                 var referenceBindingIndex = FindReferenceBindingIndex(
-                    _referenceBindings,
+                    ReferenceBindings,
                     resolved.ExpandedEntityIndex,
                     resolved.Value.ComponentSchema,
                     resolved.Value.PropertyPath);
@@ -1094,7 +1145,7 @@ internal static class ScenePrefabExpansionPlanner
                         throw new InvalidDataException("An Entity-reference override names an undeclared ExternalSlot.");
                     }
 
-                    updatedReferenceBinding = _referenceBindings[referenceBindingIndex] with {
+                    updatedReferenceBinding = ReferenceBindings[referenceBindingIndex] with {
                         OwnerOccurrenceIndex = ownerOccurrenceIndex,
                         TargetAnchorOccurrenceIndex = expandedEntity.OccurrenceIndex,
                         Target = resolved.Value.ReferenceValue,
@@ -1107,7 +1158,7 @@ internal static class ScenePrefabExpansionPlanner
                 {
                     if (referenceBindingIndex >= 0)
                     {
-                        updatedReferenceBinding = _referenceBindings[referenceBindingIndex] with {
+                        updatedReferenceBinding = ReferenceBindings[referenceBindingIndex] with {
                             IsPresent = false,
                             ResolvedTargetExpandedEntityIndex = null,
                             ResolvedExternalSlotBindingIndex = null,
@@ -1129,7 +1180,7 @@ internal static class ScenePrefabExpansionPlanner
 
                 if (updatedReferenceBinding is SceneExpandedReferenceBinding referenceBinding)
                 {
-                    _referenceBindings[referenceBindingIndex] = referenceBinding;
+                    ReferenceBindings[referenceBindingIndex] = referenceBinding;
                 }
             }
         }
@@ -1248,7 +1299,7 @@ internal static class ScenePrefabExpansionPlanner
                         occurrenceIndex,
                         childOccurrenceIndicesByPlacement,
                         allowInstanceAbsolute: !source.IsPrefab);
-                    _referenceBindings.Add(
+                    ReferenceBindings.Add(
                         new SceneExpandedReferenceBinding(
                             sourceEntityIndex,
                             binding.Source.Scope,
@@ -1263,16 +1314,16 @@ internal static class ScenePrefabExpansionPlanner
                 }
             }
 
-            if (_referenceBindings.Count != _referenceBindingCount)
+            if (ReferenceBindings.Count != _referenceBindingCount)
             {
                 throw new InvalidOperationException("The expanded Entity-reference binding count did not match its preflight.");
             }
 
-            _referenceBindings.Sort(CompareReferenceBindings);
+            ReferenceBindings.Sort(CompareReferenceBindings);
 
-            for (var index = 1; index < _referenceBindings.Count; index++)
+            for (var index = 1; index < ReferenceBindings.Count; index++)
             {
-                if (CompareReferenceKeys(_referenceBindings[index - 1], _referenceBindings[index]) == 0)
+                if (CompareReferenceKeys(ReferenceBindings[index - 1], ReferenceBindings[index]) == 0)
                 {
                     throw new InvalidDataException("Multiple Entity-reference bindings resolve to the same expanded source leaf.");
                 }
@@ -1393,7 +1444,7 @@ internal static class ScenePrefabExpansionPlanner
             ArgumentNullException.ThrowIfNull(sceneLease);
             _sceneLease = sceneLease;
             _cancellationToken.ThrowIfCancellationRequested();
-            _assetPath.Add(sceneLease.AssetId);
+            PushAssetPath(ref _assetPath, ref _assetPathCount, sceneLease.AssetId);
             var sceneSource = new SceneExpansionSource(sceneLease.Value);
             var rootCount = await CountOccurrenceAsync(
                 sceneSource,
@@ -1659,13 +1710,13 @@ internal static class ScenePrefabExpansionPlanner
                 throw new InvalidDataException("The Scene expansion exceeds its Prefab depth limit.");
             }
 
-            if (_assetPath.Contains(placement.PrefabAssetId))
+            if (ContainsAssetPath(ref _assetPath, _assetPathCount, placement.PrefabAssetId))
             {
                 throw new InvalidDataException("The selected Scene and Prefab graph contains a cycle.");
             }
 
             var childPrefab = await GetPrefabAsync(placement.PrefabAssetId).ConfigureAwait(false);
-            _assetPath.Add(placement.PrefabAssetId);
+            PushAssetPath(ref _assetPath, ref _assetPathCount, placement.PrefabAssetId);
 
             try
             {
@@ -1728,7 +1779,7 @@ internal static class ScenePrefabExpansionPlanner
             }
             finally
             {
-                _assetPath.RemoveAt(_assetPath.Count - 1);
+                PopAssetPath(ref _assetPath, ref _assetPathCount);
             }
         }
 
@@ -2373,10 +2424,10 @@ internal static class ScenePrefabExpansionPlanner
             var readLimits = sceneLease.Value.ReadLimits;
             var referenceIndex = 0;
 
-            for (var bindingIndex = 0; bindingIndex < _referenceBindings.Count; bindingIndex++)
+            for (var bindingIndex = 0; bindingIndex < ReferenceBindings.Count; bindingIndex++)
             {
                 _cancellationToken.ThrowIfCancellationRequested();
-                var binding = _referenceBindings[bindingIndex];
+                var binding = ReferenceBindings[bindingIndex];
 
                 if (!binding.IsPresent)
                 {
@@ -2425,7 +2476,7 @@ internal static class ScenePrefabExpansionPlanner
                     throw new InvalidDataException("An Entity-reference binding has an unknown target kind.");
                 }
 
-                _referenceBindings[bindingIndex] = binding with {
+                ReferenceBindings[bindingIndex] = binding with {
                     ResolvedTargetExpandedEntityIndex = resolvedTargetExpandedEntityIndex,
                     ResolvedExternalSlotBindingIndex = resolvedExternalSlotBindingIndex,
                 };
@@ -2480,10 +2531,10 @@ internal static class ScenePrefabExpansionPlanner
                     throw new InvalidDataException("An expanded root Entity must have zero LocalTransform.Position.");
                 }
 
-                while (referenceIndex < _referenceBindings.Count
-                    && (_referenceBindings[referenceIndex].ExpandedEntityIndex < entityIndex))
+                while (referenceIndex < ReferenceBindings.Count
+                    && (ReferenceBindings[referenceIndex].ExpandedEntityIndex < entityIndex))
                 {
-                    if (_referenceBindings[referenceIndex].IsPresent)
+                    if (ReferenceBindings[referenceIndex].IsPresent)
                     {
                         throw new InvalidDataException("An Entity-reference binding names an absent expanded Entity.");
                     }
@@ -2495,13 +2546,13 @@ internal static class ScenePrefabExpansionPlanner
                 {
                     var component = entity.Components[componentIndex];
 
-                    while (referenceIndex < _referenceBindings.Count
-                        && (_referenceBindings[referenceIndex].ExpandedEntityIndex == entityIndex)
+                    while (referenceIndex < ReferenceBindings.Count
+                        && (ReferenceBindings[referenceIndex].ExpandedEntityIndex == entityIndex)
                         && (CompareSchemaReferences(
-                            _referenceBindings[referenceIndex].ComponentSchema,
+                            ReferenceBindings[referenceIndex].ComponentSchema,
                             component.Schema) < 0))
                     {
-                        if (_referenceBindings[referenceIndex].IsPresent)
+                        if (ReferenceBindings[referenceIndex].IsPresent)
                         {
                             throw new InvalidDataException("An Entity-reference binding names a missing Component.");
                         }
@@ -2511,9 +2562,9 @@ internal static class ScenePrefabExpansionPlanner
 
                     var bindingStart = referenceIndex;
 
-                    while (referenceIndex < _referenceBindings.Count
-                        && (_referenceBindings[referenceIndex].ExpandedEntityIndex == entityIndex)
-                        && (_referenceBindings[referenceIndex].ComponentSchema == component.Schema))
+                    while (referenceIndex < ReferenceBindings.Count
+                        && (ReferenceBindings[referenceIndex].ExpandedEntityIndex == entityIndex)
+                        && (ReferenceBindings[referenceIndex].ComponentSchema == component.Schema))
                     {
                         referenceIndex++;
                     }
@@ -2532,7 +2583,7 @@ internal static class ScenePrefabExpansionPlanner
                     {
                         for (var bindingIndex = bindingStart; bindingIndex < referenceIndex; bindingIndex++)
                         {
-                            if (_referenceBindings[bindingIndex].IsPresent)
+                            if (ReferenceBindings[bindingIndex].IsPresent)
                             {
                                 throw new InvalidDataException("An Entity-reference binding cannot target an EntityTag.");
                             }
@@ -2545,7 +2596,7 @@ internal static class ScenePrefabExpansionPlanner
 
                     for (var bindingIndex = bindingStart; bindingIndex < referenceIndex; bindingIndex++)
                     {
-                        if (_referenceBindings[bindingIndex].IsPresent)
+                        if (ReferenceBindings[bindingIndex].IsPresent)
                         {
                             activeBindingCount++;
                         }
@@ -2556,7 +2607,7 @@ internal static class ScenePrefabExpansionPlanner
 
                     for (var bindingIndex = bindingStart; bindingIndex < referenceIndex; bindingIndex++)
                     {
-                        var expandedBinding = _referenceBindings[bindingIndex];
+                        var expandedBinding = ReferenceBindings[bindingIndex];
 
                         if (expandedBinding.IsPresent)
                         {
@@ -2593,10 +2644,10 @@ internal static class ScenePrefabExpansionPlanner
                         allowInstanceAbsoluteSources: true);
                 }
 
-                while (referenceIndex < _referenceBindings.Count
-                    && (_referenceBindings[referenceIndex].ExpandedEntityIndex == entityIndex))
+                while (referenceIndex < ReferenceBindings.Count
+                    && (ReferenceBindings[referenceIndex].ExpandedEntityIndex == entityIndex))
                 {
-                    if (_referenceBindings[referenceIndex].IsPresent)
+                    if (ReferenceBindings[referenceIndex].IsPresent)
                     {
                         throw new InvalidDataException("An Entity-reference binding names a Component that is absent from its Entity.");
                     }
@@ -2605,9 +2656,9 @@ internal static class ScenePrefabExpansionPlanner
                 }
             }
 
-            while (referenceIndex < _referenceBindings.Count)
+            while (referenceIndex < ReferenceBindings.Count)
             {
-                if (_referenceBindings[referenceIndex].IsPresent)
+                if (ReferenceBindings[referenceIndex].IsPresent)
                 {
                     throw new InvalidDataException("An Entity-reference binding names an absent expanded Entity.");
                 }
@@ -2616,8 +2667,53 @@ internal static class ScenePrefabExpansionPlanner
             }
         }
 
+        [InlineArray(MaximumAssetPathLength)]
+        private struct AssetPathBuffer
+        {
+            private AssetId _element0;
+        }
+
         private readonly record struct ResolvedOverride(
             int ExpandedEntityIndex,
             ScenePrefabOverride Value);
+
+        private struct SceneExpansionArrayBuilder<T>
+        {
+            private ImmutableArray<T>.Builder? _builder;
+
+            internal readonly int Count => Builder.Count;
+
+            private readonly ImmutableArray<T>.Builder Builder
+                => _builder ?? throw new InvalidOperationException("The Scene expansion array builder is not initialized.");
+
+            internal readonly T this[int index]
+            {
+                get
+                {
+                    return Builder[index];
+                }
+
+                set
+                {
+                    Builder[index] = value;
+                }
+            }
+
+            internal readonly void Add(T value)
+                => Builder.Add(value);
+
+            internal void Initialize(int capacity)
+            {
+                if (_builder is not null)
+                {
+                    throw new InvalidOperationException("The Scene expansion array builder is already initialized.");
+                }
+
+                _builder = ImmutableArray.CreateBuilder<T>(capacity);
+            }
+
+            internal readonly ImmutableArray<T> MoveToImmutable()
+                => Builder.MoveToImmutable();
+        }
     }
 }

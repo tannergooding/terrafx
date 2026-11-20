@@ -28,7 +28,7 @@ public sealed class SceneLoadOptions
     public int MaximumPrefabEntities { get; init; } = 65_536;
 
     /// <summary>Gets the maximum nested Prefab depth, up to 32.</summary>
-    public int MaximumPrefabDepth { get; init; } = 32;
+    public int MaximumPrefabDepth { get; init; } = SceneExpansionLimits.MaximumSupportedPrefabDepth;
 
     /// <summary>Gets the maximum hierarchy depth, up to 256.</summary>
     public int MaximumHierarchyDepth { get; init; } = 256;
@@ -102,7 +102,10 @@ public sealed class SceneLoadOptions
         ValidateLimit(MaximumExpandedEntities, 1_048_576, nameof(MaximumExpandedEntities));
         ValidateLimit(MaximumExpandedOccurrences, 1_048_576, nameof(MaximumExpandedOccurrences));
         ValidateLimit(MaximumPrefabEntities, 65_536, nameof(MaximumPrefabEntities));
-        ValidateLimit(MaximumPrefabDepth, 32, nameof(MaximumPrefabDepth));
+        ValidateLimit(
+            MaximumPrefabDepth,
+            SceneExpansionLimits.MaximumSupportedPrefabDepth,
+            nameof(MaximumPrefabDepth));
         ValidateLimit(MaximumHierarchyDepth, 256, nameof(MaximumHierarchyDepth));
         ValidatePreparationLimit(MaximumPreparationBytes, nameof(MaximumPreparationBytes));
 
