@@ -8,13 +8,13 @@
 
 The worker cannot **currently** be funded and fully retired under the selected proof obligations without unsupported assumptions. This is not evidence that the default 536,870,912-byte budget is numerically too small, nor that BCL threads are generally unusable. Section 2 identifies the missing evidence and a concrete reconsideration procedure. The narrow alternative lets Batch B implementation proceed without making that unresolved execution service a prerequisite for a synchronous tool.
 
-| Inspected evidence at `528e5525` | Consequence |
+| Inspected evidence at `cc880c3a` | Consequence |
 |---|---|
 | [`AssetStore.Bounded.cs`][preclaim], [`AssetStoreBoundedProvision.cs`][provision] | The 544-byte control (32 bytes of added owner references), 131,391-byte opening subtotal, 80-byte per-generation native-file shell, and 144-byte native-port shell are preclaimed before acquisition. The opening subtotal includes 65,536-byte profile and 128-byte directory arrays plus measured 24-byte allocation overhead for each. On the 44-character Windows path, cold/warm reservations are 1,197,287/148,711 bytes. `_reservedBytes` remains readonly; native port initialization and file acquisition are still unavailable. |
 | [`AssetStoreBoundedBootstrap.cs`][bootstrap], [`BoundedStaticMeshAssetValidation.cs`][validation] and its [factory][factory] | The one-MiB attributed shared partition and 16-KiB per-Store provision cover the acquisition-free registration prefix. The factory closes precisely two codecs over 25 + 8 + 4 + 18 + 26 schema members; Rendering also initializes nine M05 descriptors outside that membership. None of these counts bounds thread/runtime/native storage. |
 | Existing [preclaim tests][preclaim-tests], [`AssetStoreAllocationTests`](../../tests/TerraFX.Assets.Tests/AssetStoreAllocationTests.cs), and the four TRX inputs in section 8 | Runtime preclaim tests execute 6/6 cases and the complete Assets suite executes 85/85 in Debug and Release. Cold/warm preclaim allocation is 936,888/76,840 managed bytes against 1,197,287/148,711 reserved bytes on the 44-character Windows path. These runs cover managed declarations, carrier sizes, pure metadata parsing, and acquisition-free preclaim only; they execute no native file open/read/close or actual-return path. |
 | [`AssetPackageReader`][reader], [`AssetPackageBacking`][backing], [`AssetPayloadReader`][payload] | Ordinary opening/hashing still uses `FileStream`; reads reach BCL `RandomAccess`. The ordinary backing constructor leaves its added bounded-file reference null. The bounded candidate roots file state and fixed profile/directory buffers and has an internal two-entry None metadata reader/parser, but no production caller invokes it. The pre-opening backing still refuses ordinary reference acquisition. |
-| [`AssetBoundedNativePort`](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) and its [ABI declarations](../../sources/TerraFX.Assets/AssetBoundedLinuxStatX64.cs) | The compile-only candidate contains caller-thread open/read/hash/close/control operations and a 65,536-byte native scratch range. A C11 translation unit compiled against the installed Windows SDK 10.0.28000.0 headers asserts `OVERLAPPED` size/offsets 32/16/24 and `FILE_STANDARD_INFO` size/offsets 24/8/21; its source hash is listed below. No native program or I/O ran. Linux x64 and Arm64 headers/targets remain unverified; native-close and actual-return evidence are absent, and no production caller initializes the port. |
+| [`AssetBoundedNativePort`](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) and its [ABI declarations](../../sources/TerraFX.Assets/AssetBoundedLinuxStatX64.cs) | The compile-only candidate contains caller-thread open/read/hash/close/control operations, Linux `flock(LOCK_SH)` retry on `EINTR`, and a 65,536-byte native scratch range. A C11 translation unit compiled against the installed Windows SDK 10.0.28000.0 headers asserts `OVERLAPPED` size/offsets 32/16/24 and `FILE_STANDARD_INFO` size/offsets 24/8/21; its source hash is listed below. No native program or I/O ran. Linux x64 headers and all Arm64 profiles remain unverified; native-close and actual-return evidence are absent, and no production caller initializes the port. |
 | Pinned CoreCLR [`Thread.CoreCLR.cs`][thread-core], [`Thread.Unix.cs`][thread-unix], [native finalization][thread-finalize] and [PAL creation][thread-pal] | `OnThreadExited` explicitly runs while the unmanaged thread is still alive and signals the Unix join event. Unix `JoinInternal` waits on that event; PAL creates a detached pthread. `Thread` also has native finalization work. Managed join is therefore not a receipt for destruction of the entire native thread/control suffix. |
 
 **Distinguishing source-derived schedule, not a local experiment:** the Linux worker returns from its managed body, signals the managed join event, and its ordinary retirement caller returns from `Thread.Join`; native cleanup can still be running. Refunding all worker/TLS/stack/control provision then is unjustified. A larger requested stack or another worker-written exit flag does not repair this return boundary.
@@ -129,7 +129,7 @@ Current boundary: B1 now has rooted port/file/profile/directory owners, a compil
 
 ## 8. Review-input identity
 
-Snapshot UTC `2026-11-20T17:44:26.6651270Z`; HEAD `27ef3f8b1ae512683001cf2051e688bc1f5a025e`, branch `tannergooding-m05-implementation-plan`. All listed technical tracked inputs were clean. The five unrelated dirty tests in P are preservation-only, not reviewed implementation. Exclude this output.
+Snapshot UTC `2026-11-20T17:59:33.8547402Z`; HEAD `cc880c3ac388fdedd7ef672a4c72d9ed97661328`, branch `tannergooding-m05-implementation-plan`. All listed technical tracked inputs were clean. The five unrelated dirty tests in P are preservation-only, not reviewed implementation. Exclude this output.
 
 Set digests are SHA-256 of ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` rows, LF-joined, UTF-8 without BOM/trailing newline. ALL unions A/R/S/T/D/C/V/E. External runtime links select unified-source revision `5254d8bcf59917edc1e1abc33bdf2442b77b1c70`; the local V marker identifies `11.0.0-rc.3.26522.148`, not a loaded runtime/native binary or NativeAOT qualification. The consulted Windows stack page identifies documentation revision `3aee48ac3f48e187d17bdfd56951741737331749`; Linux `pthread_join(3)` is man-pages 6.19, dated 2025-05-17. Neither supplies an all-in allocation bound.
 
@@ -166,10 +166,10 @@ m03b-assets-bounded-static-mesh-opening-lane.md
 C: .editorconfig, .github\workflows\ci.yml, Directory.Build.props,
 Directory.Build.targets, sources\Directory.Build.props, global.json
 V: .dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148\.version
-E: artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_22_44_net11.0.trx;
-artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_23_49_net11.0.trx;
-artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_24_21_net11.0.trx;
-artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_24_25_net11.0.trx
+E: artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_56_12_net11.0.trx;
+artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_57_01_net11.0.trx;
+artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_55_08_net11.0.trx;
+artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_55_17_net11.0.trx
 P: tests\TerraFX.Runtime.Tests\Scenes\
 PreparedSceneAssetRetentionTests.cs, RenderSpriteCapacityTests.cs,
 RenderSpriteComponentTests.cs, RendererExtractionTests.cs,
@@ -178,15 +178,15 @@ SceneAssetStoreTests.EngineHost.cs
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| A | 19 | `1aa4f65e49893855ab43893b7858093209e540d21fba381977a9e8223fe4728b` |
+| A | 19 | `e514caf89b9cfe84f00c4a89e2257fc1c9f7cfa367921621e3f61edf3de17107` |
 | R | 5 | `3e78dbeb89f9c6156e7ba361fcdaf3f21b4e6848b0b9722bd4b30a526c2d4064` |
 | S | 4 | `e29908e3df557008195f0f7b088bdfe6f241102590c2587bcc092d57da274e01` |
 | T | 3 | `6d88152261f17e2765351b499e84c69486ed22060163bfa48a612617292cb027` |
 | D | 11 | `6320fad2da177942725d80eafbf4a5e91e169ea6f6a3c9e77bd930b327b14cce` |
 | C | 6 | `c79d188b6f611c5f6fdce6759b15be4d4fc0b8af61b2fcabbfe761d66ed0dc17` |
 | V | 1 | `aab4f62773986811741aea2bbe2f631c7fbaeeefd485eca380deba5622b1ba8e` |
-| E | 4 | `635d70f5cbdc24eb1ef16c8aeff6e15d15a2ee69121454ba32fc44449cea079c` |
-| ALL | 53 | `dcfd860a30ec2efb90fd979c4aeb06dcb886fdf91e849ccd38061b1f081c247e` |
+| E | 4 | `dd8cfc7c73c8a545a520baf1116f98b6d9cfee51a60a6ac3e8051704c1b9e68f` |
+| ALL | 53 | `d9d46b2066f0e6148256df4efbeef2fc63dc8e76c2bf183168b3720e1c09b5fa` |
 | P, preservation only | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
 
 External Windows SDK headers inspected for x64 field layout (not included in ALL):
