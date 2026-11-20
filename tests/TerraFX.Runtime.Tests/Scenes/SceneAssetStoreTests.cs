@@ -1535,6 +1535,8 @@ internal sealed partial class SceneAssetStoreTests
         Assert.That(
             ScenePrefabExpansionPlanner.CalculateOverrideRewriteReservation(128, [fieldTag, fixedArrayIndex]),
             Is.EqualTo(512));
+        _ = Assert.Throws<OverflowException>(
+            () => ScenePrefabExpansionPlanner.CalculateOverrideRewriteReservation(long.MaxValue, [fieldTag]));
     }
 
     [Test]

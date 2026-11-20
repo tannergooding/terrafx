@@ -142,6 +142,39 @@ internal sealed class ScenePrefabOverrideReaderTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 0),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, (byte)ContentSchemaScope.Content));
 
+    private static long MeasureRejectedPrefabReadBytes(
+        byte[] encoded,
+        AssetId assetId,
+        CompiledContentSchemaRegistry schemas,
+        int sampleCount)
+    {
+        for (var index = 0; index < sampleCount; index++)
+        {
+            try
+            {
+                _ = ReadPrefabAsset(encoded, assetId, schemas);
+            }
+            catch (InvalidDataException)
+            {
+            }
+        }
+
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < sampleCount; index++)
+        {
+            try
+            {
+                _ = ReadPrefabAsset(encoded, assetId, schemas);
+            }
+            catch (InvalidDataException)
+            {
+            }
+        }
+
+        return (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / sampleCount;
+    }
+
     private static ScenePrefabAsset ReadPrefabAsset(
         byte[] encoded,
         AssetId assetId,
@@ -331,6 +364,42 @@ internal sealed class ScenePrefabOverrideReaderTests
             overrides: [overrideRecord]);
 
         Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsOmitAfterAllocatingAValidatedLiteralValue()
+    {
+        var schemas = CreateRegistry();
+        var assetId = new AssetId(3);
+        var componentSchemaId = new ContentSchemaIdentityAssignment("scene/camera").SchemaId;
+        var propertyPath = new[] {
+            CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 6),
+        };
+        var fixedLiteral = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            assetId,
+            placementId: new Guid("20000000-0000-4000-8000-000000000022"),
+            overrides: [
+                CreatePrefabOverride(
+                    componentSchemaId,
+                    propertyPath,
+                    value: CreateLiteralUInt8(1),
+                    operation: (byte)ScenePrefabOverrideOperation.Omit),
+            ]);
+        var nonFixedLiteral = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            assetId,
+            placementId: new Guid("20000000-0000-4000-8000-000000000023"),
+            overrides: [
+                CreatePrefabOverride(
+                    componentSchemaId,
+                    propertyPath,
+                    value: CreateLiteralUtf8(),
+                    operation: (byte)ScenePrefabOverrideOperation.Omit),
+            ]);
+
+        var fixedLiteralBytes = MeasureRejectedPrefabReadBytes(fixedLiteral, assetId, schemas, sampleCount: 64);
+        var nonFixedLiteralBytes = MeasureRejectedPrefabReadBytes(nonFixedLiteral, assetId, schemas, sampleCount: 64);
+
+        Assert.That(fixedLiteralBytes, Is.GreaterThan(nonFixedLiteralBytes));
     }
 
     [Test]
