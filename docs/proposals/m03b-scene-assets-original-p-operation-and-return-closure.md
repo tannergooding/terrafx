@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T06:59:12.208648Z`; HEAD `73df6e4f669af0cfb2d4bf9a9f0719ca3da51f04`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T07:01:34.309901Z`; HEAD `12e0c8a94405af49b2a172da80c87feac8169745`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -418,16 +418,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `61d9531dbfa8d3a889eb24b29a615539170cc574ed46f66a7aa0c080721ca9d9` |
-| P | 10 | `281b5189cb9380a8c97d0551e988dcec32fbfa941c05f02a22235ba4e8525741` |
-| A | 25 | `c56ef27bc6a069b9c482d7a6a5a8e0bec6dd72abc5fd5046657a69bb12196c98` |
+| P | 10 | `f7f10ea776436e7d690ce770254fa4b9f268cef44ca3b4915fecb5bcf5e8f694` |
+| A | 25 | `a3ddf491d41d54061c6a9cced5fc9632de0ef1327800474b32447fae43ffe6a9` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 15 | `80cf118edb0a1303db7359a756c577036cf78db8c3cce3d9650377dcf09b07d8` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 7 | `c1642c7457e937a34fc19086d94e6a1db09be4e09667f1a98a1f3658854c7d48` |
+| T | 7 | `8040361ae849a45242fab2a83d561a8f7da8b0e598399bc6c30768ef192174f1` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 115 | `29090ced99bfe301e8a67d079a2f45a4631db84e6be2784c5ffc85bf40ed6e29` |
+| ALL | 115 | `c3e667b33496d4863e687eb231f77f1fe7846269e03b7c32f5028bdcab00f82d` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
@@ -450,4 +450,4 @@ The five preexisting dirty files are preservation inputs, **not acceptance of th
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The Assets test project passes 69/69 in Debug and Release, including fixed-buffer reference-scan boundary cases and its checked data-size term. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
+Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The Assets test project passes 69/69 in Debug and Release, including fixed-buffer reference-scan boundary cases and its checked workspace/result data partition. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
