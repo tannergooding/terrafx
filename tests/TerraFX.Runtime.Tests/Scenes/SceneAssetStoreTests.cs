@@ -1801,6 +1801,113 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    public async Task RetainsRealPrefabLeasesWithinCacheGrowthAllowance()
+    {
+        const int PrefabCount = 32;
+        const long PrefabLeaseCacheCarrierBytes = 80;
+        const long PerPrefabEntryAllowanceBytes = 256;
+        var assetIds = new AssetId[PrefabCount];
+        var entries = new Package.Entry[PrefabCount];
+
+        for (var index = 0; index < PrefabCount; index++)
+        {
+            var assetId = new AssetId(index + 1);
+            var packageAssetId = checked((uint)assetId.Value);
+            var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(assetId);
+            assetIds[index] = assetId;
+            entries[index] = new Package.Entry(
+                packageAssetId,
+                Package.CreateEnvelope(packageAssetId, prefab));
+        }
+
+        var package = Package.CreatePackage(entries);
+        var packagePath = Package.WritePackage(package);
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                var leases = new AssetLease<ScenePrefabAsset>?[PrefabCount];
+
+                try
+                {
+                    for (var index = 0; index < leases.Length; index++)
+                    {
+                        leases[index] = await store.LoadAsync<ScenePrefabAsset>(assetIds[index]).ConfigureAwait(false);
+                    }
+
+                    var firstLease = leases[0]
+                        ?? throw new InvalidOperationException("The first Prefab lease was not loaded before cache measurement.");
+                    var warmCache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>> {
+                        [assetIds[0]] = firstLease,
+                    };
+                    GC.KeepAlive(warmCache);
+
+                    var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+                    var cache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>>();
+                    long firstExceededEntryCount = -1;
+                    long observedBytesAtFirstExcess = 0;
+                    long allowanceAtFirstExcess = 0;
+
+                    for (var index = 0; index < leases.Length; index++)
+                    {
+                        var lease = leases[index]
+                            ?? throw new InvalidOperationException("A Prefab lease was not loaded before cache measurement.");
+                        cache.Add(assetIds[index], lease);
+                        var observedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+                        var allowanceBytes = PrefabLeaseCacheCarrierBytes
+                            + (PerPrefabEntryAllowanceBytes * (index + 1L));
+
+                        if ((firstExceededEntryCount < 0) && (observedBytes > allowanceBytes))
+                        {
+                            firstExceededEntryCount = index + 1L;
+                            observedBytesAtFirstExcess = observedBytes;
+                            allowanceAtFirstExcess = allowanceBytes;
+                        }
+                    }
+
+                    GC.KeepAlive(cache);
+                    GC.KeepAlive(leases);
+                    var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+                    var allowanceBytesAtMaximum = PrefabLeaseCacheCarrierBytes
+                        + (PerPrefabEntryAllowanceBytes * leases.Length);
+                    TestContext.WriteLine(
+                        $"Entries={leases.Length}; AllocatedBytes={allocatedBytes}; AllowanceBytes={allowanceBytesAtMaximum}; "
+                        + $"FirstExceededEntryCount={firstExceededEntryCount}; "
+                        + $"ObservedBytesAtFirstExcess={observedBytesAtFirstExcess}; "
+                        + $"AllowanceBytesAtFirstExcess={allowanceAtFirstExcess}");
+
+                    Assert.That(
+                        firstExceededEntryCount,
+                        Is.EqualTo(-1),
+                        $"The cache exceeded its allowance at {firstExceededEntryCount} entries: " +
+                        $"{observedBytesAtFirstExcess} allocated bytes versus {allowanceAtFirstExcess} allowed.");
+                }
+                finally
+                {
+                    foreach (var lease in leases)
+                    {
+                        lease?.Dispose();
+                    }
+                }
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     [SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
