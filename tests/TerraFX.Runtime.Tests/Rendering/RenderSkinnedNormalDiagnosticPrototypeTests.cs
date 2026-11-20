@@ -2,8 +2,12 @@
 
 using System;
 using System.Collections.Immutable;
-using System.Runtime.InteropServices;
+using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Graphics;
 using TerraFX.Rendering;
@@ -130,6 +134,78 @@ internal sealed class RenderSkinnedNormalDiagnosticPrototypeTests
         Assert.That(pass.ReadbackFootprint.TotalByteAllowance, Is.GreaterThan(pass.ResultBuffer.Description.ByteLength));
         GC.KeepAlive(pass);
         return allocatedBytes;
+    }
+
+    [Test]
+    public void AsyncReturnCensusRecordsFourReturnFamilies()
+    {
+        var rendererSubmit = typeof(Renderer).GetMethod(
+            nameof(Renderer.SubmitAsync),
+            BindingFlags.Instance | BindingFlags.Public,
+            binder: null,
+            types: [typeof(RenderSnapshot), typeof(RenderGraphPlan), typeof(System.Threading.CancellationToken)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("The selected Renderer.SubmitAsync overload is unavailable.");
+        var rendererSubmitCore = typeof(Renderer).GetMethod("SubmitAsyncCore", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Renderer.SubmitAsyncCore is unavailable.");
+        (MethodInfo Method, bool HasAsyncStateMachine)[] methods = [
+            (
+                typeof(GraphicsDevice).GetMethod("RecordPassAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("GraphicsDevice.RecordPassAsync is unavailable."),
+                true),
+            (
+                typeof(GraphicsDevice).GetMethod("SubmitGraphAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("GraphicsDevice.SubmitGraphAsync is unavailable."),
+                true),
+            (
+                typeof(RenderGraphPlan).GetMethod("RecordPassCallbacksAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("RenderGraphPlan.RecordPassCallbacksAsync is unavailable."),
+                true),
+            (rendererSubmit, false),
+            (rendererSubmitCore, true),
+        ];
+
+        TestContext.WriteLine($"Runtime={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
+
+        foreach (var (method, hasAsyncStateMachine) in methods)
+        {
+            Assert.That(method.ReturnType.IsGenericType, Is.True);
+            Assert.That(method.ReturnType.GetGenericTypeDefinition(), Is.EqualTo(typeof(Task<>)));
+            var asyncStateMachine = method.GetCustomAttribute<AsyncStateMachineAttribute>();
+            MethodInfo bodyMethod;
+            Type? stateMachineType = null;
+
+            if (hasAsyncStateMachine)
+            {
+                stateMachineType = asyncStateMachine?.StateMachineType
+                    ?? throw new InvalidOperationException($"Method {method.Name} has no async state-machine metadata.");
+                bodyMethod = stateMachineType.GetMethod(
+                    "MoveNext",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException($"State machine {stateMachineType} has no MoveNext method.");
+            }
+            else
+            {
+                Assert.That(asyncStateMachine, Is.Null);
+                bodyMethod = method;
+            }
+
+            var body = bodyMethod.GetMethodBody()?.GetILAsByteArray()
+                ?? throw new InvalidOperationException($"Method {bodyMethod.Name} has no managed IL body.");
+            var assemblyPath = method.Module.Assembly.Location;
+            var assemblyHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assemblyPath)));
+            var bodyHash = Convert.ToHexString(SHA256.HashData(body));
+
+            TestContext.WriteLine(
+                $"Method={method.DeclaringType?.FullName}.{method.Name}; "
+                + $"Assembly={assemblyPath}; "
+                + $"AssemblySha256={assemblyHash}; "
+                + $"ReturnType={method.ReturnType.FullName}; "
+                + $"StateMachine={stateMachineType?.FullName ?? "(none)"}; "
+                + $"MethodBody={bodyMethod.Name}; "
+                + $"MethodBodyLength={body.Length}; "
+                + $"MethodBodySha256={bodyHash}");
+        }
     }
 
     [Test]

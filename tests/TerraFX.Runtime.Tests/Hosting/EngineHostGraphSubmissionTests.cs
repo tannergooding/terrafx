@@ -823,6 +823,22 @@ internal sealed partial class EngineHostOptionsTests
             use3DStorageImage: true,
             expectStorageImageDimensionRejection: true);
 
+    [Test]
+    public Task RendererReturnsCanceledTaskForValidPreCanceledSubmission()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            preCancelSubmission: true);
+
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
@@ -1761,7 +1777,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useManyBufferCopyDestinations = false,
         bool useRenderAreaClear = false,
         bool useAttachmentScopedRenderArea = false,
-        Action<Task<RenderSubmissionReceipt>, RenderSnapshot, RenderGraphPlan, Renderer, GraphicsDevice>? observeReturnedTask = null)
+        Action<Task<RenderSubmissionReceipt>, RenderSnapshot, RenderGraphPlan, Renderer, GraphicsDevice>? observeReturnedTask = null,
+        bool preCancelSubmission = false)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -5466,6 +5483,27 @@ internal sealed partial class EngineHostOptionsTests
                         .ConfigureAwait(false);
                     Assert.That(materializedGroup.Textures.Length, Is.EqualTo(2));
                 }
+            }
+
+            if (preCancelSubmission)
+            {
+                using var preCanceledSubmission = new CancellationTokenSource();
+                await preCanceledSubmission.CancelAsync().ConfigureAwait(false);
+                var invalidGraphException = Assert.Throws<ArgumentNullException>(
+                    () => renderer.SubmitAsync(renderSnapshot, null!, preCanceledSubmission.Token));
+                Assert.That(invalidGraphException?.ParamName, Is.EqualTo("graph"));
+                var preCanceledTask = renderer.SubmitAsync(
+                    renderSnapshot,
+                    plan,
+                    preCanceledSubmission.Token);
+                Assert.That(preCanceledTask.IsCompleted, Is.True);
+                var preCanceledException = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                    await preCanceledTask.ConfigureAwait(false));
+                Assert.Multiple(() => {
+                    Assert.That(preCanceledTask.Status, Is.EqualTo(TaskStatus.Canceled));
+                    Assert.That(preCanceledException?.CancellationToken, Is.EqualTo(preCanceledSubmission.Token));
+                });
+                return;
             }
 
             RenderSubmissionReceipt receipt;

@@ -312,13 +312,18 @@ internal sealed class GraphicsPipelineRequestTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static (Task<RecordedPassCommandList> Task, WeakReference<byte[]> Capture) StartRecordingWithCapture(GraphicsDevice device)
+    private static (Task<RecordedPassCommandList> Task, WeakReference<byte[]> Capture) StartRecordingWithCapture(
+        GraphicsDevice device,
+        ManualResetEventSlim? callbackEntered = null,
+        ManualResetEventSlim? releaseCallback = null)
     {
         var payload = new byte[4096];
         var weak = new WeakReference<byte[]>(payload);
 
         void Record(scoped ref CommandRecorder recorder)
         {
+            callbackEntered?.Set();
+            releaseCallback?.Wait();
             GC.KeepAlive(payload);
         }
 
@@ -341,6 +346,8 @@ internal sealed class GraphicsPipelineRequestTests
     {
         using var proceed = new ManualResetEventSlim(initialState: true);
         using var entered = new ManualResetEventSlim(initialState: false);
+        using var callbackEntered = new ManualResetEventSlim(initialState: false);
+        using var releaseCallback = new ManualResetEventSlim(initialState: false);
         var backend = new FakeBackendDevice(CreateCapabilities(), entered, proceed);
         var device = await GraphicsDevice.CreateAsync(
             31,
@@ -351,11 +358,14 @@ internal sealed class GraphicsPipelineRequestTests
 
         try
         {
-            var recording = StartRecordingWithCapture(device);
+            var recording = StartRecordingWithCapture(device, callbackEntered, releaseCallback);
+            Assert.That(callbackEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            Assert.That(recording.Task.IsCompleted, Is.False);
             TestContext.WriteLine(
                 $"Runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; "
                 + $"RecordPassTask={recording.Task.GetType().FullName}; "
                 + $"StatusBeforeCompletion={recording.Task.Status}");
+            releaseCallback.Set();
             using var result = await recording.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(recording.Task.Status, Is.EqualTo(TaskStatus.RanToCompletion));
             result.Dispose();
@@ -367,6 +377,7 @@ internal sealed class GraphicsPipelineRequestTests
         }
         finally
         {
+            releaseCallback.Set();
             await device.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
@@ -406,6 +417,7 @@ internal sealed class GraphicsPipelineRequestTests
 
             Assert.That(returnedTask.Status, Is.EqualTo(TaskStatus.Canceled));
             Assert.That(returnedTask.IsCanceled, Is.True);
+            Assert.That(exception, Is.SameAs(callbackException));
             Assert.That(exception?.CancellationToken, Is.EqualTo(cancellationToken));
             GC.KeepAlive(returnedTask);
         }

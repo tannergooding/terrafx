@@ -30,80 +30,26 @@ public sealed partial class Renderer
     /// <exception cref="ArgumentException">The graph was compiled for another snapshot or target.</exception>
     /// <exception cref="InvalidOperationException">The graph belongs to a stale GraphicsDevice epoch.</exception>
     /// <exception cref="NotSupportedException">This Renderer or backend does not support the graph's target or commands.</exception>
-    public async Task<RenderSubmissionReceipt> SubmitAsync(
+    public Task<RenderSubmissionReceipt> SubmitAsync(
         RenderSnapshot snapshot,
         RenderGraphPlan graph,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        ArgumentNullException.ThrowIfNull(graph);
+        var device = ValidateSubmitInputs(snapshot, graph);
+        return SubmitAsyncCore(snapshot, graph, device, cancellationToken);
+    }
+
+    private async Task<RenderSubmissionReceipt> SubmitAsyncCore(
+        RenderSnapshot snapshot,
+        RenderGraphPlan graph,
+        GraphicsDevice device,
+        CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var device = _graphicsDevice
-            ?? throw new NotSupportedException("Headless rendering does not submit native render graphs.");
-        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
-
-        if ((graph.SnapshotId != snapshot.SnapshotId)
-            || (graph.WorldGuid != snapshot.WorldGuid)
-            || (graph.TickIndex != snapshot.TickIndex)
-            || (graph.FrameDimension != snapshot.FrameDimension)
-            || (graph.FrameRevision != snapshot.FrameRevision)
-            || (graph.ProfileId != snapshot.ProfileId)
-            || (graph.TargetExtent != snapshot.TargetExtent)
-            || !graph.CameraIds.AsSpan().SequenceEqual(snapshot.CameraIds.AsSpan()))
-        {
-            throw new ArgumentException("The graph plan does not match the exact render snapshot.", nameof(graph));
-        }
-
-        if (graph.DeviceEpoch != device.DeviceEpoch)
-        {
-            throw new InvalidOperationException("The graph plan belongs to a stale GraphicsDevice epoch.");
-        }
-
         var offscreenOutputTarget = graph.OffscreenColorTarget;
-
-        if (offscreenOutputTarget is not null
-            && (!ReferenceEquals(offscreenOutputTarget.ResourceOwner.Device, device)
-                || (offscreenOutputTarget.DeviceEpoch != graph.DeviceEpoch)))
-        {
-            throw new ArgumentException("The graph output target belongs to another device or epoch.", nameof(graph));
-        }
-
-        var surfaceTarget = graph.SurfaceTarget;
-
-        if (surfaceTarget is not null)
-        {
-            ObjectDisposedException.ThrowIf(!surfaceTarget.IsLive, surfaceTarget);
-            var surfaceSnapshot = surfaceTarget.CaptureSnapshot();
-
-            if (!ReferenceEquals(surfaceTarget.Device, device))
-            {
-                throw new ArgumentException("The graph Surface belongs to another GraphicsDevice.", nameof(graph));
-            }
-
-            if ((surfaceTarget.Device.DeviceEpoch != graph.DeviceEpoch)
-                || (surfaceSnapshot.Capabilities.SurfaceEpoch != graph.SurfaceEpoch)
-                || (surfaceSnapshot.Capabilities.SwapchainEpoch != graph.SwapchainEpoch)
-                || (surfaceSnapshot.ClientPixelSize != graph.TargetExtent))
-            {
-                throw new InvalidOperationException("The graph plan belongs to a stale Surface or swapchain generation.");
-            }
-        }
-
         var skinnedNormalDiagnosticPass = graph.BuiltInSpriteState?.MeshNormalDiagnosticPass;
         var bufferReadbackExport = graph.BufferReadbackExport;
-
-        if (skinnedNormalDiagnosticPass.HasValue != bufferReadbackExport.HasValue)
-        {
-            throw new InvalidOperationException("The graph's skinned-normal diagnostic pass and readback export are incomplete.");
-        }
-
-        if (skinnedNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass diagnosticPass
-            && (bufferReadbackExport?.Version.ResourceId != diagnosticPass.ResultBuffer.ResourceId))
-        {
-            throw new InvalidOperationException("The graph's skinned-normal result export does not match its diagnostic pass.");
-        }
-
         using var submissionAdmission = AcquireSubmissionAdmission(skinnedNormalDiagnosticPass.HasValue);
         using var diagnosticFundingUse = skinnedNormalDiagnosticPass.HasValue
             ? snapshot.RetainDiagnosticFundingUse()
@@ -111,13 +57,6 @@ public sealed partial class Renderer
         var diagnosticFundingControl = skinnedNormalDiagnosticPass.HasValue
             ? diagnosticFundingUse.Control
             : null;
-
-        if (skinnedNormalDiagnosticPass.HasValue)
-        {
-            _ = _diagnosticsServiceOwner
-                ?? throw new InvalidOperationException("The native Renderer has no borrowed host diagnostic service owner.");
-            ArgumentOutOfRangeException.ThrowIfZero(_hostId);
-        }
 
         using var snapshotAssetPins = snapshot.RetainAssetPins();
         var graphResourceOwners = new HashSet<GraphicsResourceOwner>();
@@ -940,5 +879,85 @@ public sealed partial class Renderer
                 spriteSubmissionLease?.Dispose();
             }
         }
+    }
+
+    private GraphicsDevice ValidateSubmitInputs(RenderSnapshot snapshot, RenderGraphPlan graph)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(graph);
+
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not submit native render graphs.");
+        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
+
+        if ((graph.SnapshotId != snapshot.SnapshotId)
+            || (graph.WorldGuid != snapshot.WorldGuid)
+            || (graph.TickIndex != snapshot.TickIndex)
+            || (graph.FrameDimension != snapshot.FrameDimension)
+            || (graph.FrameRevision != snapshot.FrameRevision)
+            || (graph.ProfileId != snapshot.ProfileId)
+            || (graph.TargetExtent != snapshot.TargetExtent)
+            || !graph.CameraIds.AsSpan().SequenceEqual(snapshot.CameraIds.AsSpan()))
+        {
+            throw new ArgumentException("The graph plan does not match the exact render snapshot.", nameof(graph));
+        }
+
+        if (graph.DeviceEpoch != device.DeviceEpoch)
+        {
+            throw new InvalidOperationException("The graph plan belongs to a stale GraphicsDevice epoch.");
+        }
+
+        var offscreenOutputTarget = graph.OffscreenColorTarget;
+
+        if (offscreenOutputTarget is not null
+            && (!ReferenceEquals(offscreenOutputTarget.ResourceOwner.Device, device)
+                || (offscreenOutputTarget.DeviceEpoch != graph.DeviceEpoch)))
+        {
+            throw new ArgumentException("The graph output target belongs to another device or epoch.", nameof(graph));
+        }
+
+        var surfaceTarget = graph.SurfaceTarget;
+
+        if (surfaceTarget is not null)
+        {
+            ObjectDisposedException.ThrowIf(!surfaceTarget.IsLive, surfaceTarget);
+            var surfaceSnapshot = surfaceTarget.CaptureSnapshot();
+
+            if (!ReferenceEquals(surfaceTarget.Device, device))
+            {
+                throw new ArgumentException("The graph Surface belongs to another GraphicsDevice.", nameof(graph));
+            }
+
+            if ((surfaceTarget.Device.DeviceEpoch != graph.DeviceEpoch)
+                || (surfaceSnapshot.Capabilities.SurfaceEpoch != graph.SurfaceEpoch)
+                || (surfaceSnapshot.Capabilities.SwapchainEpoch != graph.SwapchainEpoch)
+                || (surfaceSnapshot.ClientPixelSize != graph.TargetExtent))
+            {
+                throw new InvalidOperationException("The graph plan belongs to a stale Surface or swapchain generation.");
+            }
+        }
+
+        var skinnedNormalDiagnosticPass = graph.BuiltInSpriteState?.MeshNormalDiagnosticPass;
+        var bufferReadbackExport = graph.BufferReadbackExport;
+
+        if (skinnedNormalDiagnosticPass.HasValue != bufferReadbackExport.HasValue)
+        {
+            throw new InvalidOperationException("The graph's skinned-normal diagnostic pass and readback export are incomplete.");
+        }
+
+        if (skinnedNormalDiagnosticPass is RenderMeshC0NormalDiagnosticGraphPass diagnosticPass
+            && (bufferReadbackExport?.Version.ResourceId != diagnosticPass.ResultBuffer.ResourceId))
+        {
+            throw new InvalidOperationException("The graph's skinned-normal result export does not match its diagnostic pass.");
+        }
+
+        if (skinnedNormalDiagnosticPass.HasValue)
+        {
+            _ = _diagnosticsServiceOwner
+                ?? throw new InvalidOperationException("The native Renderer has no borrowed host diagnostic service owner.");
+            ArgumentOutOfRangeException.ThrowIfZero(_hostId);
+        }
+
+        return device;
     }
 }
