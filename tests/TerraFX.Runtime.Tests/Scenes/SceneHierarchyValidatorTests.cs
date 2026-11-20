@@ -105,6 +105,54 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void PrefabLeaseCacheGrowthFitsPerEntryAllocationAllowance()
+    {
+        const int EntryCount = 65_536;
+        const long PrefabLeaseCacheCarrierBytes = 80;
+        const long PerPrefabEntryAllowanceBytes = 256;
+        var assetIds = new AssetId[EntryCount];
+
+        for (var index = 0; index < assetIds.Length; index++)
+        {
+            assetIds[index] = new AssetId(index + 1);
+        }
+
+        var warmCache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>?> {
+            [assetIds[0]] = null,
+        };
+        GC.KeepAlive(warmCache);
+
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        var cache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>?>();
+        long firstExceededEntryCount = -1;
+        long observedBytesAtFirstExcess = 0;
+        long allowanceAtFirstExcess = 0;
+
+        for (var index = 0; index < assetIds.Length; index++)
+        {
+            cache.Add(assetIds[index], null);
+            var observedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+            var allowanceBytes = PrefabLeaseCacheCarrierBytes
+                + (PerPrefabEntryAllowanceBytes * (index + 1L));
+
+            if ((firstExceededEntryCount < 0) && (observedBytes > allowanceBytes))
+            {
+                firstExceededEntryCount = index + 1L;
+                observedBytesAtFirstExcess = observedBytes;
+                allowanceAtFirstExcess = allowanceBytes;
+            }
+        }
+
+        GC.KeepAlive(cache);
+
+        Assert.That(
+            firstExceededEntryCount,
+            Is.EqualTo(-1),
+            $"The cache exceeded its allowance at {firstExceededEntryCount} entries: " +
+            $"{observedBytesAtFirstExcess} allocated bytes versus {allowanceAtFirstExcess} allowed.");
+    }
+
+    [Test]
     public void RejectsCyclesAndHierarchyDepthBeyondTheConfiguredLimit()
     {
         var firstEntityId = new Guid("10000000-0000-4000-8000-000000000001");
