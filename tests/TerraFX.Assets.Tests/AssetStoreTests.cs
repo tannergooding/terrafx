@@ -144,11 +144,12 @@ internal sealed class AssetStoreTests
     }
 
     private static ImmutableArray<ContentFieldDescriptor> CreateOptionalAssetReferenceFields(
-        ContentSchemaReference assetReferenceSchema)
+        ContentSchemaReference assetReferenceSchema,
+        int fieldCount)
     {
-        var fields = ImmutableArray.CreateBuilder<ContentFieldDescriptor>(3);
+        var fields = ImmutableArray.CreateBuilder<ContentFieldDescriptor>(fieldCount);
 
-        for (var index = 0; index < 3; index++)
+        for (var index = 0; index < fieldCount; index++)
         {
             fields.Add(new ContentFieldDescriptor(
                 checked((uint)index + 2),
@@ -798,8 +799,11 @@ internal sealed class AssetStoreTests
     [Test]
     [TestCase(0, 0)]
     [TestCase(1, 1)]
-    [TestCase(2, 1)]
+    [TestCase(2, 2)]
     [TestCase(3, 2)]
+    [TestCase(4, 3)]
+    [TestCase(5, 4)]
+    [TestCase(6, 4)]
     public void AssetReferenceScannerPreservesFirstOccurrenceOrderForDistinctTriples(
         int referenceCount,
         int expectedUniqueCount)
@@ -833,9 +837,20 @@ internal sealed class AssetStoreTests
             references);
         AssetReference[] expectedReferences = referenceCount switch {
             0 => [],
-            1 or 2 => [new AssetReference(new AssetId(2), fixture.FirstSchemaId, 1)],
-            _ => [
+            1 => [new AssetReference(new AssetId(3), fixture.SecondSchemaId, 2)],
+            2 or 3 => [
+                new AssetReference(new AssetId(3), fixture.SecondSchemaId, 2),
                 new AssetReference(new AssetId(2), fixture.FirstSchemaId, 1),
+            ],
+            4 => [
+                new AssetReference(new AssetId(3), fixture.SecondSchemaId, 2),
+                new AssetReference(new AssetId(2), fixture.FirstSchemaId, 1),
+                new AssetReference(new AssetId(2), fixture.FirstSchemaId, 2),
+            ],
+            _ => [
+                new AssetReference(new AssetId(3), fixture.SecondSchemaId, 2),
+                new AssetReference(new AssetId(2), fixture.FirstSchemaId, 1),
+                new AssetReference(new AssetId(2), fixture.FirstSchemaId, 2),
                 new AssetReference(new AssetId(2), fixture.SecondSchemaId, 1),
             ],
         };
@@ -2002,7 +2017,7 @@ internal sealed class AssetStoreTests
                         ContentReferenceKind.None,
                         ContentAuthoring.None,
                         null),
-                    .. CreateOptionalAssetReferenceFields(assetReferenceSchema),
+                    .. CreateOptionalAssetReferenceFields(assetReferenceSchema, referenceCount),
                 ]);
             var schemas = new CompiledContentSchemaRegistry([
                 .. NativeAssetSchemaCatalogue.Schemas,
@@ -2011,9 +2026,12 @@ internal sealed class AssetStoreTests
             var firstSchemaId = new Guid("ffffffff-0000-4000-8000-000000000001");
             var secondSchemaId = new Guid("11111111-0000-4000-8000-000000000002");
             byte[][] allEncodedReferences = [
+                CreateAssetReferenceRecord(3, secondSchemaId, 2),
                 CreateAssetReferenceRecord(2, firstSchemaId, 1),
-                CreateAssetReferenceRecord(2, firstSchemaId, 1),
+                CreateAssetReferenceRecord(3, secondSchemaId, 2),
+                CreateAssetReferenceRecord(2, firstSchemaId, 2),
                 CreateAssetReferenceRecord(2, secondSchemaId, 1),
+                CreateAssetReferenceRecord(2, firstSchemaId, 1),
             ];
             var encodedReferences = allEncodedReferences[..referenceCount];
             return new AssetReferenceScanFixture(
