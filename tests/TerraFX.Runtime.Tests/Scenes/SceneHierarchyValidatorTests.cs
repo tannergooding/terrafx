@@ -271,6 +271,34 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void SceneExpansionPlanCarrierMatchesSelectedRuntimeLayout()
+    {
+        const int SampleCount = 64;
+        const int ExpectedSceneExpansionPlanCarrierBytes = 160;
+        var planType = typeof(SceneExpansionPlan);
+        var warmInstances = new object[SampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(planType);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(planType);
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(measuredInstances);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedSceneExpansionPlanCarrierBytes));
+    }
+
+    [Test]
     public void WorkspaceByteReservationMatchesCompiledObjectAndArrayLayout()
     {
         const int SampleCount = 64;

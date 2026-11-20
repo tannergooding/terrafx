@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T09:39:58.004907Z`; HEAD `528059fe349ed84027734f3f88c17a5a7a536ef9`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T09:46:18.313343Z`; HEAD `bf781c3265b025313458ba9616aed1155e49e2d8`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -422,16 +422,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `61d9531dbfa8d3a889eb24b29a615539170cc574ed46f66a7aa0c080721ca9d9` |
-| P | 10 | `ff06e904d60246ed5aa2b3acca66908c5dd80000034fab18d9f90b7af12fd593` |
+| P | 10 | `5627b74c6e623ede1b4ee05f78f4036a728451efcec434cc4c0dde3e8782da81` |
 | A | 25 | `a3ddf491d41d54061c6a9cced5fc9632de0ef1327800474b32447fae43ffe6a9` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 18 | `c2ded1985fa781db98bdff3e8179385b56d3899c8658b8e61204903959c83d45` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 8 | `9cabdf24716895230b2a1674cd7ddcc0dcdd8114240d86bc5f6d7fb70c98c9e1` |
+| T | 8 | `4cea782fe4ba090108c2dedbafaa961f8be1b94f66b84bca2f8411d694286301` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 119 | `3f34fbaa75503d5d3a38d85c861a736a0687aa5fa094037300ec84f39ff0b864` |
+| ALL | 119 | `a6c2fd4caf2a4ec072697cc9af158e60cc6f4ca450780a8288e07160113fb633` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
@@ -454,4 +454,4 @@ The five preexisting dirty files are preservation inputs, **not acceptance of th
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The planner now uses an inline maximum-depth AssetId path, defers exact output builders/reference-list allocation until after its reservation callback, and avoids replacement empty builders after immutable ownership moves; the root builder and Prefab cache remain unclaimed before counting. Measured-layout regressions fix the SceneExpansionBuilder carrier at 448 bytes and the Prefab lease Dictionary shell at 80 bytes on the selected .NET 11 x64 runner; a 65,536-entry collection-only test keeps Dictionary object plus cumulative backing-allocation traffic within `80 + 256*n` at every prefix. The Assets test project passes 69/69, the focused Scene hierarchy workspace/planner selection passes 12/12, a separate seven-test nested expansion/typed-read/refusal selection passes, and the maximum-depth path/cycle selection passes 4/4 in Debug and Release. These observations cover fixed-buffer scan partitions, hierarchy and planner/cache carrier measurements, shared sixteen-byte array sizing and the Planner's depth boundary; they do not prove lease, decoded Prefab, operation, or Scene funding. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
+Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The planner now uses an inline maximum-depth AssetId path, defers exact output builders/reference-list allocation until after its reservation callback, and avoids replacement empty builders after immutable ownership moves; the root builder and Prefab cache remain unclaimed before counting. Measured-layout regressions fix the SceneExpansionBuilder carrier at 448 bytes, the retained SceneExpansionPlan shell at 160 bytes, and the Prefab lease Dictionary shell at 80 bytes on the selected .NET 11 x64 runner; a 65,536-entry collection-only test keeps Dictionary object plus cumulative backing-allocation traffic within `80 + 256*n` at every prefix. The Assets test project passes 69/69, the focused Scene hierarchy workspace/planner selection passes 12/12, a separate seven-test nested expansion/typed-read/refusal selection passes, and the maximum-depth path/cycle selection passes 4/4 in Debug and Release. These observations cover fixed-buffer scan partitions, hierarchy and planner/cache carrier measurements, shared sixteen-byte array sizing and the Planner's depth boundary; they do not prove lease, decoded Prefab, operation, or Scene funding. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
