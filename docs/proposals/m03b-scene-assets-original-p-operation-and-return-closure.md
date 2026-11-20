@@ -159,7 +159,7 @@ Implement a selected, owner-bearing `AssetEnvelopeDecoder` path using the existi
 5. Invoke the existing typed reader in the same validation order. Retain the context, envelope, scan result, semantic graph and validation scratch for their actual coexistence. `encodedEnvelope = []` and Store decode-credit return alone do not prove last access.
 6. Inspect automatic targets sequentially. Check known None metadata before each target reservation/read; schema ID/major and exact registration checks still follow actual envelope inspection. One target-array peak is usable only after the previous target's consumers/return obligations end or transfer; otherwise charge their real overlap.
 
-DataUpper is the checked sum/phase maximum of the catalogue's parent, fixed scan, semantic-prefix, target-inspection and issue terms. BigInteger finite mathematical domains do not establish BCL limb/rent/scratch capacities. Mesh remains unavailable unless its exact operator paths are closed, or the catalogue's fixed-word exact-predicate fallback is separately implemented and tested without changing numerical predicates.
+DataUpper is the checked sum/phase maximum of the catalogue's parent, fixed scan, semantic-prefix, target-inspection and issue terms. Mesh triangle, sphere and weight predicates now use nine-limb fixed stack arithmetic for the derived 558-bit ceiling; the prior BigInteger limb/rent term is removed. The owning Mesh codec selection passes 10/10 in Debug and Release, including finite-extreme/subnormal geometry and the exact binary32 values around the 1/100000 weight tolerance. This closes only that predicate subproblem. Its fixed native-stack/J footprint and all remaining reader, issue, lower-I/O and return terms still belong in the complete target profile.
 
 ### Exact result handoff and receiver transfer
 
@@ -250,7 +250,7 @@ These are future checks on implemented production boundaries, not results from t
 | Original-P issuance/election | Checked overflow, unavailable profile, exact fit/one byte short, occupied slot, stale generation, duplicate start and close during construction/installation. Use independently derived baseline plus complete delta; short trials must actually reach the named boundary. Assert no reference/credit/read before admission and no second World/domain debit. Existing `WorldSceneReceiverTests` supply real lower-use/receiver patterns, not Scene-root success. |
 | Described acquisition | Real packages through exact factory receipts, stale-current refusal, old anchored backing across replacement, disposed source/Store, and temporary-reference refusal cleanup. Extend `AssetStoreTests`, `AssetStoreRegistrationTests`, `AssetPackageLeaseTests` and `ScenePrefabPackageLeaseTests` as applicable. Preserve ordinary custom/Brotli loads and current Store policy; selected paths never fall back. |
 | Owned decoder scan | Literal expected triples for repeated/first-occurrence order, same ID with different schema **and major**, zero/one/two/odd/even occurrences, exact/short destinations, overlap refusal and immutable publication. Current scanner regression covers only 0–3 occurrences; it is not owner integration evidence. Test actual selected decoder routing only once its real owner/grant can be admitted; ordinary `Scan` must remain compatible. |
-| Data prefix/capacity | Independently derived catalogue functions, constructor/copy coexistence, target bound larger than parent, duplicate Mesh stream, invalid Omit, late hierarchy/Skeleton rejection and fixed-word/BigInteger evidence where claimed. Reconcile capacities/compiled lowering with functions; observed allocations corroborate, never define, maxima. Do not use production output as the only oracle. |
+| Data prefix/capacity | Independently derived catalogue functions, constructor/copy coexistence, target bound larger than parent, duplicate Mesh stream, invalid Omit, late hierarchy/Skeleton rejection and fixed-limb Mesh boundary fixtures. Reconcile capacities/compiled lowering with functions; observed allocations corroborate, never define, maxima. Do not use production output as the only oracle. |
 | Actual I/O and cancellation | Real synchronous and suspended completion where supported, short-positive reads/EOF, cancellation before issue and during accepted work, submission/registration races and source single consumption. Verify actual input-use end separately from readiness and lower publication/return. If the real filesystem/stimulus cannot reach a required schedule safely, record it as unsupported, not passed. |
 | Installation/helper return | Root lease → builder, Prefab context check → cache, Atlas page/Material texture pending → immutable set, Mesh Retain with and without Skeleton, helper failure/cancellation/finally, destination close racing acknowledgment. Verify the same retained claim moves once, helper temporary provision survives actual return, and a second operation cannot spend old returning interests. |
 | Cleanup/physical release | Actual source/Store replacement/close schedules, zero/admitted credit rollback, nonfinal versus final backing release, successful lower release before accounting and independently safe sibling cleanup. Constructor-allocation and genuine close-failure observations require a supported real stimulus; no fabricated OOM, corrupt private counts, throwing allocator fake, repeated uncertain close or managed-Dispose-only physical-release claim. |
@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T02:20:45.865964+00:00`; HEAD `c83de08b181f4395b8c390834ac0c3982479db7f`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T02:56:02.385226+00:00`; HEAD `76ed7ac2c09fde572a8dfe8b37d1ad48b0354028`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -403,6 +403,7 @@ WorldAdmissionDomain.TerminalAnchor.cs
 TerraFX.Assets.Tests\AssetStoreTests.cs
 TerraFX.Assets.Tests\AssetStoreRegistrationTests.cs
 TerraFX.Assets.Tests\AssetPackageLeaseTests.cs
+TerraFX.Runtime.Tests\Rendering\RenderMeshAssetCodecTests.cs
 TerraFX.Runtime.Tests\Scenes\ScenePrefabPackageLeaseTests.cs
 TerraFX.Runtime.Tests\Scenes\SceneAssetStoreTests.cs
 TerraFX.Runtime.Tests\Entities\WorldSceneReceiverTests.cs
@@ -417,16 +418,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `b3ff0f1984afc753dde42ef970eadfac6c353f4acfba306b15d59ba6afa08ea9` |
-| P | 10 | `ea131bd2a9ecd3abf917b455322d6e6173814d3fc166f858286ba0d9c3381448` |
+| P | 10 | `59ad23cd36f6e45f1dd0d3549e4b303e5bd4bf5e990998ac3d40151a03c9b62c` |
 | A | 25 | `a0b378278f85d2f53f05f202227872ac2de35a4f3e4ae56cfd3abd0e179ce99b` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 15 | `a4c514c7bd77e66add0bf574601bb22e458081b2d2e13a26577675d7ec255577` |
-| G | 14 | `453fb084c1accd3102159b668a031ef242f00a8d0c27261079aedccc42bb7213` |
+| G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 6 | `9bedd047452f1b61bab3fb126d08cdb8fb03126ad463f57b01b2a3d63426020c` |
+| T | 7 | `9b24c42a6775eb3f19f7e09cd44c9a627e1103e5f8ebd206ee8fc16663f3e3f5` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 114 | `cb671ff860281389a8bc6a5b7fdd3dc2f17a33e3875a27f201b7aafaea37fc5d` |
+| ALL | 115 | `96246a1ab9fe2f664bd3ab34917d99d233d3f598690e56c4ebdb5eb7d782f247` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
@@ -449,4 +450,4 @@ The five preexisting dirty files are preservation inputs, **not acceptance of th
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-Only this new proposal artifact is authored. No source, tests, Roadmap, design contracts or existing proposals are edited; no build/test, numerical profile, native/AOT experiment, commit, push, PR or remote operation is supplied.
+Fixed-limb Mesh predicates and their edge tests are now implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
