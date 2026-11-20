@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Scenes;
 
@@ -351,6 +352,103 @@ internal sealed class SceneHierarchyValidatorTests
             256);
 
         Assert.That(duplicateResult.Error, Is.EqualTo(SceneHierarchyValidationError.DuplicateMembership));
+    }
+
+    [Test]
+    public void SceneEntityReferenceBindingCarrierAndPathCopyAllocationsMatchSelectedRuntime()
+    {
+        const int SampleCount = 64;
+
+        if (IntPtr.Size != 8)
+        {
+            Assert.Ignore("The Scene reference-binding allocation profile is x64-only.");
+        }
+
+        var bindingType = typeof(SceneEntityReferenceBinding);
+        var warmCarriers = new object[SampleCount];
+
+        for (var index = 0; index < warmCarriers.Length; index++)
+        {
+            warmCarriers[index] = RuntimeHelpers.GetUninitializedObject(bindingType);
+        }
+
+        GC.KeepAlive(warmCarriers);
+        var measuredCarriers = new object[SampleCount];
+        var carrierAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredCarriers.Length; index++)
+        {
+            measuredCarriers[index] = RuntimeHelpers.GetUninitializedObject(bindingType);
+        }
+
+        var carrierBytes = (GC.GetAllocatedBytesForCurrentThread() - carrierAllocationStart) / SampleCount;
+        GC.KeepAlive(measuredCarriers);
+        Assert.That(carrierBytes, Is.EqualTo(96));
+
+        var componentSchema = new ContentSchemaReference(
+            SceneEntityReader.LocalTransformSchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var source = new SceneEntitySelector(
+            SceneEntitySelectorScope.OccurrenceRelative,
+            [],
+            new Guid("10000000-0000-4000-8000-000000000001"));
+        var targetSelector = new SceneEntitySelector(
+            SceneEntitySelectorScope.OccurrenceRelative,
+            [],
+            new Guid("10000000-0000-4000-8000-000000000002"));
+        var target = new SceneReferenceTarget(SceneReferenceTargetKind.Internal, targetSelector, externalSlotId: null);
+        var pathElementBytes = Unsafe.SizeOf<ScenePropertyPathSegment>();
+        Assert.That(pathElementBytes, Is.EqualTo(8));
+
+        foreach (var pathLength in new[] { 1, 64 })
+        {
+            var pathSegments = new ScenePropertyPathSegment[pathLength];
+
+            for (var index = 0; index < pathSegments.Length; index++)
+            {
+                pathSegments[index] = new ScenePropertyPathSegment(
+                    ScenePropertyPathSegmentKind.FieldTag,
+                    checked((uint)index + 1U));
+            }
+
+            var propertyPath = ImmutableArray.CreateRange(pathSegments);
+            var warmBindings = new SceneEntityReferenceBinding[SampleCount];
+
+            for (var index = 0; index < warmBindings.Length; index++)
+            {
+                warmBindings[index] = new SceneEntityReferenceBinding(
+                    source,
+                    componentSchema,
+                    propertyPath,
+                    target);
+            }
+
+            GC.KeepAlive(warmBindings);
+            var measuredBindings = new SceneEntityReferenceBinding[SampleCount];
+            var bindingAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+            for (var index = 0; index < measuredBindings.Length; index++)
+            {
+                measuredBindings[index] = new SceneEntityReferenceBinding(
+                    source,
+                    componentSchema,
+                    propertyPath,
+                    target);
+            }
+
+            var constructorBytes = (GC.GetAllocatedBytesForCurrentThread() - bindingAllocationStart) / SampleCount;
+            GC.KeepAlive(measuredBindings);
+            var measuredPathArrayBytes = checked(
+                24L + ((long)pathLength * pathElementBytes));
+            var pathCharge = checked(
+                64L + ((((long)pathLength * pathElementBytes) + 15L) & ~15L));
+            TestContext.WriteLine(
+                $"SceneEntityReferenceBinding={carrierBytes}; PathLength={pathLength}; "
+                + $"PathStride={pathElementBytes}; Constructor={constructorBytes}; SceneArrayCharge={pathCharge};");
+            Assert.That(constructorBytes, Is.EqualTo(carrierBytes + measuredPathArrayBytes));
+        }
     }
 
     [Test]
