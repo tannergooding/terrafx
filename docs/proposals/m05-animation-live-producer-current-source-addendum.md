@@ -92,9 +92,9 @@ The committed reader-only change replaces nested `ImmutableArray` builders plus 
 
 ## 7. Frozen direct inputs
 
-Freeze: **2026-11-20T07:17:06.619814Z**, HEAD **`7b36388a3b7cb55d0b4ab8bdc1f11c3451e923c1`**. The 102 direct inputs are tracked and clean at this revision. The five unrelated dirty Scene/Sprite tests are preserved separately below and are not treated as Animation acceptance inputs.
+Freeze: **2026-11-20T07:38:15.298630Z**, HEAD **`b849e8738745cfaa8dc622c5a7cbb263ffd8db91`**. The 102 direct inputs are tracked and clean at this revision. The five unrelated dirty Scene/Sprite tests are preserved separately below and are not treated as Animation acceptance inputs.
 
-Manifest SHA-256: **`A7551C940F02DA73111601961A0AC7B9EB19E5B9B9460FBB9E84E9F24D045F0A`**.
+Manifest SHA-256: **`6B1C89309FB03CBC0AB4E7AFED83C35CCB398351B6B1075EA39636017CE44B49`**.
 
 Digest encoding is UTF-8 without BOM, LF endings and a final LF: first `HEAD<TAB><head><LF>`, then the rows below sorted by ordinal full path, each encoded as `<state><TAB><uppercase SHA-256><TAB><exact Windows relative path><LF>`. The proposal itself is excluded to avoid a self-hash. Recheck path membership and hashes before applying a later implementation disposition; changed inputs supersede this freeze.
 
@@ -187,7 +187,7 @@ All direct-input raw-byte hashes and states were rechecked at the freeze. Defini
 | ``sources\TerraFX.Runtime\Rendering\RendererCpuFeatures.cs`` | C | `AD662321F076BB0BF40E06634C11A36F44127F6E7E773D6E33BA612876918098` |
 | ``sources\TerraFX.Runtime\Scenes\SceneExpansionPlan.cs`` | C | `BF2A625CF9FB3D0EAC647BBA622D31B245066FB23C78E1EBA96BEF7398FC2725` |
 | ``sources\TerraFX.Runtime\Scenes\SceneLoader.cs`` | C | `4903A86FC323ED906A0045288BEBAB68B37C5B6BEEFF6312EA0440A9D05D453C` |
-| ``sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs`` | C | `149A06A90969FABE498A23A93D678BADF24294B368C9D224AE61040D8FABACA8` |
+| ``sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs`` | C | `8E3A7BB62BE2AC3137171EF0B832DD4A84D03BAA352805B3CEB391D63CAC90B2` |
 | ``sources\TerraFX.Runtime\Scenes\SceneWorldRegistry.cs`` | C | `34F60698127CAB3A5E3CFFB43D01265375F26C1291B733B4D3AFD00C63D2C54E` |
 | ``sources\TerraFX.Runtime\TerraFX.Runtime.csproj`` | C | `2F1C81E54F0FBF12D01E34D0D840885F5EB0E94A8B8890865EF721B8C6A3C65D` |
 | ``tests\Directory.Build.props`` | C | `281AAD4237121FEAB1903C2384F1A5F0AED7E218A704C918FE953E9FC8E75764` |
