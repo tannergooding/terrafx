@@ -142,6 +142,31 @@ internal sealed class AssetStoreTests
         return weakBacking;
     }
 
+    private static ImmutableArray<ContentFieldDescriptor> CreateOptionalAssetReferenceFields(
+        ContentSchemaReference assetReferenceSchema)
+    {
+        var fields = ImmutableArray.CreateBuilder<ContentFieldDescriptor>(3);
+
+        for (var index = 0; index < 3; index++)
+        {
+            fields.Add(new ContentFieldDescriptor(
+                checked((uint)index + 2),
+                22,
+                0,
+                false,
+                1,
+                1,
+                [assetReferenceSchema],
+                0,
+                ContentUnit.None,
+                ContentReferenceKind.Asset,
+                ContentAuthoring.None,
+                null));
+        }
+
+        return fields.MoveToImmutable();
+    }
+
     private static AssetStoreOptions CreateOptions(
         string path,
         byte[] package,
@@ -154,6 +179,51 @@ internal sealed class AssetStoreTests
             MaximumConcurrentDecodeBytes = maximumConcurrentDecodeBytes,
             MaximumLiveAssetLeases = maximumLiveAssetLeases,
         };
+
+    private static byte[] CreateReferenceRootRecord(
+        ContentSchemaReference schema,
+        byte[][] references)
+    {
+        var fieldCount = checked(1 + references.Length);
+        var directoryEnd = checked(64 + (fieldCount * 32));
+        var markerOffset = checked((int)Align16(checked((ulong)directoryEnd)));
+        var cursor = checked(markerOffset + sizeof(uint));
+        var referenceOffsets = new int[references.Length];
+
+        for (var index = 0; index < references.Length; index++)
+        {
+            cursor = checked((int)Align16(checked((ulong)cursor)));
+            referenceOffsets[index] = cursor;
+            cursor = checked(cursor + references[index].Length);
+        }
+
+        var encodedLength = checked((int)Align16(checked((ulong)cursor)));
+        var encodedRecord = new byte[encodedLength];
+        WriteHeader(encodedRecord, schema, checked((uint)fieldCount));
+        WriteFieldHeader(
+            encodedRecord.AsSpan(64, 32),
+            1,
+            3,
+            checked((ulong)markerOffset),
+            sizeof(uint),
+            1);
+        BinaryPrimitives.WriteUInt32LittleEndian(encodedRecord.AsSpan(markerOffset), 1);
+
+        for (var index = 0; index < references.Length; index++)
+        {
+            WriteFieldHeader(
+                encodedRecord.AsSpan(64 + ((index + 1) * 32), 32),
+                checked((uint)index + 2),
+                22,
+                checked((ulong)referenceOffsets[index]),
+                checked((ulong)references[index].Length),
+                1,
+                flags: 0);
+            references[index].CopyTo(encodedRecord.AsSpan(referenceOffsets[index]));
+        }
+
+        return encodedRecord;
+    }
 
     private static AssetStoreRegistration CreateRegistration(IBinarySchemaCodec<TestAssetValue>? codec = null)
         => new AssetStoreRegistrationBuilder(s_schemas)
@@ -520,6 +590,100 @@ internal sealed class AssetStoreTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Test]
+    public void AssetReferenceScannerPreservesFirstOccurrenceOrderForDistinctTriples()
+    {
+        var rootIdentity = new ContentSchemaIdentityAssignment("test/asset-reference-scan-root");
+        var assetReferenceSchema = FindAssetReferenceSchema();
+        var rootSchema = new DataSchema(
+            new ContentSchemaReference(rootIdentity.SchemaId, 1, 0, ContentSchemaScope.Content),
+            rootIdentity,
+            ContentSchemaRole.NativeAsset,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.NotComponent,
+            ContentTransientRestore.NotApplicable,
+            [
+                new ContentFieldDescriptor(
+                    1,
+                    3,
+                    0,
+                    true,
+                    1,
+                    1,
+                    [],
+                    0,
+                    ContentUnit.None,
+                    ContentReferenceKind.None,
+                    ContentAuthoring.None,
+                    null),
+                .. CreateOptionalAssetReferenceFields(assetReferenceSchema),
+            ]);
+        var schemas = new CompiledContentSchemaRegistry([
+            .. NativeAssetSchemaCatalogue.Schemas,
+            rootSchema,
+        ]);
+        var firstSchemaId = new Guid("ffffffff-0000-4000-8000-000000000001");
+        var secondSchemaId = new Guid("11111111-0000-4000-8000-000000000002");
+        byte[][] encodedReferences = [
+            CreateAssetReferenceRecord(2, firstSchemaId, 1),
+            CreateAssetReferenceRecord(2, firstSchemaId, 1),
+            CreateAssetReferenceRecord(2, secondSchemaId, 1),
+        ];
+        var encodedRecord = CreateReferenceRootRecord(rootSchema.Schema, encodedReferences);
+        var referenceWorkspace = new AssetReference[encodedReferences.Length];
+        var indexWorkspace = new int[encodedReferences.Length];
+        var action = new AssetReferenceScanAction(
+            rootSchema,
+            schemas,
+            referenceWorkspace,
+            indexWorkspace);
+
+        Assert.That(
+            EbinStructuralReader.Read(
+                encodedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out var bytesConsumed,
+                out var diagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(bytesConsumed, Is.EqualTo(encodedRecord.Length));
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(action.UniqueCount, Is.EqualTo(2));
+
+        var references = new AssetReference[action.UniqueCount];
+        AssetReferenceScanner.CopyUniqueReferences(
+            referenceWorkspace,
+            indexWorkspace.AsSpan(0, action.UniqueCount),
+            references);
+        AssetReference[] expectedReferences = [
+            new AssetReference(new AssetId(2), firstSchemaId, 1),
+            new AssetReference(new AssetId(2), secondSchemaId, 1),
+        ];
+        Assert.That(
+            references,
+            Is.EqualTo(expectedReferences));
+
+        var emptyRecord = CreateReferenceRootRecord(rootSchema.Schema, []);
+        var emptyAction = new AssetReferenceScanAction(
+            rootSchema,
+            schemas,
+            [],
+            []);
+        Assert.That(
+            EbinStructuralReader.Read(
+                emptyRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref emptyAction,
+                out bytesConsumed,
+                out diagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(bytesConsumed, Is.EqualTo(emptyRecord.Length));
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(emptyAction.UniqueCount, Is.Zero);
     }
 
     [Test]
@@ -1570,6 +1734,38 @@ internal sealed class AssetStoreTests
             replacementStateField.SetValue(store, 0);
             await store.DisposeAsync().ConfigureAwait(false);
             File.Delete(path);
+        }
+    }
+
+    private struct AssetReferenceScanAction : IAction<EbinRecordReadView>
+    {
+        private readonly int[] _indexWorkspace;
+        private readonly AssetReference[] _referenceWorkspace;
+        private readonly DataSchema _rootSchema;
+        private readonly CompiledContentSchemaRegistry _schemas;
+
+        internal AssetReferenceScanAction(
+            DataSchema rootSchema,
+            CompiledContentSchemaRegistry schemas,
+            AssetReference[] referenceWorkspace,
+            int[] indexWorkspace)
+        {
+            _rootSchema = rootSchema;
+            _schemas = schemas;
+            _referenceWorkspace = referenceWorkspace;
+            _indexWorkspace = indexWorkspace;
+        }
+
+        internal int UniqueCount { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView argument)
+        {
+            UniqueCount = AssetReferenceScanner.ScanInto(
+                argument,
+                _rootSchema,
+                _schemas,
+                _referenceWorkspace,
+                _indexWorkspace);
         }
     }
 

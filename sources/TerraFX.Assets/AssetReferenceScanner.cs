@@ -66,6 +66,43 @@ internal static class AssetReferenceScanner
         return copiedCount;
     }
 
+    internal static void CopyUniqueReferences(
+        scoped ReadOnlySpan<AssetReference> referenceWorkspace,
+        scoped ReadOnlySpan<int> uniqueIndices,
+        scoped Span<AssetReference> destination)
+    {
+        if (destination.Length != uniqueIndices.Length)
+        {
+            throw new ArgumentException("The AssetReference destination must match the unique reference count.", nameof(destination));
+        }
+
+        var referenceBytes = MemoryMarshal.AsBytes(referenceWorkspace);
+        var indexBytes = MemoryMarshal.AsBytes(uniqueIndices);
+        var destinationBytes = MemoryMarshal.AsBytes(destination);
+
+        if (destinationBytes.Overlaps(referenceBytes)
+            || destinationBytes.Overlaps(indexBytes)
+            || referenceBytes.Overlaps(indexBytes))
+        {
+            throw new ArgumentException("The AssetReference destination and scan workspaces must not overlap.", nameof(destination));
+        }
+
+        var previousIndex = -1;
+
+        for (var index = 0; index < uniqueIndices.Length; index++)
+        {
+            var sourceIndex = uniqueIndices[index];
+
+            if ((sourceIndex <= previousIndex) || (sourceIndex >= referenceWorkspace.Length))
+            {
+                throw new InvalidOperationException("The AssetReference unique-index workspace is not strictly increasing and in range.");
+            }
+
+            destination[index] = referenceWorkspace[sourceIndex];
+            previousIndex = sourceIndex;
+        }
+    }
+
     internal static int CountAssetIds(
         scoped EbinRecordReadView record,
         DataSchema schema,
@@ -90,6 +127,72 @@ internal static class AssetReferenceScanner
         var referenceCount = 0;
         VisitRecord(record, schema, schemas, references, seen, [], false, [], false, ref referenceCount, 0);
         return [.. references];
+    }
+
+    internal static int ScanInto(
+        scoped EbinRecordReadView record,
+        DataSchema schema,
+        CompiledContentSchemaRegistry schemas,
+        scoped Span<AssetReference> referenceWorkspace,
+        scoped Span<int> indexWorkspace)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(schemas);
+        var referenceCount = CountAssetIds(record, schema, schemas);
+
+        if (referenceWorkspace.Length != referenceCount)
+        {
+            throw new ArgumentException("The AssetReference workspace must match the exact occurrence count.", nameof(referenceWorkspace));
+        }
+
+        if (indexWorkspace.Length != referenceCount)
+        {
+            throw new ArgumentException("The AssetReference index workspace must match the exact occurrence count.", nameof(indexWorkspace));
+        }
+
+        var referenceBytes = MemoryMarshal.AsBytes(referenceWorkspace);
+        var indexBytes = MemoryMarshal.AsBytes(indexWorkspace);
+
+        if (referenceBytes.Overlaps(record.EncodedBytes)
+            || indexBytes.Overlaps(record.EncodedBytes)
+            || referenceBytes.Overlaps(indexBytes))
+        {
+            throw new ArgumentException("The AssetReference scan workspaces must not overlap the record or each other.");
+        }
+
+        var copiedCount = 0;
+        VisitRecord(record, schema, schemas, null, null, [], false, referenceWorkspace, true, ref copiedCount, 0);
+
+        if (copiedCount != referenceCount)
+        {
+            throw new InvalidOperationException("The AssetReference occurrences changed during scan.");
+        }
+
+        for (var index = 0; index < referenceCount; index++)
+        {
+            indexWorkspace[index] = index;
+        }
+
+        HeapSortReferenceIndices(referenceWorkspace, indexWorkspace);
+        var uniqueCount = 0;
+        var cursor = 0;
+
+        while (cursor < referenceCount)
+        {
+            var firstIndex = indexWorkspace[cursor];
+            var reference = referenceWorkspace[firstIndex];
+            indexWorkspace[uniqueCount++] = firstIndex;
+            cursor++;
+
+            while ((cursor < referenceCount)
+                && AreEqual(reference, referenceWorkspace[indexWorkspace[cursor]]))
+            {
+                cursor++;
+            }
+        }
+
+        HeapSortIndices(indexWorkspace[..uniqueCount]);
+        return uniqueCount;
     }
 
     private static void AddReference(
@@ -149,6 +252,31 @@ internal static class AssetReferenceScanner
         referenceCount++;
     }
 
+    private static bool AreEqual(AssetReference left, AssetReference right)
+        => (left.AssetId == right.AssetId)
+            && (left.SchemaId == right.SchemaId)
+            && (left.SchemaMajor == right.SchemaMajor);
+
+    private static int CompareReferenceIndices(
+        scoped ReadOnlySpan<AssetReference> references,
+        int leftIndex,
+        int rightIndex)
+    {
+        var comparison = references[leftIndex].AssetId.Value.CompareTo(references[rightIndex].AssetId.Value);
+
+        if (comparison == 0)
+        {
+            comparison = references[leftIndex].SchemaId.CompareTo(references[rightIndex].SchemaId);
+        }
+
+        if (comparison == 0)
+        {
+            comparison = references[leftIndex].SchemaMajor.CompareTo(references[rightIndex].SchemaMajor);
+        }
+
+        return (comparison != 0) ? comparison : leftIndex.CompareTo(rightIndex);
+    }
+
     private static DataSchema FindAssetReferenceSchema()
     {
         foreach (var schema in NativeAssetSchemaCatalogue.Schemas)
@@ -160,6 +288,36 @@ internal static class AssetReferenceScanner
         }
 
         throw new InvalidOperationException("The compiled native-asset-reference schema is missing.");
+    }
+
+    private static void HeapSortIndices(scoped Span<int> indices)
+    {
+        for (var start = indices.Length / 2; start > 0; start--)
+        {
+            SiftDownIndices(indices, start - 1, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftDownIndices(indices, 0, end);
+        }
+    }
+
+    private static void HeapSortReferenceIndices(
+        scoped ReadOnlySpan<AssetReference> references,
+        scoped Span<int> indices)
+    {
+        for (var start = indices.Length / 2; start > 0; start--)
+        {
+            SiftDownReferenceIndices(references, indices, start - 1, indices.Length);
+        }
+
+        for (var end = indices.Length - 1; end > 0; end--)
+        {
+            (indices[0], indices[end]) = (indices[end], indices[0]);
+            SiftDownReferenceIndices(references, indices, 0, end);
+        }
     }
 
     private static bool MatchesField(EbinFieldReadView field, ContentFieldDescriptor descriptor)
@@ -200,6 +358,69 @@ internal static class AssetReferenceScanner
         }
 
         return new AssetReference(new AssetId(checked((int)assetIdValue)), schemaId, checked((int)schemaMajor));
+    }
+
+    private static void SiftDownIndices(scoped Span<int> indices, int root, int length)
+    {
+        while (root < (length / 2))
+        {
+            var child = checked((root * 2) + 1);
+            var selected = root;
+
+            if (indices[selected] < indices[child])
+            {
+                selected = child;
+            }
+
+            var rightChild = child + 1;
+
+            if ((rightChild < length) && (indices[selected] < indices[rightChild]))
+            {
+                selected = rightChild;
+            }
+
+            if (selected == root)
+            {
+                return;
+            }
+
+            (indices[root], indices[selected]) = (indices[selected], indices[root]);
+            root = selected;
+        }
+    }
+
+    private static void SiftDownReferenceIndices(
+        scoped ReadOnlySpan<AssetReference> references,
+        scoped Span<int> indices,
+        int root,
+        int length)
+    {
+        while (root < (length / 2))
+        {
+            var child = checked((root * 2) + 1);
+            var selected = root;
+
+            if (CompareReferenceIndices(references, indices[selected], indices[child]) < 0)
+            {
+                selected = child;
+            }
+
+            var rightChild = child + 1;
+
+            if ((rightChild < length)
+                && (CompareReferenceIndices(references, indices[selected], indices[rightChild]) < 0))
+            {
+                selected = rightChild;
+            }
+
+            if (selected == root)
+            {
+                return;
+            }
+
+            (indices[root], indices[selected]) = (indices[selected], indices[root]);
+            root = selected;
+        }
     }
 
     private static void VisitNested(
