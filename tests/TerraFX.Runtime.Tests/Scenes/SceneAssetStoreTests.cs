@@ -1803,7 +1803,7 @@ internal sealed partial class SceneAssetStoreTests
     [Test]
     public async Task RetainsRealPrefabLeasesWithinCacheGrowthAllowance()
     {
-        const int PrefabCount = 32;
+        const int PrefabCount = 256;
         const long PrefabLeaseCacheCarrierBytes = 80;
         const long PerPrefabEntryAllowanceBytes = 256;
         var assetIds = new AssetId[PrefabCount];
@@ -1836,13 +1836,8 @@ internal sealed partial class SceneAssetStoreTests
 
                 try
                 {
-                    for (var index = 0; index < leases.Length; index++)
-                    {
-                        leases[index] = await store.LoadAsync<ScenePrefabAsset>(assetIds[index]).ConfigureAwait(false);
-                    }
-
-                    var firstLease = leases[0]
-                        ?? throw new InvalidOperationException("The first Prefab lease was not loaded before cache measurement.");
+                    var firstLease = await store.LoadAsync<ScenePrefabAsset>(assetIds[0]).ConfigureAwait(false);
+                    leases[0] = firstLease;
                     var warmCache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>> {
                         [assetIds[0]] = firstLease,
                     };
@@ -1850,30 +1845,38 @@ internal sealed partial class SceneAssetStoreTests
 
                     var allocationStart = GC.GetAllocatedBytesForCurrentThread();
                     var cache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>>();
-                    long firstExceededEntryCount = -1;
-                    long observedBytesAtFirstExcess = 0;
-                    long allowanceAtFirstExcess = 0;
+                    var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+                    var firstExceededEntryCount = -1L;
+                    var observedBytesAtFirstExcess = 0L;
+                    var allowanceAtFirstExcess = 0L;
 
                     for (var index = 0; index < leases.Length; index++)
                     {
+                        if (index > 0)
+                        {
+                            leases[index] = await store.LoadAsync<ScenePrefabAsset>(assetIds[index]).ConfigureAwait(false);
+                        }
+
                         var lease = leases[index]
                             ?? throw new InvalidOperationException("A Prefab lease was not loaded before cache measurement.");
+                        var insertionAllocationStart = GC.GetAllocatedBytesForCurrentThread();
                         cache.Add(assetIds[index], lease);
-                        var observedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+                        allocatedBytes = checked(
+                            allocatedBytes
+                            + (GC.GetAllocatedBytesForCurrentThread() - insertionAllocationStart));
                         var allowanceBytes = PrefabLeaseCacheCarrierBytes
                             + (PerPrefabEntryAllowanceBytes * (index + 1L));
 
-                        if ((firstExceededEntryCount < 0) && (observedBytes > allowanceBytes))
+                        if ((firstExceededEntryCount < 0) && (allocatedBytes > allowanceBytes))
                         {
                             firstExceededEntryCount = index + 1L;
-                            observedBytesAtFirstExcess = observedBytes;
+                            observedBytesAtFirstExcess = allocatedBytes;
                             allowanceAtFirstExcess = allowanceBytes;
                         }
                     }
 
                     GC.KeepAlive(cache);
                     GC.KeepAlive(leases);
-                    var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
                     var allowanceBytesAtMaximum = PrefabLeaseCacheCarrierBytes
                         + (PerPrefabEntryAllowanceBytes * leases.Length);
                     TestContext.WriteLine(
