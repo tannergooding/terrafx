@@ -18,6 +18,7 @@ internal sealed class AssetStoreBoundedProvision
     private readonly int _maximumConcurrentDecodeBytes;
     private readonly int _maximumDecodedAssetBytes;
     private readonly int _maximumLiveAssetLeases;
+    private readonly AssetBoundedNativePort _nativePort;
     private readonly bool _ownsSharedProvision;
     private AssetStoreRegistration? _registration;
     private readonly long _reservedBytes;
@@ -42,6 +43,7 @@ internal sealed class AssetStoreBoundedProvision
         _maximumDecodedAssetBytes = maximumDecodedAssetBytes;
         _maximumConcurrentDecodeBytes = maximumConcurrentDecodeBytes;
         _maximumLiveAssetLeases = maximumLiveAssetLeases;
+        _nativePort = new AssetBoundedNativePort(Environment.CurrentManagedThreadId);
         _reservedBytes = reservedBytes;
         _sharedProvisionBytes = sharedProvisionBytes;
         _ownsSharedProvision = ownsSharedProvision;
@@ -59,6 +61,8 @@ internal sealed class AssetStoreBoundedProvision
     internal int MaximumDecodedAssetBytes => _maximumDecodedAssetBytes;
 
     internal int MaximumLiveAssetLeases => _maximumLiveAssetLeases;
+
+    internal AssetBoundedNativePort NativePort => _nativePort;
 
     internal string PackagePath
         => _absolutePackagePath
@@ -96,6 +100,11 @@ internal sealed class AssetStoreBoundedProvision
         if (state is not (StatePreclaimed or StateFailed or StateBound))
         {
             throw new InvalidOperationException("The bounded Assets preclaim cannot release from its current state.");
+        }
+
+        if (_nativePort.InitializationAttempted)
+        {
+            throw new InvalidOperationException("The bounded Assets preclaim cannot release after native port initialization began.");
         }
 
         var hasFailure = state is StateFailed;

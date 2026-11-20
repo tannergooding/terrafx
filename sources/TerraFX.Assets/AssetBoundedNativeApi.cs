@@ -13,4 +13,7 @@ internal enum AssetBoundedNativeApi : byte
     LinuxFileStatus = 6,
     LinuxPread = 7,
     LinuxClose = 8,
+    WindowsCreateEvent = 9,
+    WindowsResetEvent = 10,
+    WindowsGetOverlappedResult = 11,
 }

@@ -39,6 +39,37 @@ internal sealed class AssetStoreAllocationTests
     }
 
     [Test]
+    public void BoundedNativePortDeclarationsUseExpectedX64Layouts()
+    {
+        if (RuntimeInformation.ProcessArchitecture is not Architecture.X64)
+        {
+            Assert.Ignore("The bounded native port layout profile is x64-only.");
+        }
+
+        Assert.Multiple(() => {
+            Assert.That(Unsafe.SizeOf<AssetBoundedWindowsOverlapped>(), Is.EqualTo(32));
+            Assert.That(Marshal.OffsetOf<AssetBoundedWindowsOverlapped>(
+                nameof(AssetBoundedWindowsOverlapped.Offset)).ToInt32(), Is.EqualTo(16));
+            Assert.That(Marshal.OffsetOf<AssetBoundedWindowsOverlapped>(
+                nameof(AssetBoundedWindowsOverlapped.EventHandle)).ToInt32(), Is.EqualTo(24));
+            Assert.That(Unsafe.SizeOf<AssetBoundedWindowsStandardInfo>(), Is.EqualTo(24));
+            Assert.That(Marshal.OffsetOf<AssetBoundedWindowsStandardInfo>(
+                nameof(AssetBoundedWindowsStandardInfo.EndOfFile)).ToInt32(), Is.EqualTo(8));
+            Assert.That(Marshal.OffsetOf<AssetBoundedWindowsStandardInfo>(
+                nameof(AssetBoundedWindowsStandardInfo.Directory)).ToInt32(), Is.EqualTo(21));
+            Assert.That(Unsafe.SizeOf<AssetBoundedLinuxStatX64>(), Is.EqualTo(144));
+            Assert.That(Marshal.OffsetOf<AssetBoundedLinuxStatX64>(
+                nameof(AssetBoundedLinuxStatX64.Mode)).ToInt32(), Is.EqualTo(24));
+            Assert.That(Marshal.OffsetOf<AssetBoundedLinuxStatX64>(
+                nameof(AssetBoundedLinuxStatX64.SizeBytes)).ToInt32(), Is.EqualTo(48));
+        });
+
+        Assert.That(MeasureCarrierBytes(typeof(AssetBoundedNativeFile), 64), Is.EqualTo(80));
+        Assert.That(MeasureCarrierBytes(typeof(AssetBoundedNativePort), 64), Is.EqualTo(144));
+        TestContext.WriteLine("Managed declaration layout only; no native target ABI or I/O was exercised.");
+    }
+
+    [Test]
     public void MeasuresTypedLoadAndPackagePinCarrierShells()
     {
         const int SampleCount = 64;
@@ -64,7 +95,10 @@ internal sealed class AssetStoreAllocationTests
             ("ObjectGate", typeof(object), 24),
             (nameof(AssetStore), typeof(AssetStore), 96),
             (nameof(AssetStoreRegistration), typeof(AssetStoreRegistration), 48),
-            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 160),
+            (nameof(AssetBoundedNativeFile), typeof(AssetBoundedNativeFile), 80),
+            (nameof(AssetBoundedNativePort), typeof(AssetBoundedNativePort), 144),
+            (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 176),
+            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 168),
             (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
         ];
 
@@ -121,7 +155,7 @@ internal sealed class AssetStoreAllocationTests
             GC.KeepAlive(backings);
             GC.KeepAlive(streams);
 
-            Assert.That(measuredBytes, Is.EqualTo(288));
+            Assert.That(measuredBytes, Is.EqualTo(296));
             TestContext.WriteLine($"AssetPackageBacking constructor including token, Lock and read limits={measuredBytes};");
             TestContext.WriteLine(
                 $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");

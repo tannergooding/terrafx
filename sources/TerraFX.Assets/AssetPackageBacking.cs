@@ -15,6 +15,7 @@ internal sealed class AssetPackageBacking
     private static AssetPackageBacking? s_failedReleaseRoot;
     private static readonly Lock s_failedReleaseRootGate = new();
     private readonly AssetPackageBackingToken _backingToken = new();
+    private readonly AssetBoundedNativeFile? _boundedNativeFile;
     private AssetStoreBoundedProvision? _boundedProvision;
     private readonly Lock _gate = new();
     private bool _isFailedReleaseRooted;
@@ -36,6 +37,7 @@ internal sealed class AssetPackageBacking
         long packageByteLength)
     {
         _stream = stream;
+        _boundedNativeFile = null;
         Entries = entries;
         PackageByteLength = packageByteLength;
         ProfileId = profileId;
@@ -52,6 +54,7 @@ internal sealed class AssetPackageBacking
     internal AssetPackageBacking(AssetStoreBoundedProvision boundedProvision)
     {
         ArgumentNullException.ThrowIfNull(boundedProvision);
+        _boundedNativeFile = new AssetBoundedNativeFile();
         _boundedProvision = boundedProvision;
         Entries = [];
         PackageByteLength = 0;
@@ -66,6 +69,13 @@ internal sealed class AssetPackageBacking
     }
 
     internal AssetPackageBackingToken BackingToken => _backingToken;
+
+    internal AssetBoundedNativeFile BoundedNativeFile
+        => _boundedNativeFile
+            ?? throw new InvalidOperationException("The package backing has no bounded native-file state.");
+
+    internal AssetBoundedNativePort BoundedNativePort
+        => BoundedProvision.NativePort;
 
     internal AssetStoreBoundedProvision BoundedProvision
         => _boundedProvision
@@ -115,6 +125,9 @@ internal sealed class AssetPackageBacking
             1_048_576);
     }
 
+    internal AssetBoundedFailureFact CloseBoundedNativeFile()
+        => BoundedNativePort.CloseFile(BoundedNativeFile);
+
     internal AssetOwnedReadDescriptor DescribeOwnedRead<T>(
         AssetStore store,
         AssetId assetId,
@@ -154,12 +167,35 @@ internal sealed class AssetPackageBacking
         boundedProvision.FailInitialization(primary);
     }
 
+    internal AssetBoundedFailureFact HashBoundedPackage(
+        scoped Span<byte> destination,
+        out AssetBoundedFailureFact hashProviderRelease)
+        => BoundedNativePort.ComputeSha256(BoundedNativeFile, destination, out hashProviderRelease);
+
+    internal AssetBoundedRefusal OpenBoundedNativeFile(
+        out AssetBoundedFailureFact primary,
+        out AssetBoundedFailureFact fileRelease)
+    {
+        var boundedProvision = BoundedProvision;
+        return boundedProvision.NativePort.OpenFile(
+            boundedProvision.PackagePath,
+            BoundedNativeFile,
+            out primary,
+            out fileRelease);
+    }
+
+    internal AssetBoundedFailureFact ReadBoundedExactlyAt(ulong offset, scoped Span<byte> destination)
+        => BoundedNativePort.ReadExactly(BoundedNativeFile, offset, destination);
+
     internal ValueTask ReadExactlyAtAsync(ulong offset, Memory<byte> destination, CancellationToken cancellationToken)
     {
         var stream = Volatile.Read(ref _stream);
         ObjectDisposedException.ThrowIf(stream is null, this);
         return AssetPackageReader.ReadExactlyAtAsync(stream, offset, destination, cancellationToken);
     }
+
+    internal AssetBoundedFailureFact ReleaseBoundedNativeControls()
+        => BoundedNativePort.ReleaseControls();
 
     internal void ReleaseOwner()
         => ReleaseReference(releaseOwner: true);

@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX.Rendering;
@@ -41,6 +42,30 @@ internal sealed class BoundedStaticMeshAssetValidationTests
             ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
         var firstReservedBytes = admittedDelivery.ReservedBytes;
         Assert.That(File.Exists(packagePath), Is.False);
+        var issuerField = typeof(BoundedStaticMeshAssetDelivery).GetField("_issuer", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded delivery lost its original issuer field.");
+        var issuer = issuerField.GetValue(admittedDelivery)
+            ?? throw new InvalidOperationException("The bounded delivery has no original issuer.");
+        var backingField = issuer.GetType().GetField("_currentBacking", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded Store lost its original backing field.");
+        var backing = backingField.GetValue(issuer)
+            ?? throw new InvalidOperationException("The bounded Store has no opening backing.");
+        var portProperty = backing.GetType().GetProperty("BoundedNativePort", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded backing has no native port owner.");
+        var port = portProperty.GetValue(backing)
+            ?? throw new InvalidOperationException("The bounded backing has no native port.");
+        var initializationAttemptedProperty = port.GetType().GetProperty(
+            "InitializationAttempted",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded native port has no initialization state.");
+        Assert.That(initializationAttemptedProperty.GetValue(port), Is.EqualTo(false));
+        var nativeFileProperty = backing.GetType().GetProperty("BoundedNativeFile", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded backing has no native file state.");
+        var nativeFile = nativeFileProperty.GetValue(backing)
+            ?? throw new InvalidOperationException("The bounded backing has no native file state.");
+        var portOwnerField = nativeFile.GetType().GetField("Port", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded file state has no port owner field.");
+        Assert.That(portOwnerField.GetValue(nativeFile), Is.Null);
 
         var firstRelease = admittedDelivery.ReleaseUnstartedPreclaim();
         Assert.That(firstRelease.OwnerReleased, Is.True);
