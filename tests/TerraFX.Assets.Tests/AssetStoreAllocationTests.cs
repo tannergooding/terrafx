@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -71,5 +72,67 @@ internal sealed class AssetStoreAllocationTests
 
         TestContext.WriteLine(
             $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The test measures package-pin handle construction without invoking operations on the uninitialized Store/backing owners.")]
+    public void PackagePinConstructionMatchesMeasuredCarrierShells()
+    {
+        const int SampleCount = 64;
+        var store = (AssetStore)RuntimeHelpers.GetUninitializedObject(typeof(AssetStore));
+        var backing = (AssetPackageBacking)RuntimeHelpers.GetUninitializedObject(typeof(AssetPackageBacking));
+        _ = new AssetPackageLease(store, backing);
+        var leases = new AssetPackageLease[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < leases.Length; index++)
+        {
+            leases[index] = new AssetPackageLease(store, backing);
+        }
+
+        var measuredBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(leases);
+        GC.KeepAlive(store);
+        GC.KeepAlive(backing);
+
+        Assert.That(measuredBytes, Is.EqualTo(104));
+        TestContext.WriteLine($"AssetPackageLease+LeaseState+object gate={measuredBytes};");
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The test measures carrier construction without invoking operations on the uninitialized Store/backing owners.")]
+    public void TypedLeaseConstructionMatchesMeasuredCarrierShells()
+    {
+        const int SampleCount = 64;
+        var store = (AssetStore)RuntimeHelpers.GetUninitializedObject(typeof(AssetStore));
+        var backing = (AssetPackageBacking)RuntimeHelpers.GetUninitializedObject(typeof(AssetPackageBacking));
+        var value = new object();
+        _ = new AssetLease<object>(new AssetId(1), value, new AssetLeaseLifetime(store, backing, 16));
+        var leases = new AssetLease<object>[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < leases.Length; index++)
+        {
+            leases[index] = new AssetLease<object>(
+                new AssetId(index + 1),
+                value,
+                new AssetLeaseLifetime(store, backing, 16));
+        }
+
+        var measuredBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(leases);
+        GC.KeepAlive(value);
+        GC.KeepAlive(store);
+        GC.KeepAlive(backing);
+
+        Assert.That(measuredBytes, Is.EqualTo(224));
+        TestContext.WriteLine(
+            $"AssetLeaseLifetime+Lock+AssetLease<T>+LeaseState+object gate={measuredBytes};");
     }
 }
