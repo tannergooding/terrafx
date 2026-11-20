@@ -78,10 +78,7 @@ internal sealed class SceneHierarchyValidationWorkspace
     }
 
     private static long ArrayBytes(int count, int elementSize)
-    {
-        var payloadBytes = checked((long)count * elementSize);
-        return checked(64L + ((payloadBytes + 15L) & ~15L));
-    }
+        => ScenePreparationDataBounds.ArrayBytes(count, elementSize);
 
     private static long GetWorkspaceObjectBytes()
         => checked(

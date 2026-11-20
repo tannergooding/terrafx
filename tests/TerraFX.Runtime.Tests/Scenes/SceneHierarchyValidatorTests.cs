@@ -49,6 +49,31 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    [TestCase(-1, 1)]
+    [TestCase(0, 0)]
+    public void ArrayBytesRejectInvalidDimensions(int count, int elementSize)
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ScenePreparationDataBounds.ArrayBytes(count, elementSize));
+    }
+
+    [Test]
+    [TestCase(0, 4, 64)]
+    [TestCase(1, 4, 80)]
+    [TestCase(4, 4, 80)]
+    [TestCase(5, 4, 96)]
+    [TestCase(1, 24, 96)]
+    public void ArrayBytesUseCheckedSixteenByteRounding(
+        int count,
+        int elementSize,
+        long expectedBytes)
+    {
+        Assert.That(
+            ScenePreparationDataBounds.ArrayBytes(count, elementSize),
+            Is.EqualTo(expectedBytes));
+    }
+
+    [Test]
     public void RejectsCyclesAndHierarchyDepthBeyondTheConfiguredLimit()
     {
         var firstEntityId = new Guid("10000000-0000-4000-8000-000000000001");

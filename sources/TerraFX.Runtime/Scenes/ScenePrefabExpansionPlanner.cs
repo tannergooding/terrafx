@@ -420,10 +420,7 @@ internal static class ScenePrefabExpansionPlanner
         }
 
         private static long ArrayBytes(int count, int elementSize)
-        {
-            var payloadBytes = checked((long)count * elementSize);
-            return checked(64L + ((payloadBytes + 7L) & ~7L));
-        }
+            => ScenePreparationDataBounds.ArrayBytes(count, elementSize);
 
         private static int CompareExpandedExternalSlotBindings(
             SceneExpandedExternalSlotBinding binding,
