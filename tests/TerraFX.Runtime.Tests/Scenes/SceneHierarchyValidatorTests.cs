@@ -153,6 +153,34 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void PreparedSceneCarrierMatchesSelectedRuntimeLayout()
+    {
+        const int SampleCount = 64;
+        const int ExpectedPreparedSceneCarrierBytes = 488;
+        var preparationType = typeof(PreparedScene);
+        var warmInstances = new object[SampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(preparationType);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(preparationType);
+        }
+
+        var measuredObjectBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(measuredInstances);
+
+        Assert.That(measuredObjectBytes, Is.EqualTo(ExpectedPreparedSceneCarrierBytes));
+    }
+
+    [Test]
     public void RejectsCyclesAndHierarchyDepthBeyondTheConfiguredLimit()
     {
         var firstEntityId = new Guid("10000000-0000-4000-8000-000000000001");
