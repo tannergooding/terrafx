@@ -143,6 +143,24 @@ internal sealed class AssetStoreTests
         return weakBacking;
     }
 
+    private static byte[] CreateOpaqueAssetRecord(int utf8ByteLength)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(utf8ByteLength);
+        const int payloadOffset = 96;
+        var recordLength = checked((int)Align16(checked((ulong)(payloadOffset + utf8ByteLength))));
+        var record = new byte[recordLength];
+        WriteHeader(record, s_assetSchema, fieldCount: 1);
+        WriteFieldHeader(
+            record.AsSpan(64, 32),
+            tag: 1,
+            kind: 12,
+            payloadOffset,
+            checked((ulong)utf8ByteLength),
+            checked((ulong)utf8ByteLength));
+        record.AsSpan(payloadOffset, utf8ByteLength).Fill((byte)'A');
+        return record;
+    }
+
     private static ImmutableArray<ContentFieldDescriptor> CreateOptionalAssetReferenceFields(
         ContentSchemaReference assetReferenceSchema,
         int fieldCount)
@@ -1521,6 +1539,68 @@ internal sealed class AssetStoreTests
         finally
         {
             await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task AssetStoreReferenceValidationAccountsForTargetLargerThanParent()
+    {
+        var registration = CreateRegistration();
+        var parentEnvelope = CreateAssetEnvelope(
+            1,
+            CreateAssetRecordWithReference(52, 2, s_assetSchema.SchemaId, checked((uint)s_assetSchema.Major)));
+        var targetEnvelope = CreateAssetEnvelope(2, CreateOpaqueAssetRecord(4096));
+        Assert.That(targetEnvelope.Length, Is.GreaterThan(parentEnvelope.Length));
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, parentEnvelope),
+            new AssetPackageReaderTests.TestEntry(2, targetEnvelope));
+        var path = AssetPackageReaderTests.WritePackage(package);
+
+        try
+        {
+            var undersizedStore = await AssetStore.CreateAsync(
+                CreateOptions(
+                    path,
+                    package,
+                    registration,
+                    maximumConcurrentDecodeBytes: parentEnvelope.Length),
+                CancellationToken.None).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidOperationException>(
+                    async () => await undersizedStore.LoadAsync<TestAssetValue>(
+                        new AssetId(1),
+                        CancellationToken.None).ConfigureAwait(false));
+            }
+            finally
+            {
+                await undersizedStore.DisposeAsync().ConfigureAwait(false);
+            }
+
+            var sufficientStore = await AssetStore.CreateAsync(
+                CreateOptions(
+                    path,
+                    package,
+                    registration,
+                    maximumConcurrentDecodeBytes: targetEnvelope.Length),
+                CancellationToken.None).ConfigureAwait(false);
+
+            try
+            {
+                using var lease = await sufficientStore.LoadAsync<TestAssetValue>(
+                    new AssetId(1),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.That(lease.Value.Marker, Is.EqualTo(52));
+            }
+            finally
+            {
+                await sufficientStore.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
             File.Delete(path);
         }
     }
