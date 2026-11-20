@@ -33,7 +33,7 @@ These are source observations, not newly executed behavior, allocation measureme
 | [`AcquireLoad`](../../sources/TerraFX.Assets/AssetStore.cs), [`LoadAssetAsync`](../../sources/TerraFX.Assets/AssetStore.PackageLease.cs) | Store reference/lease/wire/decode admission precedes payload work. Initial decode credit is returned before automatic target inspections, while the semantic value and reference result remain live. Wire-credit return is not managed-storage return. |
 | [`AssetPayloadReader.ReadAsync`](../../sources/TerraFX.Assets/AssetPayloadReader.cs), [`AssetPackageBacking.ReadExactlyAtAsync`](../../sources/TerraFX.Assets/AssetPackageBacking.cs), [`AssetPackageReader.ReadExactlyAtAsync`](../../sources/TerraFX.Assets/AssetPackageReader.cs) | None still allocates a decoded array and reaches an async, potentially short-reading `RandomAccess.ReadAsync` loop. Existing engine source uses `Memory<byte>` at this edge; it is not a reviewed exception to Chapter 02's retained-I/O rule. None removes Brotli, not I/O ownership. |
 | [`CreateLease`](../../sources/TerraFX.Assets/AssetStore.cs), [`AssetLeaseLifetime.ReleaseReference`](../../sources/TerraFX.Assets/AssetLeaseLifetime.cs), [`AssetPackageBacking.ReleaseReference`](../../sources/TerraFX.Assets/AssetPackageBacking.cs) | `ownershipTransferred` now becomes true only after successful lifetime **and** handle construction. Final issued release records backing success before Store accounting and retains failures. The backing's failed-release root supplies reachability, not funding or native-close attestation. Preserve these distinctions. |
-| [`AssetStore.AcquirePackageLease`](../../sources/TerraFX.Assets/AssetStore.PackagePin.cs) | Its construction catch currently returns the lease credit **before** releasing the backing. Do not repeat older blanket claims that all pre-lease rollback is repaired. No new package-pin caller is needed for ordinary Scene preparation; general pin repair/qualification is not supplied here. |
+| [`AssetStore.AcquirePackageLease`](../../sources/TerraFX.Assets/AssetStore.PackagePin.cs) | It now constructs the package-lease/LeaseState carrier inside Store admission before acquiring the backing reference or incrementing lease accounting; no allocating construction follows that ownership commit, so the former catch/release ordering window is removed. This source ordering does not qualify the general pin's full memory profile or native-close behavior. |
 | [`ScenePrefabExpansionPlanner.PrepareCoreAsync`, builder construction and `GetPrefabAsync`](../../sources/TerraFX.Runtime/Scenes/ScenePrefabExpansionPlanner.cs) | Root staging follows the awaited load. Builder field initializers allocate before builder staging. A new Prefab lease remains local through context checks and dictionary insertion. These are real installation and caller-suffix intervals, not part of codec output alone. |
 | [`RenderSceneAssetBundle.PrepareOwnedCoreAsync`](../../sources/TerraFX.Runtime/Rendering/RenderSceneAssetBundle.cs), [Atlas](../../sources/TerraFX.Runtime/Rendering/RenderAtlasPageLoader.cs), [Material](../../sources/TerraFX.Runtime/Rendering/RenderMaterialTextureLoader.cs), [Mesh/Skeleton](../../sources/TerraFX.Runtime/Rendering/RenderMeshAssetBinding.cs) helpers | The described dependencies coexist with helper builders, validation scratch, retained handles and Tasks. Mesh binding retains its Mesh before testing for a Skeleton. The funded bundle path still explicitly refuses final retained-storage settlement. |
 | [`PreparedScene.Preparation`](../../sources/TerraFX.Runtime/Scenes/PreparedScene.Preparation.cs) | Scalar producer claims and pending/phase installation elections exist. `_supplierProducersUnjoined` is set before planner invocation and is never cleared. Completion Actions and public `TrySet*` do not supply the missing transitive return. |
@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T02:56:02.385226+00:00`; HEAD `76ed7ac2c09fde572a8dfe8b37d1ad48b0354028`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T06:17:26.0672488Z`; HEAD `196f69cf54af1aa7e501d659526a2d0f00b81167`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -417,9 +417,9 @@ SceneAssetStoreTests.EngineHost.cs
 
 | Group | Files | SHA-256 |
 |---|---:|---|
-| C | 17 | `b3ff0f1984afc753dde42ef970eadfac6c353f4acfba306b15d59ba6afa08ea9` |
-| P | 10 | `59ad23cd36f6e45f1dd0d3549e4b303e5bd4bf5e990998ac3d40151a03c9b62c` |
-| A | 25 | `a0b378278f85d2f53f05f202227872ac2de35a4f3e4ae56cfd3abd0e179ce99b` |
+| C | 17 | `61d9531dbfa8d3a889eb24b29a615539170cc574ed46f66a7aa0c080721ca9d9` |
+| P | 10 | `2656b9000ac85c7202f86e42b57965fc334cc717770eb35f9e98e7e19b7af7d4` |
+| A | 25 | `b3e70c5f210ee6c68f6829ca2e71967a9c1aa07a288b4db8e061c80e0fdf9752` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 15 | `a4c514c7bd77e66add0bf574601bb22e458081b2d2e13a26577675d7ec255577` |
@@ -427,7 +427,7 @@ SceneAssetStoreTests.EngineHost.cs
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
 | T | 7 | `9b24c42a6775eb3f19f7e09cd44c9a627e1103e5f8ebd206ee8fc16663f3e3f5` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 115 | `96246a1ab9fe2f664bd3ab34917d99d233d3f598690e56c4ebdb5eb7d782f247` |
+| ALL | 115 | `21a8b1698927c642603f34cff87a47b92b995ed1068c4735e36490ad2b004b00` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
@@ -450,4 +450,4 @@ The five preexisting dirty files are preservation inputs, **not acceptance of th
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-Fixed-limb Mesh predicates and their edge tests are now implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.
+Fixed-limb Mesh predicates and their edge tests are implemented and behavior-tested; they remove only the selected BigInteger arithmetic term. Package-pin construction now creates the complete lease carrier before acquiring its backing reference or charging lease capacity, eliminating the old post-acquisition allocation catch window. The Assets test project passes 54/54 in Debug and Release. The Scene owner/J/K, lower I/O/close, numerical `C_op`, actual-return, native/AOT and positive-consumer gates remain open. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes.

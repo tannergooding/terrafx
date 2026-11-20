@@ -20,7 +20,7 @@ Basenames below resolve to the exact paths/hashes in section 7. **C** means comm
 | Boundary | Now present | Still missing from the production path |
 |---|---|---|
 | Copied asset selector and aggregate attachment bindings | **C:** `WorldAssetReference.cs` is the eight-byte packed `(AssetId, SchemaMajor)` value with an invalid default and no lease ownership. `WorldAttachmentRecordBinding.cs`, `WorldAttachmentRecordFieldBinding.cs` and ``WorldAttachmentFactoryBinding`2.cs`` implement the captured aggregate tree, required/optional records, RecordArrays, Bytes, FixedValues and fixed-target AssetReferences. `WorldPersistenceEcsReader.cs:1150–1180,1456–1490,1546–1710` recursively validates actual nested occurrences and live/historical reference kinds. | These generic bindings do not establish an Animation player's exact Scene/controller/target relationships. Do not reimplement the selector/tree or call their existence a live producer. |
-| Playback state/provider | **C:** `AnimationRuntimeStateProvider.cs:19–104,106–505` captures the complete proposed binding tree and supplies Read/Restore/Validate/Count/Write/Release. The immutable author graph and issued-limit wide playback codec exist. | Provider `Validate` returns empty diagnostics; lower field/reference checks and local author predicates still run, but no complete player-component bijection, clip-duration/cursor/transition join, exact Scene map or prepared asset ownership is established. Restore wraps the author; it does not rebuild a live player. |
+| Playback state/provider | **C:** `AnimationRuntimeStateProvider.cs:19–104,106–505` captures the complete proposed binding tree and supplies Read/Restore/Validate/Count/Write/Release. The immutable author graph and issued-limit wide playback codec exist. `AnimationRuntimeStateCodec.Reader` now fills exact per-level arrays and transfers them through reader-owned `CreateOwned` factories; ordinary author constructors retain copy semantics for other callers. `MeasureReadByteReservation` now charges one backing per decoded typed array rather than the removed immutable-constructor copy. | Provider `Validate` returns empty diagnostics; lower field/reference checks and local author predicates still run, but no complete player-component bijection, clip-duration/cursor/transition join, exact Scene map or prepared asset ownership is established. Restore wraps the author; it does not rebuild a live player. This reader-side allocation reduction is not a World participant or live Animation producer. |
 | Root-motion resource | **C:** concrete `RootMotionResourceProvider.cs`, its binding, codec and three schema rows exist. They cover exactly 4096 partitions, zero/absent defaults, conditional slot bodies including Controller tag 13, present-empty Sources, supplied persistence limits, issued World/completed-tick/history checks, full Restore writes and operation reservations. Build already refuses application Write access to aggregate resources. | No built-in Animation selection installs this family automatically, and no stage-2 producer replaces the complete request array together with its live pin companion. Its constructor's call sites are tests; Hosting already uses its reservation recipes. Existing codec reservations are not a proof of the complete live Animation peak. |
 | Player and definition codecs | **C:** `AnimationComponentDefinitions.cs` has the persistent private player component, generated typed binding/storage inventory, Controller-major-1 codec, rejecting Defaults and typed Restore. `AnimationTransitionRequest` and public playback asset-codec registration also exist. | `RegisterPlayerComponent` is an internal helper used by tests, not the frozen support composition. A positive Controller ID alone neither prepares assets nor creates canonical playback membership. |
 | Catalogue and asset selection | **C:** `AnimationSchemaCatalogue.Schemas` retains **11** native rows; `PlaybackSchemas` separately contains **24** controller/state/player/resource/control/event rows. `AnimationSupport.RegisterPlaybackAssetCodecs` is public. Rendering already has v2 Mesh/Sprite descriptors, `RendererCpuFeatures.Animation`, and an M05 **asset-codec** selector. | The old “29 rows in Schemas/no PlaybackSchemas” finding is false now. Metadata and asset-codec selection still do not activate World state, event dispatch or animated extraction. The CPU-support factory remains no-argument/static; there is no selected-options overload or typed v2 render-component consumer. |
@@ -33,10 +33,11 @@ Basenames below resolve to the exact paths/hashes in section 7. **C** means comm
 
 ### Existing tests and their limits
 
-No build, test, native workload or consumer was run for this documentation-only addendum. No historical TRX/result is used. Test-source hashes are included below; their presence is not a passing count or qualification result.
+The targeted managed regression selection ran **12/12 in Debug and 12/12 in Release**, covering Animation state codec/author behavior and `StandardBranchReadsEachSelectedSourceBeforeConstructionAndRestoresTheSameAuthors`. These runs verify local decoding/copy ownership and the existing empty-playback restore route only; they do not establish nonempty player/Scene joins, live Animation production, qualification, or a full milestone result. No native workload, public consumer or NativeAOT run was performed. Test-source hashes below are inputs, not evidence by themselves.
 
 - `AnimationSchemaCatalogueTests.PlaybackSchemasSeparateSelectedControllerStateAndRootResourceRows` independently names the 24 selected rows. Selector/aggregate tests cover packed majors, nested typed traversal and live reference refusal.
 - `AnimationRuntimeStateCodecTests` manually registers providers/components, directly invokes a Read binding, and manually installs the large attachment. The large capture uses arbitrary nonempty Scene IDs, not activated Scene/player joins. It is codec/transport evidence, not live membership.
+- `AnimationRuntimeAuthorTests.CopyingAuthorConstructorsDoNotRetainMutableArrayAliases` verifies non-reader constructors still copy their input arrays. The codec round-trip fixture mutates its encoded source after reading and verifies the decoded author remains unchanged; neither test exercises the trusted owned factories as public API.
 - `RootMotionResourceTests` uses real registered resource/default/capture/restore dispatch and wide literal records. `AnimationRootMotionPackageTests` loads real package assets but calls the delta kernel directly.
 - `WorldPreparedRestoreSourceTests.StandardBranchReadsEachSelectedSourceBeforeConstructionAndRestoresTheSameAuthors` and its AnimationAssets partial exercise the real persistence path, one-Read/cache identity, exact retained packages, historical joins, cancellation and retained/quarantined ownership. The fixture explicitly installs literal request partitions and an empty playback attachment; it does **not** produce them through Animation.
 - Current `RenderSnapshotMeshGpuTests` checks static BindPose diagnostics with zero degeneracy. This does not supply the missing changing palette or nonzero weighted-normal witness.
@@ -63,7 +64,7 @@ Continue tentatively against the existing proposal chain, not a second API/schem
 
 | Order / actual owner | Bounded implementation boundary | Minimal relevant regression/evidence |
 ---|---|---|
-| **1. Entities + Animation: freeze the selected composition** | Reconcile Chapter 30 with the already-proposed support token/factory, exact three-family inventory, private phase/root/join capabilities and v2 rendering opt-in. Capture registry-specific bindings once and stage/merge atomically. Reuse the now-implemented catalogue/provider/player/resource families. Distinguish an absent implementation from an actually undefined supporting declaration; record any unresolved constructor, issuer, type/version or lifetime rule with its owner rather than inventing a public API, schema/enum identity or acceptance ID. | Registration rejects missing Scenes, duplicates/foreign families and invalid resource access without changing the receiving builder. Preserve static CPU support's component-only rule and old v1/scalar/FixedArray paths. Retain the current exact catalogue membership tests rather than another “PlaybackSchemas missing” gate. |
+| **1. Entities + Animation: freeze the selected composition** | Reconcile Chapter 30 with the already-proposed support token/factory, exact three-family inventory, private phase/root/join capabilities and v2 rendering opt-in. Capture registry-specific bindings once and stage/merge atomically. Reuse the now-implemented catalogue/provider/player/resource families and reader-owned exact-array decoding. Distinguish an absent implementation from an actually undefined supporting declaration; record any unresolved constructor, issuer, type/version or lifetime rule with its owner rather than inventing a public API, schema/enum identity or acceptance ID. | Registration rejects missing Scenes, duplicates/foreign families and invalid resource access without changing the receiving builder. Preserve static CPU support's component-only rule and old v1/scalar/FixedArray paths. Retain the current exact catalogue membership tests rather than another “PlaybackSchemas missing” gate; retain copy-isolation and reader round-trip regressions. |
 | **2. Entities construction + Animation: actual per-World ownership** | Extend real fresh **and restore-candidate** admission/initialization/teardown: lower storage → Scenes → Animation → selected CPU extraction, preserving resource-default/system initialization obligations. Explicitly install complete empty playback state and zero/absent request storage as selected construction work, not an attachment Defaults callback. Reusable tokens create distinct owners. Fund standing roots and all applicable replacement/source/serialization/retained-output/cleanup peaks before allocation/callback. | A real fresh selected World starts empty with all three families; no I/O/player/tick/native service is created. Admission failure occurs before issuance/publication and attempts all independent cleanup, retaining unreleased credits. Verify actual graph demand/refusal, not merely `4096 * sizeof(request)`. |
 | **3. Scenes + Animation + Entities Structural: prepared binding and membership** | Compose Rendering then Animation preparation over the **same retained SceneExpansionPlan/package**. Prepare definitions/allowed Clips/Skeleton/Atlas dependencies, exact receiver provenance/expanded-target map, root baselines and exclusive target/channel/motion-actor ownership. Seal final component rows plus real prepared stable identities; prepare replacement canonical/derived Animation ownership **before** aggregate-reference preflight and commit. Use current corrected handle/GUID membership, not another allocator. Implement the projected-membership addendum's selected empty-delta obligation and validate unchanged surviving references too. | Real native Scene activation binds two repeated occurrences to their distinct live targets. Missing/foreign assets/provenance or overlapping ownership refuses the whole preparation/activation. Exercise same-batch player/nonplayer creation, Scene assignment offset, final component changes and removal; removing a surviving target refuses before storage writes. Removing the player updates its aggregate but preserves this tick's historical requests. No test-issued future handles or phase grants. |
 | **4. Animation + Entities dispatch + Scenes pose authority: live tick** | Implement the existing controller admission/pins/receipts and real closed phase dispatch: stage-0 accepted prefix; stage-2 commands then ordinary advance before application Animation systems; complete request-array/companion replacement; staged canonical controls and typed events. Keep command pins separate from playback/request/output pins. Preserve original-root delta sampling before visual stripping, application Read-only stages 2–7, sticky misuse and finally-revoked bindings. Stage-8 output preparation must not advance canonical time; stage 9 publishes prepared roots/events without participant callbacks/allocation. | Extend Runtime Animation tests with actual public package → Scene → controller → Step calls. Use literal zero/end loop/reverse events, speed endpoints/nearest outside values, broadcast Seek 4096/4097 refusal and mid-fade interruption. Check application systems read this tick's complete requests. A later tick failure publishes no provisional events/output even after an Applied command receipt. |
@@ -84,19 +85,19 @@ Remaining gates are:
 - **World-bound/native/consumer qualification:** actual live producer observations have not run here. Retry the nonzero GPU witness only after a real animated snapshot, funded diagnostic path and actual backend are available. Public-only consumers, NativeAOT, target variants, measured peaks and full milestone acceptance remain separate.
 - **Other owners:** required Scene preparation/receiver/cleanup guarantees retain their M03-B owners; collision/feedback retains M06/M07; existing M08/M09 physical-input/native-failure/timeout deferrals are unchanged. Do not repeat unchanged blocked probes or add synthetic substitutes to close them.
 
-## 6. Scope of this change
+## 6. Scope of this update
 
-Only this additive proposal is created. No production source, tests, maintained design/roadmap contracts, protected fixtures, commits or remote publication are changed by this task. Source inspection does not accept the rest of the dirty worktree or qualify its diagnostic/preparation candidates.
+The committed reader-only change replaces nested `ImmutableArray` builders plus author-constructor copies with exact arrays adopted by internal reader-owned factories. Ordinary author constructors still copy. It also removes the now-unneeded duplicate-backing multiplier from the existing typed-read reservation function. This does not add a World registration token, participant, phase actor, player producer, Scene activation or animated extraction path. It changes no maintained design/roadmap contract, schema bytes or protected fixture. The five unrelated dirty Scene/Sprite tests remain outside this change.
 
 ## 7. Frozen direct inputs
 
-Freeze: **2026-11-17T18:51:13-08:00**, HEAD **`b57a4a4cceb7f54369910b293120c8d998814732`**. The 97 direct inputs contain **84 C**, **11 M**, **2 ??**: C=tracked clean at that HEAD; M=tracked modified worktree bytes; ??=untracked worktree bytes. In particular, the Animation foundations identified as committed above are clean; dirty Rendering/Scenes/design inputs are not relabeled committed.
+Freeze: **2026-11-20T06:15:49.157926+00:00**, HEAD **`196f69cf54af1aa7e501d659526a2d0f00b81167`**. The 101 direct inputs are tracked and clean at this revision. The five unrelated dirty Scene/Sprite tests are preserved separately below and are not treated as Animation acceptance inputs.
 
-Manifest SHA-256: **`94F1595694EA24DEFE5C2FA8DBFF227759DA60C631A1FBF0D8F231FC3978F768`**.
+Manifest SHA-256: **`4F3CB6C7A11CF483F24A5F7EF4B5A8FC96063D264032B5D1ECD719DF5676941D`**.
 
-Digest encoding is UTF-8 without BOM, LF endings and a final LF: first `HEAD<TAB><head><LF>`, then the rows below sorted by ordinal full path, each encoded as `<state><TAB><uppercase SHA-256><TAB><exact Windows relative path><LF>`. The proposal itself is excluded to avoid a self-hash. Raw manifest and final verification are retained under ignored `artifacts\analysis\m05-animation-current-source`.
+Digest encoding is UTF-8 without BOM, LF endings and a final LF: first `HEAD<TAB><head><LF>`, then the rows below sorted by ordinal full path, each encoded as `<state><TAB><uppercase SHA-256><TAB><exact Windows relative path><LF>`. The proposal itself is excluded to avoid a self-hash. Recheck path membership and hashes before applying a later implementation disposition; changed inputs supersede this freeze.
 
-All listed raw-byte hashes and Git states are rechecked before finalization. Definition/call-site searches are bounded to checked-in/worktree C# under `sources\TerraFX.Runtime` and `tests\TerraFX.Runtime.Tests`; absence findings are source observations, not proof of runtime execution. Test rows below are inspected **source only**: no build output, TRX, native/AOT run or historical result is accepted as evidence for this freeze.
+All direct-input raw-byte hashes and states were rechecked at the freeze. Definition/call-site searches are bounded to C# under `sources\TerraFX.Runtime` and `tests\TerraFX.Runtime.Tests`; absence findings are source observations, not proof of runtime execution. The managed test evidence above is tied to the final implementation before this documentation-only refresh; it does not qualify any unobserved production or native path.
 
 | Direct input | State | SHA-256 |
 |---|---|---|
@@ -107,14 +108,14 @@ All listed raw-byte hashes and Git states are rechecked before finalization. Def
 | ``Directory.Build.props`` | C | `770EE4B2A422861A6F23F0D39DD0ECA361A81CB87E64EBAC4E12170F71231D7A` |
 | ``Directory.Build.targets`` | C | `AEEC1D08E8037470239035812351C4045124607D67A354D482112F4D642D4105` |
 | ``docs\design\10-binary-data-and-authoring-formats.md`` | C | `56721136AECAE18C20EB3E9A1BECEB527CC0676DD6B43CB506538AD63DECBB5F` |
-| ``docs\design\16-scenes-transforms-and-cameras.md`` | M | `B012F42B23CEDE9C7CDB71203D8357CD19E1626823EA25EF3119961292D3698A` |
-| ``docs\design\20-animation-and-deformation.md`` | C | `BBEF0A36E0832C2BD0D54A07E479917DB923671B64F7176369F8F57A8F1618C5` |
-| ``docs\design\27-state-serialization-replay-and-recovery.md`` | C | `B9B6324C5B1B1543CA1D2287ECE579597A7E7AA62D885031C4FF1BB629F08777` |
-| ``docs\design\29-project-setup-build-and-deployment.md`` | C | `3B55A013EEC327ECD648ACBD5B53717DD218AD288E8047AC21277609EFA2F47B` |
-| ``docs\design\30-public-api-review-surface.md`` | M | `15848C82F3858A77A87A0D3EA6FBCC07046EB6E77CA5B21748C72B90EFAB598B` |
+| ``docs\design\16-scenes-transforms-and-cameras.md`` | C | `B012F42B23CEDE9C7CDB71203D8357CD19E1626823EA25EF3119961292D3698A` |
+| ``docs\design\20-animation-and-deformation.md`` | C | `B5AE58EA0D5821FAB70001A44D59A100CAF789CFB148107776A026355E9C61D1` |
+| ``docs\design\27-state-serialization-replay-and-recovery.md`` | C | `B0BFA5771F1029BDFB21A0E01556467D3169953F71CBFDF18A06381A11CEE461` |
+| ``docs\design\29-project-setup-build-and-deployment.md`` | C | `49598161138FEBBF889F2A5176E3504AF8D8BB8481D2157FBCFBBD94D2B46604` |
+| ``docs\design\30-public-api-review-surface.md`` | C | `D4F622D69ED58AB96118C36FBBF4E2D31E062A3CBF3CE3BA1D64309F662FE4ED` |
 | ``docs\design\35-implementation-roadmap.md`` | C | `24EEC6E92B7AD904D552F290EF748FFC8FCE13B6B94A89EBD9F39487D4584D87` |
 | ``docs\project\Building.md`` | C | `F043A352870EFB6C7D4A61998225E2508A8F4370A57E784483A41819D452075F` |
-| ``docs\project\Roadmap.md`` | C | `1C8C3F8E140F47492255534284ABBF67C5776210DC7A68F2C01155D0BE773F46` |
+| ``docs\project\Roadmap.md`` | C | `89D444AA079B9F6005D495DDCC4F4D3D8D2DE36C081DD036C9D252145E4710AB` |
 | ``docs\proposals\m05-animation-aggregate-attachment-closure.md`` | C | `96B7692FDB3CA6C4F8ECFA9668E7B50943493EB7E519B5F181DDA2C0D54C5BD4` |
 | ``docs\proposals\m05-animation-aggregate-attachment-projected-membership-addendum.md`` | C | `8CF66303AD694DF2015184C72D8E22785633073830CA3D7700C2AC7EECA9B1F4` |
 | ``docs\proposals\m05-animation-preconstruction-producer-boundary.md`` | C | `3C9F49A266F3D0DBCE7053A342ADFC1204596E589F0911689DF448F67B792495` |
@@ -131,19 +132,22 @@ All listed raw-byte hashes and Git states are rechecked before finalization. Def
 | ``sources\TerraFX.Runtime\Animation\AnimationClipAssetBinding.cs`` | C | `E09FCA988BA58127B365D8F4D7EB0C22CA3FD17E07E8342879544FB81BBD4DB1` |
 | ``sources\TerraFX.Runtime\Animation\AnimationClipAssetCodec.cs`` | C | `BE144630381211E8D86F45B6BE245251C6B691AD22220DEE9AC13132B7782007` |
 | ``sources\TerraFX.Runtime\Animation\AnimationComponentDefinitions.cs`` | C | `C1E5CD4C7EB535F7DB5A07A3881DF864DD07A7042A3F362AEA35807AA6F140CB` |
-| ``sources\TerraFX.Runtime\Animation\AnimationPlayerStateAuthor.cs`` | C | `2D1B99CD6CDA52DF55F037F298BF738A69B5A08A4825AEA34606A73BFDC929AB` |
+| ``sources\TerraFX.Runtime\Animation\AnimationLayerStateAuthor.cs`` | C | `9496B0D706F56498D64EBA75DCAF9610AF7AB34A1DB6D2775062C5C371116BA4` |
+| ``sources\TerraFX.Runtime\Animation\AnimationPlayerStateAuthor.cs`` | C | `1E4C8CD92FA7EE4241D4493E3AAECF5F7C3E874949902205079BD4AF0A4ED35F` |
 | ``sources\TerraFX.Runtime\Animation\AnimationPreparedRestoreAssets.cs`` | C | `DE095C356D3E7AA92BD04DAFE1BB15865846C6A385B1F2BD29A7CFE08D2499CC` |
 | ``sources\TerraFX.Runtime\Animation\AnimationResources.cs`` | C | `85048314E852EE51ED19CA1E837A943C69B401D499EA1F2A22D92DC6ADAA83C6` |
 | ``sources\TerraFX.Runtime\Animation\AnimationRestoreAssetSourceLease.cs`` | C | `F40ED5401FE315AB147367B4B03F96DA7BE03CCA4F3FA098899E31BED477FC0D` |
 | ``sources\TerraFX.Runtime\Animation\AnimationRootMotionKernels.cs`` | C | `368E0C92BAEE223DD1D4568E7B1BF85B7D9F74C1CF7E8695047B366396697EC7` |
-| ``sources\TerraFX.Runtime\Animation\AnimationRuntimeAuthor.cs`` | C | `5A79A43C7ADA57D24D238624D2216055B97ED549D0371D32A40BFC5D972127EA` |
+| ``sources\TerraFX.Runtime\Animation\AnimationRuntimeAuthor.cs`` | C | `30CE7DAB055B98D87EA8275A38DFA0810F1AE3C0804A83C13AA8B1B7FF6BCDFB` |
+| ``sources\TerraFX.Runtime\Animation\AnimationRuntimeAuthorValidation.cs`` | C | `74AC6C850F73F9ECEAB87621EB45D02DF2E66D5B0097FBD850D904D09E784233` |
 | ``sources\TerraFX.Runtime\Animation\AnimationRuntimeState.cs`` | C | `199101E0668A448A35AD9680B950B0CE8151288594EF22B37F8EF99A1691C207` |
-| ``sources\TerraFX.Runtime\Animation\AnimationRuntimeStateCodec.cs`` | C | `07A583C0C77ECAB2DAE7D61197A17D351FC428AD1513394FCEC6F8077AE3D36A` |
+| ``sources\TerraFX.Runtime\Animation\AnimationRuntimeStateCodec.cs`` | C | `EC447D36210226984FC70CA521B0F0FE36A17BEDA87D7FD5C812C84D1911A8F2` |
 | ``sources\TerraFX.Runtime\Animation\AnimationRuntimeStateProvider.cs`` | C | `FDF681AE8772A4B53BC78D82FE34A0A5CB90AD2B36B6B224DAF3034B3E91C576` |
 | ``sources\TerraFX.Runtime\Animation\AnimationSchemaCatalogue.cs`` | C | `C4447F84DB8F60F21FAF99C6AC9E8F67F13CF4DE98F066C9FEEE8D07820C0DAF` |
-| ``sources\TerraFX.Runtime\Animation\AnimationSupport.cs`` | C | `2BB2DE266758379E44729E405E0F3B9B2B323ABE15786BC15CFD6FFC79C539C6` |
+| ``sources\TerraFX.Runtime\Animation\AnimationSupport.cs`` | C | `71C8FA0812446DDA314159483A0799884AF7258031461AE01C0BEFD236C952EC` |
 | ``sources\TerraFX.Runtime\Animation\AnimationTickKernels.cs`` | C | `84737FF3D76078FD5033EDF46B74124E77599447011C76B03C60BBA36A62D832` |
 | ``sources\TerraFX.Runtime\Animation\AnimationTransitionRequest.cs`` | C | `F4293D7881C2239A9116ED71F8961B70237CEBE1D9FFEB7A041DB7FBA6A1C68E` |
+| ``sources\TerraFX.Runtime\Animation\AnimationTransitionStateAuthor.cs`` | C | `C1D180DE7F0F535C197623C5B8F7C7D8FE78C1B81E5144955EFFE35EA33174B9` |
 | ``sources\TerraFX.Runtime\Animation\RootMotionRequest.cs`` | C | `99DF8A7198159DBBE7778AC1C15ACE450A0D1BE6C3ABAD9359BCFC2C7675C72D` |
 | ``sources\TerraFX.Runtime\Animation\RootMotionResourceCodec.cs`` | C | `EAD2852E641A9F830C008AF54802CB87DA1C156567237E8290CCBA382FA07D7E` |
 | ``sources\TerraFX.Runtime\Animation\RootMotionResourceProvider.Binding.cs`` | C | `CA0FC255CF9C84165DAD1A51CD3B9405288E67E1FB0A62D0A1B3C3CF4ADE9F1A` |
@@ -153,12 +157,12 @@ All listed raw-byte hashes and Git states are rechecked before finalization. Def
 | ``sources\TerraFX.Runtime\Entities\CommittedWorldEvent.cs`` | C | `17E52511FDE8869CA778824282B9FD151A075FEB981301538604FE4ED12DFC6B` |
 | ``sources\TerraFX.Runtime\Entities\StandaloneContinuationSchemaCatalogue.cs`` | C | `751F3AD4B183208455CDF289E37517E0E5036B4F22CC247E8A8E82B664B73269` |
 | ``sources\TerraFX.Runtime\Entities\World.Commands.cs`` | C | `1FD7C9F2EDF9A2ECCC30B44B8B5E805A7B427DE9C9EEE4C93721B797FEB08907` |
-| ``sources\TerraFX.Runtime\Entities\World.Controls.cs`` | C | `4DD4B837C256D0FF5F120CCD4F71EC1BA6A732C41A64484E1375DC1F931402FF` |
-| ``sources\TerraFX.Runtime\Entities\World.CpuExtraction.cs`` | C | `971EE49B1CCD9C3C629E3CA33198F26BE610FE3D28B4236E371C220201D768FC` |
+| ``sources\TerraFX.Runtime\Entities\World.Controls.cs`` | C | `748BC950148DD210434C6DE2DB4BAFBA949769B34A4BEC781A78B1B08CE3D28C` |
+| ``sources\TerraFX.Runtime\Entities\World.CpuExtraction.cs`` | C | `37A8357BFF0EA02192754366526A17F55BDF7BCACDD170B95695D56E963336D4` |
 | ``sources\TerraFX.Runtime\Entities\World.PersistenceCapture.cs`` | C | `87B8BA22F75B1706719810736CA5EE046A1BEF2EDD19F01A1B76FB2F3FE0C870` |
 | ``sources\TerraFX.Runtime\Entities\World.PersistenceRestore.cs`` | C | `86463430C1F582CFD6F7412DD8BC46110B8EF89F5E4F705AD5A7A7CD6238049E` |
 | ``sources\TerraFX.Runtime\Entities\World.Ticks.cs`` | C | `5DAAC62FA95D6E2FC665576C5DCFC6D1CDFCFAE0F345E60A5F06098FDBCF7F05` |
-| ``sources\TerraFX.Runtime\Entities\World.cs`` | C | `C7DCBA4DFEF58346C6C851F77A8E130B1A4B776248E94663438A5D9E449245A8` |
+| ``sources\TerraFX.Runtime\Entities\World.cs`` | C | `EAD70618FAC9EF668FBEBAEFA35678D19DBFBBE944710D1418CC354C306D42F0` |
 | ``sources\TerraFX.Runtime\Entities\WorldAssetReference.cs`` | C | `B4AA2BAA8FB9B3A02B7D4C64E9DE48F63C7A2600CAA8455720082412CCB6F6F5` |
 | ``sources\TerraFX.Runtime\Entities\WorldAttachmentFactoryBinding`2.cs`` | C | `C26F05118B1D6493B61068F23D82326E48B55D50794E21EDD3B37D7D93C13CBE` |
 | ``sources\TerraFX.Runtime\Entities\WorldAttachmentMembershipSource.cs`` | C | `FDFAECF2AE17C648386714CC817A2969DB65A87695F1BFA43DCA3E7E7FCD6CAB` |
@@ -168,32 +172,43 @@ All listed raw-byte hashes and Git states are rechecked before finalization. Def
 | ``sources\TerraFX.Runtime\Entities\WorldPersistenceControlKind.cs`` | C | `DA7C648E0CB92F3BE64665AF1165B85F2321D2B9FAF6291A3BD00D98E092AD0E` |
 | ``sources\TerraFX.Runtime\Entities\WorldPersistenceEcsReader.cs`` | C | `382EA7B9D4C48A6507F9C7DA59CAFA24FC3330A1F970B5613D3AC48DD2F88569` |
 | ``sources\TerraFX.Runtime\Entities\WorldPersistenceWorldRecordWriter.cs`` | C | `348D4F30F5FDF37CBE3CE533206E4887465BD005256D3CFC74E2606B6196D796` |
-| ``sources\TerraFX.Runtime\Entities\WorldRegistrationBuilder.cs`` | C | `40B6C12CF129A56FC1BE0890311AFF5203F805C50376DDE9184EECB42E703487` |
-| ``sources\TerraFX.Runtime\Hosting\WorldLoadPreparedState.cs`` | C | `533D03EF8FA2292AEE2B0CE9F48A8C5EA19CFF16B4ADA1A8422C2DFC97EDB25A` |
-| ``sources\TerraFX.Runtime\Hosting\WorldPersistence.cs`` | C | `1105C3F9D6F65C8629CB8C730BEE0BACBE7366FF6C9BFC63ECF7780E78D6C0F4` |
-| ``sources\TerraFX.Runtime\Hosting\WorldReplacementOperation.cs`` | C | `C6DFA0EE44438C005E115FE9A15FE51643CF49176FB266A59AE5CFE67250EFF5` |
+| ``sources\TerraFX.Runtime\Entities\WorldRegistrationBuilder.cs`` | C | `63B526D8A01A8795BB54D8522F25F33E5C8DE492B8DFFD7A7F731FA2A290EC84` |
+| ``sources\TerraFX.Runtime\Entities\WorldReplacementOperation.cs`` | C | `DD4C415BDB23982ABFCDDDD27822C47740ECB7A8871D3F53DC506A936FB004E5` |
+| ``sources\TerraFX.Runtime\Hosting\WorldLoadPreparedState.cs`` | C | `A5C53DC96DC8412661171444DD043EDED3A6D77964DF958A743A125C20DF72A0` |
+| ``sources\TerraFX.Runtime\Hosting\WorldPersistence.cs`` | C | `5F251F4F378E39287C1FEE4F1B1EB846B750A3BB797BEDA3A78FF9AEDD6498E2` |
 | ``sources\TerraFX.Runtime\Rendering\RenderMeshComponentDefinitions.cs`` | C | `167D1ADF373643E47C6F489A61D35F51FE6F4829349C82FDBC2131B0E772A20F` |
-| ``sources\TerraFX.Runtime\Rendering\RenderSceneAssetBundle.cs`` | M | `689DD5A2237398FEE46B01ED00538CAE66D36B8E30AD2AAA0488CC3BB6C08260` |
-| ``sources\TerraFX.Runtime\Rendering\RenderSkinnedNormalDiagnostic.cs`` | ?? | `E07287C05EA0E4A12F5ADF2FABCDC48B191C2D753B20E2636447CD83F1E2A41E` |
-| ``sources\TerraFX.Runtime\Rendering\Renderer.CpuExtractionSupport.cs`` | M | `EAF1F94AFF0886B3FA30AF97BD7F83180A38AB744D4241D0CDD275A055EADB55` |
-| ``sources\TerraFX.Runtime\Rendering\Renderer.Extract.cs`` | M | `274298BFDCEE321141D4138D417807951FCC0EF6BCAC1DFCE2726D5F36829F2D` |
+| ``sources\TerraFX.Runtime\Rendering\RenderSceneAssetBundle.cs`` | C | `DA778674F8CE186CCC394D1B41F05B548DD8BA65DAA33B05D5E1E536FFD45C1C` |
+| ``sources\TerraFX.Runtime\Rendering\RenderSkinnedNormalDiagnostic.cs`` | C | `E7440481F66AA0882EE329D704082EE7348D7A15991DFD7483DF98187FE057D0` |
+| ``sources\TerraFX.Runtime\Rendering\Renderer.CpuExtractionSupport.cs`` | C | `9C0029B4318FC47487CEE94A917566FBB5F5E97DAABCB781718E9D4EC4689D03` |
+| ``sources\TerraFX.Runtime\Rendering\Renderer.Extract.cs`` | C | `026A50597C4A6DDF50CDBEEAF2E761392F8933955B454D92A73416E3855D8124` |
 | ``sources\TerraFX.Runtime\Rendering\Renderer.M05AssetCodecs.cs`` | C | `A5346D4B04FC594C8713C0628A1035F75C97FE664808BA45069898C095CE16CB` |
-| ``sources\TerraFX.Runtime\Rendering\Renderer.SkinnedNormalDiagnosticPipeline.cs`` | ?? | `3093B2639635D749A66DADEBB72442B6E6E9FA8C426F9B4EEB282BD34F6C1EC4` |
+| ``sources\TerraFX.Runtime\Rendering\Renderer.SkinnedNormalDiagnosticPipeline.cs`` | C | `23E9E1FFBE5DE83A262D0297517696E8EF66499CAEBC6080CC1D105BB42545A2` |
 | ``sources\TerraFX.Runtime\Rendering\RendererCpuFeatures.cs`` | C | `AD662321F076BB0BF40E06634C11A36F44127F6E7E773D6E33BA612876918098` |
-| ``sources\TerraFX.Runtime\Scenes\SceneLoader.cs`` | M | `D53823C6C673E881AAD32A3E94508EC5B252CC39D366A99458A6C487E0FE4886` |
-| ``sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs`` | M | `1E01CC392652771A948D45F79FCA19FC1ED5C4659439AD4EC8879C2E99127876` |
-| ``sources\TerraFX.Runtime\Scenes\SceneWorldRegistry.cs`` | M | `34F60698127CAB3A5E3CFFB43D01265375F26C1291B733B4D3AFD00C63D2C54E` |
-| ``sources\TerraFX.Runtime\TerraFX.Runtime.csproj`` | M | `2F1C81E54F0FBF12D01E34D0D840885F5EB0E94A8B8890865EF721B8C6A3C65D` |
+| ``sources\TerraFX.Runtime\Scenes\SceneLoader.cs`` | C | `4903A86FC323ED906A0045288BEBAB68B37C5B6BEEFF6312EA0440A9D05D453C` |
+| ``sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs`` | C | `903D4ABEBA40AA4A06C8A1F76D32B0AA27DB0AFFA7690E235804D58BAEBBD9A6` |
+| ``sources\TerraFX.Runtime\Scenes\SceneWorldRegistry.cs`` | C | `34F60698127CAB3A5E3CFFB43D01265375F26C1291B733B4D3AFD00C63D2C54E` |
+| ``sources\TerraFX.Runtime\TerraFX.Runtime.csproj`` | C | `2F1C81E54F0FBF12D01E34D0D840885F5EB0E94A8B8890865EF721B8C6A3C65D` |
 | ``tests\Directory.Build.props`` | C | `281AAD4237121FEAB1903C2384F1A5F0AED7E218A704C918FE953E9FC8E75764` |
 | ``tests\TerraFX.Runtime.Tests\Animation\AnimationAssetCodecTests.cs`` | C | `9BFE297F788D008791D801D82C55B7E1E30B54EBF33B02C7B66592B0E03214F9` |
 | ``tests\TerraFX.Runtime.Tests\Animation\AnimationRootMotionPackageTests.cs`` | C | `5F2DB321C12C0719897C3D031CD897BC3A61538839B1C067FBA11255110973D7` |
-| ``tests\TerraFX.Runtime.Tests\Animation\AnimationRuntimeStateCodecTests.cs`` | C | `4AA2BBCE8E057E75AB7B93AF4EC43F9A183A70C1281478170BD3A43291FD9011` |
+| ``tests\TerraFX.Runtime.Tests\Animation\AnimationRuntimeAuthorTests.cs`` | C | `B2B407869F7E603C779B648904AD68BD11970FC873087B427CAF09145A29F5E0` |
+| ``tests\TerraFX.Runtime.Tests\Animation\AnimationRuntimeStateCodecTests.cs`` | C | `9428BFAD5D0B44995A74C5E51C7DB32C7ADCA2FABF650DF99B3D53681F923E4B` |
 | ``tests\TerraFX.Runtime.Tests\Animation\AnimationSchemaCatalogueTests.cs`` | C | `2FC621E6FE47F265B2ABB1261CCCAFE77E5511294425341ECF1D6C57C5983B83` |
 | ``tests\TerraFX.Runtime.Tests\Animation\RootMotionResourceTests.cs`` | C | `CB621344D94C999B3FC523B043E8B6B9D19051A30208B64784ED7000D2C3BE3E` |
 | ``tests\TerraFX.Runtime.Tests\Entities\WorldAssetReferenceTests.cs`` | C | `AAF487C74D13F4580A7B3A60E0B2E51693CAFC1AA2E616C3B5A3FE99BD9CFC35` |
 | ``tests\TerraFX.Runtime.Tests\Entities\WorldAttachmentRecordAssetReferenceTests.cs`` | C | `71E4D26A94582EEF2C0B590CC24DBE30001B74E415C3A55221E660B8773B3A34` |
-| ``tests\TerraFX.Runtime.Tests\Entities\WorldAttachmentRecordBindingTests.cs`` | C | `95828E644C2F4539E5A44A704D11D5D323EB15FAA3E9F76BEE2F71A214DC3B92` |
+| ``tests\TerraFX.Runtime.Tests\Entities\WorldAttachmentRecordBindingTests.cs`` | C | `4F93909760BA073E8A1E0575477AD5F540EE85F1E861B376F6CDE0BA1092CFDF` |
 | ``tests\TerraFX.Runtime.Tests\Hosting\WorldPreparedRestoreSourceTests.AnimationAssets.cs`` | C | `47FF7056CF5E5E05CB50EBDB542DDD6294967EDEEC9C0CB04E5A41F6F76CA3A6` |
 | ``tests\TerraFX.Runtime.Tests\Hosting\WorldPreparedRestoreSourceTests.cs`` | C | `19FDC9E71662E1BC92047869D40554B9CEB4A412ABB3F8F88D797B5C640C7F43` |
-| ``tests\TerraFX.Runtime.Tests\Scenes\RenderSnapshotMeshGpuTests.cs`` | M | `1F1708D37B38F20760FB4B659844C1815C6EE2EFD500BDD1E796654D3CCDBD7D` |
-| ``tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj`` | M | `B8DFBC8438BD32A93ACB54DD420AD09A7BF259C2DB5D366D2100229D066CF583` |
+| ``tests\TerraFX.Runtime.Tests\Scenes\RenderSnapshotMeshGpuTests.cs`` | C | `2B4D97E2164ADFF3E1D79D0176587037B587E45FA71B6DB27F8BA6582DA490ED` |
+| ``tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj`` | C | `B8DFBC8438BD32A93ACB54DD420AD09A7BF259C2DB5D366D2100229D066CF583` |
+
+Unrelated dirty Scene/Sprite tests preserved outside the Animation input/acceptance set:
+
+| Preserved path | Raw SHA-256 |
+|---|---|
+| ``tests\TerraFX.Runtime.Tests\Scenes\PreparedSceneAssetRetentionTests.cs`` | `E342237B7645BE805DD924855B2239907773D31753D22B8B2261BF26C20452F4` |
+| ``tests\TerraFX.Runtime.Tests\Scenes\RenderSpriteCapacityTests.cs`` | `CAA6610CF55F8FFFA077745FD96BAA45FCECFED2FD051CC763901AEED5500239` |
+| ``tests\TerraFX.Runtime.Tests\Scenes\RenderSpriteComponentTests.cs`` | `8E65B71B5AC1E0EF9D1F47AA56963054D091DF8C229E74DDBB1CAE37BB59AB60` |
+| ``tests\TerraFX.Runtime.Tests\Scenes\RendererExtractionTests.cs`` | `ABAEEA4D0F6BE941AF73E640B7FCE41EC753D2199654343FA4668D54EC20FC6A` |
+| ``tests\TerraFX.Runtime.Tests\Scenes\SceneAssetStoreTests.EngineHost.cs`` | `4C0841A40295A891B68974FDDD8078DFD0181C31B35AB0BCB0B5114FE0FD1039` |

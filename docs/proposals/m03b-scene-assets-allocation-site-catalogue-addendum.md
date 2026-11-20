@@ -4,7 +4,7 @@
 
 ## Scope and current boundary
 
-This is the source-site addendum to [closed-read allocation authority](m03b-scene-assets-closed-read-allocation-authority.md), against HEAD `737773e25fa013c81151116a6a9534f96d586ab3`. Earlier input hashes are superseded by the current freeze below. The five unrelated dirty tests were rehashed and match their previously recorded bytes.
+This is the source-site addendum to [closed-read allocation authority](m03b-scene-assets-closed-read-allocation-authority.md), against HEAD `89bf88208cd83e461fe04b450ef25a6ec8950429`. Earlier input hashes are superseded by the current freeze below. The five unrelated dirty tests were rehashed and match their previously recorded bytes.
 
 The selected typed calls are Scene/Prefab 2.0, Mesh/Texture/Atlas/Material 1.0, and Skeleton 1.0, all package `None`. Current [Rendering origins](../../sources/TerraFX.Runtime/Rendering/RendererAssetCodecProfiles.cs), [Skeleton origin](../../sources/TerraFX.Runtime/Animation/AnimationSupport.cs), bundle roots and owned helper paths establish that dispatch selection; they do not supply allocation authority. Ordinary helper branches remain distinct through `RendererAssetReadMode`. The exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton decode changes are behavior-tested, but these tests do not supply allocation or Scene-return evidence.
 
@@ -163,7 +163,7 @@ Source: [`AssetStore.CreateLease`](../../sources/TerraFX.Assets/AssetStore.cs), 
 |---|---|
 | New typed issue | `H(AssetLeaseLifetime) + H(System.Threading.Lock) + H(AssetLease<T>) + H(AssetLease<T>.LeaseState) + H(object gate)`. All seven T are reference-type semantic roots. The reference stored in LeaseState is not another semantic value. |
 | `Retain` | New handle + new LeaseState + its object gate; shared existing lifetime/value/backing. No new lifetime, decoded array, or second decoded-value wire charge. Its source construction rollback and actual caller return still need protection. |
-| Package pin | `H(AssetPackageLease) + H(its LeaseState) + H(object gate)`, one backing reference and live-lease credit; no payload/context/semantic value/decode credit. |
+| Package pin | `H(AssetPackageLease) + H(its LeaseState) + H(object gate)`, one backing reference and live-lease credit; no payload/context/semantic value/decode credit. `AcquirePackageLease` constructs this complete carrier inside Store admission before acquiring the backing reference or incrementing lease accounting, so no allocating construction follows the ownership commit. |
 | Explicit inspection | Temporary backing reference, `A_byte(d_target)`, structural/lookup value state, read/return and failure provision. No issued lease or live-lease credit. |
 | Description / provenance getters | `AssetOwnedReadDescriptor` and its codec receipt are structs, not issued handles; successful description borrows existing metadata. Provenance getters temporarily acquire/release a backing reference. Their enclosing issued-handle gate preserves its real lifetime reference, so prove that nonfinal-release closure rather than charging every getter as a potentially final file close. Allocating refusal still belongs to the entry/fault provision. |
 | Successful issue versus failed construction | Lifetime is constructed before the handle/state; retain each prefix in the preinstalled operation. `ownershipTransferred` becomes true only after successful handle construction. Do not return backing/credits when a failed issued/lifetime release retained them. |
@@ -229,7 +229,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T02:54:39.838881+00:00`; HEAD `864c44b9fabcf52208a41710b19645a22a2ca63f`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
+UTC `2026-11-20T06:17:26.0672488Z`; HEAD `196f69cf54af1aa7e501d659526a2d0f00b81167`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -287,9 +287,9 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| BASE | 96 | `e43bbb4f57ca76789605736efe52f621dba7ed3e0ecaad88fe47781518bcb354` |
+| BASE | 96 | `6412c940c8b71ddcf09ae7b1ebba6209ca8b4ae5ae3cc1d2d7229a29fc55897e` |
 | ADD | 49 | `f89e86c30ff36b0b7f7b30d1e51494d05b6a4f7d27e624fe65b8888c0e862da9` |
-| ALL | 145 | `6370cc0b3b371302fbc73f5a70e84af30d44f0d149d232fa5dabfaef09f378b7` |
+| ALL | 145 | `5422b7dba4c56b91021658d48121e0c990899f6a3ae22882a1bddf51318d2845` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|
@@ -307,4 +307,4 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-The source and Roadmap now include a fixed-buffer scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, and fixed-limb exact Mesh predicates. They do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
+The source and Roadmap now include a fixed-buffer scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb exact Mesh predicates, and package-pin construction before backing-reference/lease-count commit. These changes do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
