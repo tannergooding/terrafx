@@ -330,6 +330,8 @@ internal sealed class AssetStoreTests
             ?? throw new InvalidOperationException("The selected package backing field is missing.");
         var referenceCountField = typeof(AssetPackageBacking).GetField("_referenceCount", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The package backing reference count field is missing.");
+        var liveLeaseCountField = typeof(AssetStore).GetField("_liveAssetLeases", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The live lease count field is missing.");
 
         try
         {
@@ -374,6 +376,21 @@ internal sealed class AssetStoreTests
                     cancellationSource.Token).ConfigureAwait(false));
             Assert.That(packageDescriptorCancellation?.CancellationToken, Is.EqualTo(cancellationSource.Token));
             Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+
+            var liveLeaseCountBeforeMissingLoads = liveLeaseCountField.GetValue(store);
+            _ = Assert.ThrowsAsync<KeyNotFoundException>(async () =>
+                await source.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(3),
+                    CancellationToken.None).ConfigureAwait(false));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+            Assert.That(liveLeaseCountField.GetValue(store), Is.EqualTo(liveLeaseCountBeforeMissingLoads));
+
+            _ = Assert.ThrowsAsync<KeyNotFoundException>(async () =>
+                await packageLease.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(3),
+                    CancellationToken.None).ConfigureAwait(false));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+            Assert.That(liveLeaseCountField.GetValue(store), Is.EqualTo(liveLeaseCountBeforeMissingLoads));
 
             using var child = await source.LoadFromPackageAsync<TestAssetValue>(
                 new AssetId(2),
