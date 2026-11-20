@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 
 namespace TerraFX.Scenes;
@@ -116,8 +117,8 @@ internal static class SceneHierarchyReader
         var rootsField = GetRecordArrayField(record, 2, isRequired: true, limits);
         var nodeCount = checked((int)nodesField.Count);
         var rootCount = checked((int)rootsField.Count);
-        var nodes = ImmutableArray.CreateBuilder<SceneHierarchyNode>(nodeCount);
-        var roots = ImmutableArray.CreateBuilder<SceneHierarchyEntry>(rootCount);
+        var nodes = new SceneHierarchyNode[nodeCount];
+        var roots = new SceneHierarchyEntry[rootCount];
         var previousEntityId = Guid.Empty;
 
         for (var nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++)
@@ -131,15 +132,17 @@ internal static class SceneHierarchyReader
             }
 
             previousEntityId = node.EntityId;
-            nodes.Add(node);
+            nodes[nodeIndex] = node;
         }
 
         for (var rootIndex = 0; rootIndex < rootCount; rootIndex++)
         {
-            roots.Add(ReadEntry(record.GetRecordArrayElement(2, rootIndex)));
+            roots[rootIndex] = ReadEntry(record.GetRecordArrayElement(2, rootIndex));
         }
 
-        return new SceneHierarchy(nodes.MoveToImmutable(), roots.MoveToImmutable());
+        return new SceneHierarchy(
+            ImmutableCollectionsMarshal.AsImmutableArray(nodes),
+            ImmutableCollectionsMarshal.AsImmutableArray(roots));
     }
 
     private static SceneHierarchyNode ReadNode(EbinRecordReadView record, EbinReadLimits limits)
@@ -164,14 +167,17 @@ internal static class SceneHierarchyReader
 
         var childrenField = GetRecordArrayField(record, 3, isRequired: true, limits);
         var childCount = checked((int)childrenField.Count);
-        var children = ImmutableArray.CreateBuilder<SceneHierarchyEntry>(childCount);
+        var children = new SceneHierarchyEntry[childCount];
 
         for (var childIndex = 0; childIndex < childCount; childIndex++)
         {
-            children.Add(ReadEntry(record.GetRecordArrayElement(3, childIndex)));
+            children[childIndex] = ReadEntry(record.GetRecordArrayElement(3, childIndex));
         }
 
-        return new SceneHierarchyNode(entityId, parentEntityId, children.MoveToImmutable());
+        return new SceneHierarchyNode(
+            entityId,
+            parentEntityId,
+            ImmutableCollectionsMarshal.AsImmutableArray(children));
     }
 
     private static void ValidateHeader(EbinRecordReadView record, Guid schemaId, uint major, int fieldCount)

@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Numerics;
 
@@ -66,7 +67,7 @@ internal static class SceneEntityReader
         }
 
         var componentCount = checked((int)componentField.Count);
-        var components = ImmutableArray.CreateBuilder<SceneAuthoredComponentRecord>(componentCount);
+        var components = new SceneAuthoredComponentRecord[componentCount];
         var previousSchemaId = Guid.Empty;
         var hasLocalTransform = false;
         var localTransformPosition = Vector3.Zero;
@@ -133,7 +134,7 @@ internal static class SceneEntityReader
                 localTransformPosition = ReadLocalTransformPosition(componentRecord);
             }
 
-            components.Add(new SceneAuthoredComponentRecord(schema, componentRecord.EncodedBytes));
+            components[componentIndex] = new SceneAuthoredComponentRecord(schema, componentRecord.EncodedBytes);
             previousSchemaId = header.SchemaId;
         }
 
@@ -142,7 +143,10 @@ internal static class SceneEntityReader
             throw new InvalidDataException("Every native Scene Entity requires a LocalTransform component.");
         }
 
-        return new SceneEntity(entityId, localTransformPosition, components.MoveToImmutable());
+        return new SceneEntity(
+            entityId,
+            localTransformPosition,
+            ImmutableCollectionsMarshal.AsImmutableArray(components));
     }
 
     internal static Vector3 ReadLocalTransformPosition(
