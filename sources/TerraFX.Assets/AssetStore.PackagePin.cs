@@ -25,19 +25,10 @@ public sealed partial class AssetStore
                 throw new InvalidOperationException("The live asset lease budget is exhausted.");
             }
 
+            var packageLease = new AssetPackageLease(this, backing);
             ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), backing);
             _liveAssetLeases++;
-        }
-
-        try
-        {
-            return new AssetPackageLease(this, backing);
-        }
-        catch
-        {
-            ReleaseLeaseReference(0, releaseDecodedBytes: false);
-            backing.ReleaseReference();
-            throw;
+            return packageLease;
         }
     }
 }
