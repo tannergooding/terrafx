@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Numerics;
@@ -192,15 +193,16 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
     {
         var field = GetRequiredArrayField(record, tag);
         ValidateFixedArray(field, elementKind: 2, stride: sizeof(ushort), minimumCount, maximumCount);
-        var result = ImmutableArray.CreateBuilder<ushort>(checked((int)field.Count));
+        var elementCount = checked((int)field.Count);
+        var result = new ushort[elementCount];
         var elements = field.Payload[FixedArrayHeaderBytes..];
 
-        for (var index = 0; index < checked((int)field.Count); index++)
+        for (var index = 0; index < elementCount; index++)
         {
-            result.Add(BinaryPrimitives.ReadUInt16LittleEndian(elements[(index * sizeof(ushort))..]));
+            result[index] = BinaryPrimitives.ReadUInt16LittleEndian(elements[(index * sizeof(ushort))..]);
         }
 
-        return result.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(result);
     }
 
     private static ImmutableArray<uint> ReadFixedUInt32Array(
@@ -211,15 +213,16 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
     {
         var field = GetRequiredArrayField(record, tag);
         ValidateFixedArray(field, elementKind: 3, stride: sizeof(uint), minimumCount, maximumCount);
-        var result = ImmutableArray.CreateBuilder<uint>(checked((int)field.Count));
+        var elementCount = checked((int)field.Count);
+        var result = new uint[elementCount];
         var elements = field.Payload[FixedArrayHeaderBytes..];
 
-        for (var index = 0; index < checked((int)field.Count); index++)
+        for (var index = 0; index < elementCount; index++)
         {
-            result.Add(BinaryPrimitives.ReadUInt32LittleEndian(elements[(index * sizeof(uint))..]));
+            result[index] = BinaryPrimitives.ReadUInt32LittleEndian(elements[(index * sizeof(uint))..]);
         }
 
-        return result.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(result);
     }
 
     private static ImmutableArray<RenderMeshGroup> ReadGroups(
@@ -229,10 +232,11 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
         uint tag = 4)
     {
         var groupArray = GetRequiredRecordArray(record, tag, minimumCount: 1, maximumCount: 65_536);
-        var groups = ImmutableArray.CreateBuilder<RenderMeshGroup>(checked((int)groupArray.Count));
+        var groupCount = checked((int)groupArray.Count);
+        var groups = new RenderMeshGroup[groupCount];
         var expectedFirstIndex = 0UL;
 
-        for (var index = 0; index < checked((int)groupArray.Count); index++)
+        for (var index = 0; index < groupCount; index++)
         {
             var groupRecord = record.GetRecordArrayElement(tag, index);
             ValidateHeader(groupRecord, s_meshGroupSchemaId, [3]);
@@ -255,10 +259,10 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
                 throw new InvalidDataException("A Mesh group extends beyond the selected index array.");
             }
 
-            groups.Add(new RenderMeshGroup(
+            groups[index] = new RenderMeshGroup(
                 checked((int)firstIndex),
                 checked((int)indexCount),
-                checked((int)materialSlot)));
+                checked((int)materialSlot));
         }
 
         if (expectedFirstIndex != maximumIndexCount)
@@ -266,7 +270,7 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
             throw new InvalidDataException("Mesh groups must cover the complete index array.");
         }
 
-        return groups.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(groups);
     }
 
     private static Guid ReadGuid(EbinRecordReadView record, uint tag)
@@ -296,14 +300,14 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
         {
             ValidateHeader(indicesRecord, s_meshIndices16SchemaId, [1]);
             var values = ReadFixedUInt16Array(indicesRecord, tag: 1, minimumCount: 3, maximumCount: 1_048_576);
-            var indices = ImmutableArray.CreateBuilder<uint>(values.Length);
+            var indices = new uint[values.Length];
 
-            foreach (var value in values)
+            for (var index = 0; index < values.Length; index++)
             {
-                indices.Add(value);
+                indices[index] = values[index];
             }
 
-            return (RenderMeshIndexFormat.UInt16, indices.MoveToImmutable());
+            return (RenderMeshIndexFormat.UInt16, ImmutableCollectionsMarshal.AsImmutableArray(indices));
         }
 
         if (header.SchemaId == s_meshIndices32SchemaId)
@@ -328,17 +332,18 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
     private static ImmutableArray<AssetId> ReadMaterialSlots(EbinRecordReadView record, AssetCodecContext context)
     {
         var materialArray = GetRequiredRecordArray(record, tag: 5, minimumCount: 1, maximumCount: 256);
-        var materialSlots = ImmutableArray.CreateBuilder<AssetId>(checked((int)materialArray.Count));
+        var materialCount = checked((int)materialArray.Count);
+        var materialSlots = new AssetId[materialCount];
 
-        for (var index = 0; index < checked((int)materialArray.Count); index++)
+        for (var index = 0; index < materialCount; index++)
         {
-            materialSlots.Add(ReadAssetReference(
+            materialSlots[index] = ReadAssetReference(
                 record.GetRecordArrayElement(5, index).EncodedBytes,
                 s_materialSchemaId,
-                context));
+                context);
         }
 
-        return materialSlots.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(materialSlots);
     }
 
     private static RenderMeshAsset ReadMesh(scoped EbinRecordReadView record, AssetCodecContext context)
@@ -608,10 +613,11 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
     {
         var field = GetRequiredField(record, tag, kind: 23, count: expectedCount);
         ValidateFixedArray(field, elementKind: 14, stride: 8, minimumCount: expectedCount, maximumCount: expectedCount);
-        var values = ImmutableArray.CreateBuilder<Vector2>(checked((int)field.Count));
+        var elementCount = checked((int)field.Count);
+        var values = new Vector2[elementCount];
         var payload = field.Payload[FixedArrayHeaderBytes..];
 
-        for (var index = 0; index < checked((int)field.Count); index++)
+        for (var index = 0; index < elementCount; index++)
         {
             var value = ReadVector2(payload[(index * 8)..]);
 
@@ -620,10 +626,10 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
                 throw new InvalidDataException("Mesh UV values must be finite.");
             }
 
-            values.Add(value);
+            values[index] = value;
         }
 
-        return values.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(values);
     }
 
     private static ImmutableArray<Vector3> ReadVector3Array(
@@ -633,15 +639,16 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
     {
         var field = GetRequiredField(record, tag, kind: 23, count: expectedCount);
         ValidateFixedArray(field, elementKind: 15, stride: 12, minimumCount: expectedCount, maximumCount: expectedCount);
-        var values = ImmutableArray.CreateBuilder<Vector3>(checked((int)field.Count));
+        var elementCount = checked((int)field.Count);
+        var values = new Vector3[elementCount];
         var payload = field.Payload[FixedArrayHeaderBytes..];
 
-        for (var index = 0; index < checked((int)field.Count); index++)
+        for (var index = 0; index < elementCount; index++)
         {
-            values.Add(ReadVector3Payload(payload[(index * 12)..]));
+            values[index] = ReadVector3Payload(payload[(index * 12)..]);
         }
 
-        return values.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(values);
     }
 
     private static Vector3 ReadVector3Field(EbinRecordReadView record, uint tag)
@@ -672,10 +679,11 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
     {
         var field = GetRequiredField(record, tag, kind: 23, count: expectedCount);
         ValidateFixedArray(field, elementKind: 16, stride: 16, minimumCount: expectedCount, maximumCount: expectedCount);
-        var values = ImmutableArray.CreateBuilder<Vector4>(checked((int)field.Count));
+        var elementCount = checked((int)field.Count);
+        var values = new Vector4[elementCount];
         var payload = field.Payload[FixedArrayHeaderBytes..];
 
-        for (var index = 0; index < checked((int)field.Count); index++)
+        for (var index = 0; index < elementCount; index++)
         {
             var value = ReadVector4(payload[(index * 16)..]);
 
@@ -684,10 +692,10 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
                 throw new InvalidDataException("Mesh Vector4 stream values must be finite.");
             }
 
-            values.Add(value);
+            values[index] = value;
         }
 
-        return values.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(values);
     }
 
     private static ImmutableArray<Vector4> ReadWeightStream(EbinRecordReadView record, int vertexCount)

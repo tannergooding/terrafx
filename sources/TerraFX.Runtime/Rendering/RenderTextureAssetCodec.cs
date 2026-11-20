@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
 
@@ -185,7 +186,7 @@ internal sealed class RenderTextureAssetCodec : IContextualBinarySchemaCodec<Ren
             throw new InvalidDataException("The Texture mip count does not match its declared MipPolicy.");
         }
 
-        var mips = ImmutableArray.CreateBuilder<RenderTextureMip>(mipCount);
+        var mips = new RenderTextureMip[mipCount];
         var mipWidth = width;
         var mipHeight = height;
 
@@ -214,11 +215,11 @@ internal sealed class RenderTextureAssetCodec : IContextualBinarySchemaCodec<Ren
                 throw new InvalidDataException("A Texture mip does not match its exact level, dimensions, or RGBA8 payload length.");
             }
 
-            mips.Add(new RenderTextureMip(
+            mips[index] = new RenderTextureMip(
                 index,
                 mipWidth,
                 mipHeight,
-                [.. pixels.Payload]));
+                [.. pixels.Payload]);
             mipWidth = Math.Max(1, mipWidth / 2);
             mipHeight = Math.Max(1, mipHeight / 2);
         }
@@ -231,7 +232,7 @@ internal sealed class RenderTextureAssetCodec : IContextualBinarySchemaCodec<Ren
             alphaMode,
             semantic,
             mipPolicy,
-            mips.MoveToImmutable());
+            ImmutableCollectionsMarshal.AsImmutableArray(mips));
     }
 
     private static uint ReadUInt32(EbinRecordReadView record, uint tag)

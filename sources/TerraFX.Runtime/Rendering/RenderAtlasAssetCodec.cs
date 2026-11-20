@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
 
@@ -150,17 +151,19 @@ internal sealed class RenderAtlasAssetCodec : IContextualBinarySchemaCodec<Rende
 
         var pageArray = GetRequiredRecordArray(record, tag: 1, minimumCount: 1, maximumCount: 16);
         var frameArray = GetRequiredRecordArray(record, tag: 2, minimumCount: 1, maximumCount: 1_048_576);
-        var pages = ImmutableArray.CreateBuilder<AssetId>(checked((int)pageArray.Count));
+        var pageCount = checked((int)pageArray.Count);
+        var frameCount = checked((int)frameArray.Count);
+        var pages = new AssetId[pageCount];
 
-        for (var index = 0; index < checked((int)pageArray.Count); index++)
+        for (var index = 0; index < pageCount; index++)
         {
-            pages.Add(ReadTextureReference(record.GetRecordArrayElement(1, index)));
+            pages[index] = ReadTextureReference(record.GetRecordArrayElement(1, index));
         }
 
-        var frames = ImmutableArray.CreateBuilder<RenderAtlasFrame>(checked((int)frameArray.Count));
+        var frames = new RenderAtlasFrame[frameCount];
         var previousFrameId = Guid.Empty;
 
-        for (var index = 0; index < checked((int)frameArray.Count); index++)
+        for (var index = 0; index < frameCount; index++)
         {
             var frameRecord = record.GetRecordArrayElement(2, index);
             var frameHeader = frameRecord.Header;
@@ -199,18 +202,20 @@ internal sealed class RenderAtlasAssetCodec : IContextualBinarySchemaCodec<Rende
                 throw new InvalidDataException("An Atlas frame exceeds the admitted page, padding, or frame bounds.");
             }
 
-            frames.Add(new RenderAtlasFrame(
+            frames[index] = new RenderAtlasFrame(
                 frameId,
                 checked((int)page),
                 checked((int)x),
                 checked((int)y),
                 checked((int)width),
                 checked((int)height),
-                padding));
+                padding);
             previousFrameId = frameId;
         }
 
-        return new RenderAtlasAsset(pages.MoveToImmutable(), frames.MoveToImmutable());
+        return new RenderAtlasAsset(
+            ImmutableCollectionsMarshal.AsImmutableArray(pages),
+            ImmutableCollectionsMarshal.AsImmutableArray(frames));
     }
 
     private static Guid ReadGuid(EbinRecordReadView record, uint tag)
