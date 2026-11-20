@@ -593,7 +593,13 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
-    public void AssetReferenceScannerPreservesFirstOccurrenceOrderForDistinctTriples()
+    [TestCase(0, 0)]
+    [TestCase(1, 1)]
+    [TestCase(2, 1)]
+    [TestCase(3, 2)]
+    public void AssetReferenceScannerPreservesFirstOccurrenceOrderForDistinctTriples(
+        int referenceCount,
+        int expectedUniqueCount)
     {
         var rootIdentity = new ContentSchemaIdentityAssignment("test/asset-reference-scan-root");
         var assetReferenceSchema = FindAssetReferenceSchema();
@@ -626,11 +632,12 @@ internal sealed class AssetStoreTests
         ]);
         var firstSchemaId = new Guid("ffffffff-0000-4000-8000-000000000001");
         var secondSchemaId = new Guid("11111111-0000-4000-8000-000000000002");
-        byte[][] encodedReferences = [
+        byte[][] allEncodedReferences = [
             CreateAssetReferenceRecord(2, firstSchemaId, 1),
             CreateAssetReferenceRecord(2, firstSchemaId, 1),
             CreateAssetReferenceRecord(2, secondSchemaId, 1),
         ];
+        var encodedReferences = allEncodedReferences[..referenceCount];
         var encodedRecord = CreateReferenceRootRecord(rootSchema.Schema, encodedReferences);
         var referenceWorkspace = new AssetReference[encodedReferences.Length];
         var indexWorkspace = new int[encodedReferences.Length];
@@ -651,39 +658,24 @@ internal sealed class AssetStoreTests
             Is.EqualTo(EbinReadStatus.Complete));
         Assert.That(bytesConsumed, Is.EqualTo(encodedRecord.Length));
         Assert.That(diagnostic, Is.Null);
-        Assert.That(action.UniqueCount, Is.EqualTo(2));
+        Assert.That(action.UniqueCount, Is.EqualTo(expectedUniqueCount));
 
         var references = new AssetReference[action.UniqueCount];
         AssetReferenceScanner.CopyUniqueReferences(
             referenceWorkspace,
             indexWorkspace.AsSpan(0, action.UniqueCount),
             references);
-        AssetReference[] expectedReferences = [
-            new AssetReference(new AssetId(2), firstSchemaId, 1),
-            new AssetReference(new AssetId(2), secondSchemaId, 1),
-        ];
+        AssetReference[] expectedReferences = referenceCount switch {
+            0 => [],
+            1 or 2 => [new AssetReference(new AssetId(2), firstSchemaId, 1)],
+            _ => [
+                new AssetReference(new AssetId(2), firstSchemaId, 1),
+                new AssetReference(new AssetId(2), secondSchemaId, 1),
+            ],
+        };
         Assert.That(
             references,
             Is.EqualTo(expectedReferences));
-
-        var emptyRecord = CreateReferenceRootRecord(rootSchema.Schema, []);
-        var emptyAction = new AssetReferenceScanAction(
-            rootSchema,
-            schemas,
-            [],
-            []);
-        Assert.That(
-            EbinStructuralReader.Read(
-                emptyRecord,
-                EbinReadLimits.Foundation,
-                EbinReadPolicy.Canonical,
-                ref emptyAction,
-                out bytesConsumed,
-                out diagnostic),
-            Is.EqualTo(EbinReadStatus.Complete));
-        Assert.That(bytesConsumed, Is.EqualTo(emptyRecord.Length));
-        Assert.That(diagnostic, Is.Null);
-        Assert.That(emptyAction.UniqueCount, Is.Zero);
     }
 
     [Test]
