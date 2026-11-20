@@ -16,4 +16,5 @@ internal enum AssetBoundedNativeApi : byte
     WindowsCreateEvent = 9,
     WindowsResetEvent = 10,
     WindowsGetOverlappedResult = 11,
+    LinuxFlock = 12,
 }

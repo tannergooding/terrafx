@@ -12,6 +12,7 @@ namespace TerraFX.Assets;
 internal sealed unsafe partial class AssetBoundedNativePort
 {
     private const int LinuxEintr = 4;
+    private const int LinuxLockShared = 1;
     private const int LinuxOpenCloseOnExec = 0x80000;
     private const int LinuxOpenNonBlocking = 0x800;
     private const int LinuxOpenReadOnly = 0;
@@ -699,6 +700,25 @@ internal sealed unsafe partial class AssetBoundedNativePort
             file.WindowsHandle = -1;
         }
 
+        while (LinuxNative.Flock(file.LinuxDescriptor, LinuxLockShared) != 0)
+        {
+            var error = Marshal.GetLastSystemError();
+
+            if (error == LinuxEintr)
+            {
+                continue;
+            }
+
+            primary = CreateFailure(
+                AssetBoundedFailureStage.NativeFileCheck,
+                AssetBoundedFailureKind.Native,
+                AssetBoundedNativeApi.LinuxFlock,
+                error,
+                file.Disposition);
+            fileRelease = CloseFileCore(file, ref _openFileCount);
+            return AssetBoundedRefusal.None;
+        }
+
         if (LinuxNative.FileStatus(file.LinuxDescriptor, out var status) != 0)
         {
             var error = Marshal.GetLastSystemError();
@@ -1018,6 +1038,10 @@ internal sealed unsafe partial class AssetBoundedNativePort
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libc", EntryPoint = "fstat", SetLastError = true)]
         internal static partial int FileStatus(int descriptor, out AssetBoundedLinuxStatX64 status);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libc", EntryPoint = "flock", SetLastError = true)]
+        internal static partial int Flock(int descriptor, int operation);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libc", EntryPoint = "open", SetLastError = true)]
