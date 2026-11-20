@@ -643,6 +643,21 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    [TestCase(0, 0, 192)]
+    [TestCase(1, 1, 272)]
+    [TestCase(3, 2, 336)]
+    [TestCase(4, 4, 400)]
+    public void AssetReferenceScannerMeasuresFixedScanDataBytes(
+        int referenceCount,
+        int uniqueCount,
+        long expectedBytes)
+    {
+        Assert.That(
+            AssetReferenceScanner.GetFixedScanDataBytes(referenceCount, uniqueCount),
+            Is.EqualTo(expectedBytes));
+    }
+
+    [Test]
     [TestCase(0, 0)]
     [TestCase(1, 1)]
     [TestCase(2, 1)]
@@ -689,6 +704,18 @@ internal sealed class AssetStoreTests
         Assert.That(
             references,
             Is.EqualTo(expectedReferences));
+    }
+
+    [Test]
+    [TestCase(-1, 0)]
+    [TestCase(0, 1)]
+    [TestCase(1, 1_048_577)]
+    public void AssetReferenceScannerRejectsInvalidFixedScanByteCounts(
+        int referenceCount,
+        int uniqueCount)
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => AssetReferenceScanner.GetFixedScanDataBytes(referenceCount, uniqueCount));
     }
 
     [Test]

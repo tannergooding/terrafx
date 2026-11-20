@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace TerraFX.Assets;
@@ -113,6 +114,19 @@ internal static class AssetReferenceScanner
         var referenceCount = 0;
         VisitRecord(record, schema, schemas, null, null, [], false, [], false, ref referenceCount, 0);
         return referenceCount;
+    }
+
+    internal static long GetFixedScanDataBytes(int referenceCount, int uniqueCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(referenceCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(referenceCount, MaximumReferences);
+        ArgumentOutOfRangeException.ThrowIfNegative(uniqueCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(uniqueCount, referenceCount);
+
+        return checked(
+            ArrayBytes<AssetReference>(referenceCount)
+            + ArrayBytes<int>(referenceCount)
+            + ArrayBytes<AssetReference>(uniqueCount));
     }
 
     internal static ImmutableArray<AssetReference> Scan(
@@ -256,6 +270,13 @@ internal static class AssetReferenceScanner
         => (left.AssetId == right.AssetId)
             && (left.SchemaId == right.SchemaId)
             && (left.SchemaMajor == right.SchemaMajor);
+
+    private static long ArrayBytes<T>(int count)
+    {
+        var elementBytes = checked((long)count * Unsafe.SizeOf<T>());
+        var roundedBytes = checked((elementBytes + 15L) & ~15L);
+        return checked(64L + roundedBytes);
+    }
 
     private static int CompareReferenceIndices(
         scoped ReadOnlySpan<AssetReference> references,
