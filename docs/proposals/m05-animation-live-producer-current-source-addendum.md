@@ -92,9 +92,9 @@ The committed reader-only change replaces nested `ImmutableArray` builders plus 
 
 ## 7. Frozen direct inputs
 
-Freeze: **2026-11-20T07:01:44.629680Z**, HEAD **`3bd55d496ac3b864ff9b0f4435a22c966406dd2c`**. The 102 direct inputs are tracked and clean at this revision. The five unrelated dirty Scene/Sprite tests are preserved separately below and are not treated as Animation acceptance inputs.
+Freeze: **2026-11-20T07:10:37.371750Z**, HEAD **`5b6ff1c080cfe55d416e6301440d8afc556b0d72`**. The 102 direct inputs are tracked and clean at this revision. The five unrelated dirty Scene/Sprite tests are preserved separately below and are not treated as Animation acceptance inputs.
 
-Manifest SHA-256: **`2B2E5B2EEEF965FA43DBBB525A219EC73C2E5B6E9B5AA715B5DB9A9257071739`**.
+Manifest SHA-256: **`AE1F2A4D27842CFE541CAEA48A3F386EFD7F3FB17B0C98FB3C69AB07FE99E10E`**.
 
 Digest encoding is UTF-8 without BOM, LF endings and a final LF: first `HEAD<TAB><head><LF>`, then the rows below sorted by ordinal full path, each encoded as `<state><TAB><uppercase SHA-256><TAB><exact Windows relative path><LF>`. The proposal itself is excluded to avoid a self-hash. Recheck path membership and hashes before applying a later implementation disposition; changed inputs supersede this freeze.
 
