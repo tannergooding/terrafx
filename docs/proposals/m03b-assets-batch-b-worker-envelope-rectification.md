@@ -129,7 +129,7 @@ Current boundary: B1 now has rooted port/file/profile/directory owners, a compil
 
 ## 8. Review-input identity
 
-Snapshot UTC `2026-11-20T17:26:28.9149974Z`; HEAD `528e5525968e5afddc5c2dc98bbef71aeaa88cfc`, branch `tannergooding-m05-implementation-plan`. All listed technical tracked inputs were clean. The five unrelated dirty tests in P are preservation-only, not reviewed implementation. Exclude this output.
+Snapshot UTC `2026-11-20T17:37:38.9727644Z`; HEAD `c0418b089d146b3a5d774ffeca69c073dee247c9`, branch `tannergooding-m05-implementation-plan`. All listed technical tracked inputs were clean. The five unrelated dirty tests in P are preservation-only, not reviewed implementation. Exclude this output.
 
 Set digests are SHA-256 of ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` rows, LF-joined, UTF-8 without BOM/trailing newline. ALL unions A/R/S/T/D/C/V/E. External runtime links select unified-source revision `5254d8bcf59917edc1e1abc33bdf2442b77b1c70`; the local V marker identifies `11.0.0-rc.3.26522.148`, not a loaded runtime/native binary or NativeAOT qualification. The consulted Windows stack page identifies documentation revision `3aee48ac3f48e187d17bdfd56951741737331749`; Linux `pthread_join(3)` is man-pages 6.19, dated 2025-05-17. Neither supplies an all-in allocation bound.
 
