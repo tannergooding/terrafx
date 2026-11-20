@@ -397,6 +397,43 @@ internal sealed class AssetStoreTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.That(child.Value.Marker, Is.EqualTo(20));
             Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead + 1));
+            child.Dispose();
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+
+            var liveLeaseCountBeforeStoreClose = liveLeaseCountField.GetValue(store);
+            await store.DisposeAsync().ConfigureAwait(false);
+            var referenceCountAfterStoreClose = (int)(referenceCountField.GetValue(backing)
+                ?? throw new InvalidOperationException("The package backing reference count is unavailable."));
+
+            Assert.That(referenceCountAfterStoreClose, Is.EqualTo(referenceCountBeforePackageRead - 1));
+
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await source.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(2),
+                    CancellationToken.None).ConfigureAwait(false));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountAfterStoreClose));
+            Assert.That(liveLeaseCountField.GetValue(store), Is.EqualTo(liveLeaseCountBeforeStoreClose));
+
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await packageLease.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(2),
+                    CancellationToken.None).ConfigureAwait(false));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountAfterStoreClose));
+            Assert.That(liveLeaseCountField.GetValue(store), Is.EqualTo(liveLeaseCountBeforeStoreClose));
+
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await source.LoadDescribedFromPackageAsync<TestAssetValue>(
+                    descriptor,
+                    CancellationToken.None).ConfigureAwait(false));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountAfterStoreClose));
+            Assert.That(liveLeaseCountField.GetValue(store), Is.EqualTo(liveLeaseCountBeforeStoreClose));
+
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await packageLease.LoadDescribedFromPackageAsync<TestAssetValue>(
+                    descriptor,
+                    CancellationToken.None).ConfigureAwait(false));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountAfterStoreClose));
+            Assert.That(liveLeaseCountField.GetValue(store), Is.EqualTo(liveLeaseCountBeforeStoreClose));
         }
         finally
         {
