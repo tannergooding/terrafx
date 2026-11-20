@@ -2,6 +2,7 @@
 
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -76,6 +77,69 @@ internal sealed class AssetStoreAllocationTests
 
         TestContext.WriteLine(
             $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
+    }
+
+    [Test]
+    public void PackageBackingConstructionMatchesMeasuredCarrierShells()
+    {
+        const int SampleCount = 64;
+        var packagePath = Path.Combine(Path.GetTempPath(), $"terrafx-allocation-{Guid.NewGuid():N}.epkg");
+        File.WriteAllBytes(packagePath, []);
+        var streams = new FileStream?[SampleCount + 1];
+        var backings = new AssetPackageBacking?[SampleCount];
+
+        try
+        {
+            for (var index = 0; index < streams.Length; index++)
+            {
+                streams[index] = File.OpenRead(packagePath);
+            }
+
+            var registration = AssetPackageReaderTests.CreateRegistration();
+            var options = new AssetStoreOptions(packagePath, new byte[32], registration);
+            var warmStream = streams[0]
+                ?? throw new InvalidOperationException("The package stream was not initialized.");
+            var warmBacking = new AssetPackageBacking(warmStream, [], default, default, options, packageByteLength: 0);
+            warmBacking.ReleaseOwner();
+
+            var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+            for (var index = 0; index < backings.Length; index++)
+            {
+                var stream = streams[index + 1]
+                    ?? throw new InvalidOperationException("The package stream was not initialized.");
+                backings[index] = new AssetPackageBacking(
+                    stream,
+                    [],
+                    default,
+                    default,
+                    options,
+                    packageByteLength: 0);
+            }
+
+            var measuredBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+            GC.KeepAlive(backings);
+            GC.KeepAlive(streams);
+
+            Assert.That(measuredBytes, Is.EqualTo(288));
+            TestContext.WriteLine($"AssetPackageBacking constructor including token, Lock and read limits={measuredBytes};");
+            TestContext.WriteLine(
+                $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
+        }
+        finally
+        {
+            foreach (var backing in backings)
+            {
+                backing?.ReleaseOwner();
+            }
+
+            foreach (var stream in streams)
+            {
+                stream?.Dispose();
+            }
+
+            File.Delete(packagePath);
+        }
     }
 
     [Test]

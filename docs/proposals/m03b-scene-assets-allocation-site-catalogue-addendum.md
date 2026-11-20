@@ -170,6 +170,7 @@ Source: [`AssetStore.CreateLease`](../../sources/TerraFX.Assets/AssetStore.cs), 
 | `Retain` | New handle `32` + new LeaseState `56` + its object gate `24` on the selected .NET 11 x64 runner; shared existing lifetime/value/backing. No new lifetime, decoded array, or second decoded-value wire charge. Its source construction rollback and actual caller return still need protection. |
 | Package pin | `H(AssetPackageLease)=24 + H(its LeaseState)=56 + H(object gate)=24` on the selected .NET 11 x64 runner; these constructors allocate **104 bytes** in the focused measurement. This is one backing reference and live-lease credit; no payload/context/semantic value/decode credit. `AcquirePackageLease` constructs this complete carrier inside Store admission before acquiring the backing reference or incrementing lease accounting, so no allocating construction follows the ownership commit. |
 | Shared Assets Store/package shells | `H(AssetStore)=96`, `H(AssetStoreRegistration)=48`, `H(AssetPackageBacking)=160`, and `H(AssetPackageBackingToken)=24` on the selected .NET 11 x64 runner, measured constructor-free. These long-lived shells are not per-read terms. Backing's token, Lock, FileStream, directory entries, registration graph, and other backing-lifetime children remain separately owned and are not represented by these shell sizes. |
+| Package backing construction | The real `AssetPackageBacking` constructor allocates **288 bytes** (`160` backing shell + `24` token + `40` instance `Lock` + `64` `EbinReadLimits`) on the selected .NET 11 x64 runner. [`AssetStoreAllocationTests.PackageBackingConstructionMatchesMeasuredCarrierShells`](../../tests/TerraFX.Assets.Tests/AssetStoreAllocationTests.cs) preopens each FileStream and prepares options/registration, warms shared static initialization, then constructs and releases valid backings; it does not measure FileStream, registration, directory parsing, or cold shared-static costs. |
 | Explicit inspection | Temporary backing reference, `A_byte(d_target)`, structural/lookup value state, read/return and failure provision. No issued lease or live-lease credit. |
 | Description / provenance getters | `AssetOwnedReadDescriptor` and its codec receipt are structs, not issued handles; successful description borrows existing metadata. Provenance getters temporarily acquire/release a backing reference. Their enclosing issued-handle gate preserves its real lifetime reference, so prove that nonfinal-release closure rather than charging every getter as a potentially final file close. Allocating refusal still belongs to the entry/fault provision. |
 | Successful issue versus failed construction | Lifetime is constructed before the handle/state; retain each prefix in the preinstalled operation. `ownershipTransferred` becomes true only after successful handle construction. Do not return backing/credits when a failed issued/lifetime release retained them. |
@@ -235,7 +236,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T15:22:45.481636Z`; HEAD `7b9417da3bc19859d078f1ed702d0a4bbfb893a6`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
+UTC `2026-11-20T15:27:24.205278Z`; HEAD `eacda83c09381abde1f6a07d6a65f026ba4bf247`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, package-pin acquisition ordering, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -299,8 +300,8 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 | Set | Files | SHA-256 |
 |---|---:|---|
 | BASE | 96 | `96b57ed9c3e117d5dfec243bf985177dce39363efc640678259564691d07a029` |
-| ADD | 54 | `7716ec572783ff5632f8356b5315ef8a849f4b929cb4b38615421de2502524bc` |
-| ALL | 150 | `94a7032851f156d0099d7b2c855f4aec84cbc3b55a8d180a6658ffb210ff6939` |
+| ADD | 54 | `6b94668d5c8b436eb9645ba2be5da58412c60979169439bbb18d36b583a5daec` |
+| ALL | 150 | `0a859a2306080cdffedd73b7b93aa96b465b8cfb63943da646911fb1c74e9def` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|
