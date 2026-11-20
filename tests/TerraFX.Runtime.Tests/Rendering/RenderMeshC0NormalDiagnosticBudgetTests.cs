@@ -160,7 +160,7 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
     }
 
     [Test]
-    public void DiagnosticRecipeObjectCarriersMatchSelectedRuntimeLayout()
+    public void DiagnosticRecorderObjectCarriersMatchSelectedRuntimeLayout()
     {
         const int SampleCount = 64;
 
@@ -202,8 +202,40 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
         var lockBytes = MeasureObjectBytes(typeof(System.Threading.Lock));
         var accessComparerBytes = MeasureObjectBytes(accessComparerType);
         var entryComparerBytes = MeasureObjectBytes(entryComparerType);
+        var recorderBytes = MeasureObjectBytes(typeof(CommandRecorderState));
+        var commandListBytes = MeasureObjectBytes(typeof(List<RecordedGraphicsCommand>));
+        var useListBytes = MeasureObjectBytes(typeof(List<GraphicsResourceOwner.UseLease>));
+        var pendingWriteListBytes = MeasureObjectBytes(typeof(List<StorageResourceUse>));
+        var barrierResourcesListBytes = MeasureObjectBytes(typeof(List<(bool IsTexture, ulong ResourceId)>));
+        var expectedBindingsDictionaryBytes = MeasureObjectBytes(
+            typeof(Dictionary<
+                (ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding),
+                ShaderResourceAccess>));
+        var actualBindingsHashSetBytes = MeasureObjectBytes(
+            typeof(HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>));
 
         Assert.Multiple(() => {
+            Assert.That(recorderBytes, Is.EqualTo(CommandRecorderRecordingCapacity.CommandRecorderStateCarrierByteCharge));
+            Assert.That(commandListBytes, Is.EqualTo(CommandRecorderRecordingCapacity.DiagnosticBindingListCarrierByteCharge));
+            Assert.That(useListBytes, Is.EqualTo(CommandRecorderRecordingCapacity.DiagnosticBindingListCarrierByteCharge));
+            Assert.That(pendingWriteListBytes, Is.EqualTo(CommandRecorderRecordingCapacity.DiagnosticBindingListCarrierByteCharge));
+            Assert.That(barrierResourcesListBytes, Is.EqualTo(CommandRecorderRecordingCapacity.DiagnosticBindingListCarrierByteCharge));
+            Assert.That(
+                expectedBindingsDictionaryBytes,
+                Is.EqualTo(CommandRecorderRecordingCapacity.DiagnosticBindingDictionaryCarrierByteCharge));
+            Assert.That(
+                actualBindingsHashSetBytes,
+                Is.EqualTo(CommandRecorderRecordingCapacity.DiagnosticBindingHashSetCarrierByteCharge));
+            Assert.That(
+                CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchObjectBytes(),
+                Is.EqualTo(
+                    recorderBytes
+                    + commandListBytes
+                    + useListBytes
+                    + pendingWriteListBytes
+                    + barrierResourcesListBytes
+                    + expectedBindingsDictionaryBytes
+                    + actualBindingsHashSetBytes));
             Assert.That(recipeBytes, Is.EqualTo(SkinnedNormalDiagnosticRecordingRecipe.CarrierByteCharge));
             Assert.That(stateBytes, Is.EqualTo(SkinnedNormalDiagnosticRecordingState.CarrierByteCharge));
             Assert.That(lockBytes, Is.EqualTo(SkinnedNormalDiagnosticRecordingRecipe.LockByteCharge));
@@ -295,6 +327,7 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
                 drawCount: 1,
                 geometryCount: 1)
             + CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchArrayBytes()
+            + CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchObjectBytes()
             + SkinnedNormalDiagnosticRecordingRecipe.KnownObjectByteCharge
             + SkinnedNormalDiagnosticRecordingState.CarrierByteCharge
             + RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(

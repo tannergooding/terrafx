@@ -8,6 +8,12 @@ namespace TerraFX.Graphics;
 
 internal readonly struct CommandRecorderRecordingCapacity
 {
+    // Measured command-recorder and collection shells for the selected .NET 11 x64 profile.
+    internal const long CommandRecorderStateCarrierByteCharge = 264;
+    internal const long DiagnosticBindingDictionaryCarrierByteCharge = 80;
+    internal const long DiagnosticBindingHashSetCarrierByteCharge = 64;
+    internal const long DiagnosticBindingListCarrierByteCharge = 32;
+
     internal CommandRecorderRecordingCapacity(
         int commandCount,
         int useLeaseCount,
@@ -96,6 +102,20 @@ internal readonly struct CommandRecorderRecordingCapacity
             + CalculateArrayCharge(DictionaryAndHashSetCapacity, dictionaryEntryStride)
             + CalculateArrayCharge(DictionaryAndHashSetCapacity, sizeof(int))
             + CalculateArrayCharge(DictionaryAndHashSetCapacity, hashSetEntryStride));
+    }
+
+    internal static long CalculateKnownFourBindingScratchObjectBytes()
+    {
+        if (!GraphicsRecordingUseAdmission.IsSupportedProfile)
+        {
+            GraphicsRecordingUseAdmission.ThrowUnavailable();
+        }
+
+        return checked(
+            CommandRecorderStateCarrierByteCharge
+            + (4L * DiagnosticBindingListCarrierByteCharge)
+            + DiagnosticBindingDictionaryCarrierByteCharge
+            + DiagnosticBindingHashSetCarrierByteCharge);
     }
 
     private static int GetBackingCapacity(int count)
