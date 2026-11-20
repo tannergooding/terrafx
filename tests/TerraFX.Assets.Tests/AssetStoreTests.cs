@@ -312,7 +312,13 @@ internal sealed class AssetStoreTests
     [Test]
     public async Task AssetLeasePackageLoadPreCancellationReturnsTemporaryBackingReference()
     {
-        var registration = CreateRegistration();
+        var profileOrigin = typeof(ProfiledTestAssetOrigin);
+        var registration = new AssetStoreRegistrationBuilder(s_schemas)
+            .RegisterProfiledCodec(
+                new ContextualTestAssetCodec(),
+                profileOrigin,
+                AssetPackagePayloadCodec.None)
+            .Build();
         var package = AssetPackageReaderTests.CreatePackage(
             new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 10)),
             new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 20)));
@@ -328,6 +334,7 @@ internal sealed class AssetStoreTests
         try
         {
             using var source = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            var descriptor = source.DescribeOwnedRead<TestAssetValue>(new AssetId(2), profileOrigin);
             var backing = backingField.GetValue(store) as AssetPackageBacking
                 ?? throw new InvalidOperationException("The selected package backing is missing.");
             var referenceCountBefore = (int)(referenceCountField.GetValue(backing)
@@ -352,6 +359,20 @@ internal sealed class AssetStoreTests
                     cancellationSource.Token).ConfigureAwait(false));
 
             Assert.That(packageCancellationException?.CancellationToken, Is.EqualTo(cancellationSource.Token));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+
+            var leaseDescriptorCancellation = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await source.LoadDescribedFromPackageAsync<TestAssetValue>(
+                    descriptor,
+                    cancellationSource.Token).ConfigureAwait(false));
+            Assert.That(leaseDescriptorCancellation?.CancellationToken, Is.EqualTo(cancellationSource.Token));
+            Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
+
+            var packageDescriptorCancellation = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await packageLease.LoadDescribedFromPackageAsync<TestAssetValue>(
+                    descriptor,
+                    cancellationSource.Token).ConfigureAwait(false));
+            Assert.That(packageDescriptorCancellation?.CancellationToken, Is.EqualTo(cancellationSource.Token));
             Assert.That(referenceCountField.GetValue(backing), Is.EqualTo(referenceCountBeforePackageRead));
 
             using var child = await source.LoadFromPackageAsync<TestAssetValue>(
