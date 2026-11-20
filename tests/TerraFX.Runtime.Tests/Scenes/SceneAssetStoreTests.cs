@@ -7,6 +7,7 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -507,6 +508,34 @@ internal sealed partial class SceneAssetStoreTests
                 var localTransformSchemaId = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
                 var rootComponents = expansion.Entities[0].Components;
                 var childComponents = expansion.Entities[1].Components;
+                Func<int, int, long> arrayBytes = ScenePreparationDataBounds.ArrayBytes;
+                var componentRecordBytes = 2L * (
+                    CreateRootPositionRecord(chunkX: 0).Length
+                    + CreateLocalTransformRecord(positionX: 0.0f, scaleX: 1.0f).Length);
+                const int ReferenceBindingComponentGroupCount = 3;
+                var expectedDataBytes = componentRecordBytes
+                    + arrayBytes(2, Unsafe.SizeOf<SceneExpandedEntity>())
+                    + arrayBytes(2, Unsafe.SizeOf<SceneExpandedOccurrence>())
+                    + (3L * arrayBytes(2, sizeof(int)))
+                    + arrayBytes(1, sizeof(int))
+                    + arrayBytes(2, sizeof(int))
+                    + arrayBytes(3, IntPtr.Size)
+                    + arrayBytes(1, sizeof(bool))
+                    + (2L * arrayBytes(0, sizeof(int)))
+                    + (3L * arrayBytes(0, sizeof(int)))
+                    + arrayBytes(2, Unsafe.SizeOf<Guid>())
+                    + arrayBytes(2, Unsafe.SizeOf<Guid>())
+                    + arrayBytes(2, sizeof(int))
+                    + (2L * arrayBytes(0, sizeof(int)))
+                    + 256L
+                    + 2048L
+                    + ScenePreparationDataBounds.GetReferenceBindingValidationArrayBytesUpperBound(
+                        ReferenceBindingComponentGroupCount,
+                        bindingCount: 0);
+
+                Assert.That(
+                    expansion.RequiredByteReservation,
+                    Is.EqualTo(WorldSceneStorageReservation.GetRequiredBytes(expectedDataBytes)));
 
                 Assert.That(
                     GetComponentRecord(expansion.Entities[0], rootPositionSchemaId).EncodedRecord.ToArray(),
@@ -828,6 +857,59 @@ internal sealed partial class SceneAssetStoreTests
         {
             File.Delete(packagePath);
         }
+    }
+
+    [Test]
+    public async Task CountsRootPoseRootPositionAdditionInReferenceArrayReservation()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var placementId = new Guid("20000000-0000-4000-8000-000000000046");
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId, rootChunkX: 1)]);
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+
+        async Task<long> MeasureReservationAsync(bool includeRootPosition)
+        {
+            var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+                new AssetId(1),
+                entityId: rootEntityId,
+                includeRootPosition: includeRootPosition);
+            var package = Package.CreatePackage(
+                new Package.Entry(1, Package.CreateEnvelope(1, prefab)),
+                new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+            var packagePath = Package.WritePackage(package);
+
+            try
+            {
+                var store = await AssetStore.CreateAsync(
+                    new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+                try
+                {
+                    using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                        store,
+                        new AssetId(3),
+                        SceneExpansionLimits.Default).ConfigureAwait(false);
+                    return expansion.RequiredByteReservation;
+                }
+                finally
+                {
+                    await store.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+
+        var withRootPosition = await MeasureReservationAsync(includeRootPosition: true).ConfigureAwait(false);
+        var withoutRootPosition = await MeasureReservationAsync(includeRootPosition: false).ConfigureAwait(false);
+
+        Assert.That(withRootPosition - withoutRootPosition, Is.EqualTo(144));
     }
 
     [Test]

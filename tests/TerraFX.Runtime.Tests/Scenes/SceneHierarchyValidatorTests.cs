@@ -273,6 +273,30 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void ReferenceBindingValidationArrayUpperBoundCoversPerComponentGroups()
+    {
+        int[] groupBindingCounts = [0, 1, 2, 3, 7, 64];
+        var bindingCount = 0;
+        var exactArrayBytes = 0L;
+
+        for (var index = 0; index < groupBindingCounts.Length; index++)
+        {
+            var groupBindingCount = groupBindingCounts[index];
+            bindingCount = checked(bindingCount + groupBindingCount);
+            exactArrayBytes = checked(
+                exactArrayBytes
+                + (2L * ScenePreparationDataBounds.ArrayBytes(groupBindingCount, IntPtr.Size)));
+        }
+
+        var upperBound = ScenePreparationDataBounds.GetReferenceBindingValidationArrayBytesUpperBound(
+            groupBindingCounts.Length,
+            bindingCount);
+
+        Assert.That(upperBound, Is.EqualTo(2096));
+        Assert.That(upperBound, Is.GreaterThanOrEqualTo(exactArrayBytes));
+    }
+
+    [Test]
     public void RejectsCyclesAndHierarchyDepthBeyondTheConfiguredLimit()
     {
         var firstEntityId = new Guid("10000000-0000-4000-8000-000000000001");
@@ -460,7 +484,7 @@ internal sealed class SceneHierarchyValidatorTests
     public void SceneExpansionBuilderCarrierMatchesSelectedRuntimeLayout()
     {
         const int SampleCount = 64;
-        const int ExpectedBuilderCarrierBytes = 448;
+        const int ExpectedBuilderCarrierBytes = 456;
         var builderType = typeof(ScenePrefabExpansionPlanner).GetNestedType(
             "SceneExpansionBuilder",
             BindingFlags.NonPublic)

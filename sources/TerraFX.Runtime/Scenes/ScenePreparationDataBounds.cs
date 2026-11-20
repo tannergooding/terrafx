@@ -14,4 +14,13 @@ internal static class ScenePreparationDataBounds
         var payloadBytes = checked((long)count * elementSize);
         return checked(64L + ((payloadBytes + 15L) & ~15L));
     }
+
+    internal static long GetReferenceBindingValidationArrayBytesUpperBound(long componentGroupCount, int bindingCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(componentGroupCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(bindingCount);
+
+        // Two 8-byte-element arrays per group use 128 bytes of shells, 16 bytes per binding, and at most 16 bytes of rounding per group.
+        return checked((144L * componentGroupCount) + (16L * bindingCount));
+    }
 }

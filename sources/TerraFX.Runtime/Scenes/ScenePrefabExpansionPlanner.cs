@@ -281,6 +281,7 @@ internal static class ScenePrefabExpansionPlanner
         private long _overrideComponentArrayBytes;
         private long _overrideComponentRecordBytes;
         private long _overrideLayerBytes;
+        private long _referenceBindingComponentGroupCount;
         private int _referenceBindingCount;
         private long _referenceBindingValidationBytes;
         private List<SceneExpandedReferenceBinding>? _referenceBindings;
@@ -374,8 +375,7 @@ internal static class ScenePrefabExpansionPlanner
 
             var componentCount = checked(
                 sourceComponents.Length
-                + ((rootPosition is not null && !hasRootPosition) ? 1 : 0)
-                - ((rootPosition is null && hasRootPosition) ? 1 : 0));
+                + GetRootPositionComponentCountDelta(hasRootPosition, rootPosition is not null));
             var components = ImmutableArray.CreateBuilder<SceneAuthoredComponentRecord>(componentCount);
             var localTransformWritten = false;
             var rootPositionWritten = false;
@@ -744,6 +744,31 @@ internal static class ScenePrefabExpansionPlanner
             }
 
             return -1;
+        }
+
+        private static int GetRootPositionComponentCountDelta(bool hasRootPosition, bool hasReplacement)
+            => (hasReplacement && !hasRootPosition ? 1 : 0)
+                - (!hasReplacement && hasRootPosition ? 1 : 0);
+
+        private static bool HasRootPositionComponent(
+            ImmutableArray<SceneAuthoredComponentRecord> components)
+        {
+            var hasRootPosition = false;
+
+            for (var index = 0; index < components.Length; index++)
+            {
+                if (components[index].Schema.SchemaId == SceneEntityReader.RootPositionSchemaId)
+                {
+                    if (hasRootPosition)
+                    {
+                        throw new InvalidDataException("An expanded Entity contains more than one RootPosition component.");
+                    }
+
+                    hasRootPosition = true;
+                }
+            }
+
+            return hasRootPosition;
         }
 
         private static bool IsPropertyPathPrefix(
@@ -1603,9 +1628,22 @@ internal static class ScenePrefabExpansionPlanner
                 for (var componentIndex = 0; componentIndex < entity.Components.Length; componentIndex++)
                 {
                     _cancellationToken.ThrowIfCancellationRequested();
-                    _totalComponentRecordBytes = checked(
-                        _totalComponentRecordBytes
-                        + entity.Components[componentIndex].EncodedRecord.Length);
+                    var component = entity.Components[componentIndex];
+                    _totalComponentRecordBytes = checked(_totalComponentRecordBytes + component.EncodedRecord.Length);
+
+                    if (!source.Schemas.TryGetSchema(component.Schema, out var metadata))
+                    {
+                        throw new NotSupportedException($"The authored Component schema {component.Schema} is not registered.");
+                    }
+
+                    if (metadata.Role is ContentSchemaRole.Component)
+                    {
+                        _referenceBindingComponentGroupCount = checked(_referenceBindingComponentGroupCount + 1);
+                    }
+                    else if (metadata.Role is not ContentSchemaRole.EntityTag)
+                    {
+                        throw new InvalidDataException("The authored Entity contains a non-component schema.");
+                    }
                 }
             }
 
@@ -1766,6 +1804,11 @@ internal static class ScenePrefabExpansionPlanner
                         rootPose.Target,
                         allowInstanceAbsoluteSources: false,
                         requireFinalRoot: true).ConfigureAwait(false);
+                    _referenceBindingComponentGroupCount = checked(
+                        _referenceBindingComponentGroupCount
+                        + GetRootPositionComponentCountDelta(
+                            HasRootPositionComponent(sourceEntity.Components),
+                            rootPose.RootPositionPayload is not null));
                     _rootPoseComponentArrayBytes = checked(
                         _rootPoseComponentArrayBytes
                         + ArrayBytes(checked(sourceEntity.Components.Length + 1), IntPtr.Size));
@@ -2253,6 +2296,11 @@ internal static class ScenePrefabExpansionPlanner
                 requiredBytes
                 + ArrayBytes(_referenceBindingCount, IntPtr.Size)
                 + _referenceBindingValidationBytes);
+            requiredBytes = checked(
+                requiredBytes
+                + ScenePreparationDataBounds.GetReferenceBindingValidationArrayBytesUpperBound(
+                    _referenceBindingComponentGroupCount,
+                    _referenceBindingCount));
 
             if (_rootPositionComponentBytes > 0)
             {

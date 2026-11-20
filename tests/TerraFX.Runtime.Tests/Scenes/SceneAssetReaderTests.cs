@@ -533,7 +533,8 @@ internal sealed class SceneAssetReaderTests
             byte[][]? references = null,
             AssetId? placementPrefabAssetId = null,
             Guid? placementParentEntityId = null,
-            byte[][]? additionalEntityComponents = null)
+            byte[][]? additionalEntityComponents = null,
+            bool includeRootPosition = true)
         {
             if (placementParentEntityId is not null
                 && ((placementId is null) || (entityId != placementParentEntityId)))
@@ -547,7 +548,7 @@ internal sealed class SceneAssetReaderTests
             }
 
             var entities = entityId is Guid authoredEntityId
-                ? new[] { CreateRootEntity(authoredEntityId, additionalEntityComponents) }
+                ? new[] { CreateRootEntity(authoredEntityId, additionalEntityComponents, includeRootPosition) }
                 : [];
             byte[][] entityChildren = (entityId is Guid parentNodeId
                 && placementId is Guid childPlacementId
@@ -738,7 +739,10 @@ internal sealed class SceneAssetReaderTests
                 .. SceneSchemaCatalogue.Schemas,
             ]);
 
-        internal static byte[] CreateRootEntity(Guid entityId, byte[][]? additionalComponents = null)
+        internal static byte[] CreateRootEntity(
+            Guid entityId,
+            byte[][]? additionalComponents = null,
+            bool includeRootPosition = true)
         {
             var rootPosition = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("scene/root-position").SchemaId,
@@ -752,10 +756,16 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0, 0, 0),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 1, 1, 1));
-            var components = new byte[2 + (additionalComponents?.Length ?? 0)][];
-            components[0] = rootPosition;
-            components[1] = localTransform;
-            additionalComponents?.CopyTo(components, 2);
+            var firstAdditionalComponentIndex = includeRootPosition ? 2 : 1;
+            var components = new byte[firstAdditionalComponentIndex + (additionalComponents?.Length ?? 0)][];
+
+            if (includeRootPosition)
+            {
+                components[0] = rootPosition;
+            }
+
+            components[includeRootPosition ? 1 : 0] = localTransform;
+            additionalComponents?.CopyTo(components, firstAdditionalComponentIndex);
             Array.Sort(
                 components,
                 static (left, right) => left.AsSpan(16, 16).SequenceCompareTo(right.AsSpan(16, 16)));
