@@ -8,6 +8,9 @@ namespace TerraFX.Graphics;
 
 internal sealed class SkinnedNormalDiagnosticRecordingState
 {
+    // Measured object shell for the selected .NET 11 x64 diagnostic profile.
+    internal const long CarrierByteCharge = 104;
+
     private readonly int[] _boundResourceEntryIndices = new int[4];
     private int _barrierCount;
     private int _boundStorageUseCount;

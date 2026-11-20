@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
 using TerraFX.Graphics;
@@ -94,6 +95,70 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
     }
 
     [Test]
+    public void DiagnosticRecipeObjectCarriersMatchSelectedRuntimeLayout()
+    {
+        const int SampleCount = 64;
+
+        static long MeasureObjectBytes(Type type)
+        {
+            var warmInstances = new object[SampleCount];
+
+            for (var index = 0; index < warmInstances.Length; index++)
+            {
+                warmInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+            }
+
+            GC.KeepAlive(warmInstances);
+            var measuredInstances = new object[SampleCount];
+            var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+            for (var index = 0; index < measuredInstances.Length; index++)
+            {
+                measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+            }
+
+            var measuredBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+            GC.KeepAlive(measuredInstances);
+            return measuredBytes;
+        }
+
+        var accessComparerType = typeof(SkinnedNormalDiagnosticRecordingRecipe).GetNestedType(
+            "GraphResourceAccessIndexComparer",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The diagnostic access comparer type is unavailable.");
+        var entryComparerType = typeof(SkinnedNormalDiagnosticRecordingRecipe).GetNestedType(
+            "DiagnosticResourceEntryComparer",
+            BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The diagnostic resource comparer type is unavailable.");
+        Assert.That(GraphicsRecordingUseAdmission.IsSupportedProfile, Is.True);
+
+        var recipeBytes = MeasureObjectBytes(typeof(SkinnedNormalDiagnosticRecordingRecipe));
+        var stateBytes = MeasureObjectBytes(typeof(SkinnedNormalDiagnosticRecordingState));
+        var lockBytes = MeasureObjectBytes(typeof(System.Threading.Lock));
+        var accessComparerBytes = MeasureObjectBytes(accessComparerType);
+        var entryComparerBytes = MeasureObjectBytes(entryComparerType);
+
+        Assert.Multiple(() => {
+            Assert.That(recipeBytes, Is.EqualTo(SkinnedNormalDiagnosticRecordingRecipe.CarrierByteCharge));
+            Assert.That(stateBytes, Is.EqualTo(SkinnedNormalDiagnosticRecordingState.CarrierByteCharge));
+            Assert.That(lockBytes, Is.EqualTo(SkinnedNormalDiagnosticRecordingRecipe.LockByteCharge));
+            Assert.That(
+                accessComparerBytes,
+                Is.EqualTo(SkinnedNormalDiagnosticRecordingRecipe.AccessComparerByteCharge));
+            Assert.That(
+                entryComparerBytes,
+                Is.EqualTo(SkinnedNormalDiagnosticRecordingRecipe.EntryComparerByteCharge));
+            Assert.That(
+                SkinnedNormalDiagnosticRecordingRecipe.KnownObjectByteCharge,
+                Is.EqualTo(
+                    recipeBytes
+                    + lockBytes
+                    + (2 * accessComparerBytes)
+                    + entryComparerBytes));
+        });
+    }
+
+    [Test]
     public void EmptyDiagnosticHasNoPreparationOrRecordingMinimum()
     {
         Assert.That(
@@ -164,6 +229,8 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             + SkinnedNormalDiagnosticRecordingState.CalculateKnownBackingArrayBytes(
                 drawCount: 1,
                 geometryCount: 1)
+            + SkinnedNormalDiagnosticRecordingRecipe.KnownObjectByteCharge
+            + SkinnedNormalDiagnosticRecordingState.CarrierByteCharge
             + RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(
                 drawCount: 1,
                 meshAssetCount: 1));

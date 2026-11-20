@@ -10,6 +10,12 @@ namespace TerraFX.Graphics;
 
 internal sealed class SkinnedNormalDiagnosticRecordingRecipe
 {
+    // Measured object shells for the selected .NET 11 x64 diagnostic profile.
+    internal const long AccessComparerByteCharge = 24;
+    internal const long CarrierByteCharge = 136;
+    internal const long EntryComparerByteCharge = 24;
+    internal const long LockByteCharge = 40;
+
     private int[] _accessIndexScratch;
     private ImmutableArray<BindingSet> _bindingSets;
     private ImmutableArray<GraphResourceAccess> _declaredAccesses;
@@ -151,6 +157,13 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
     }
 
     internal static int DiagnosticResourceEntryStride => Unsafe.SizeOf<DiagnosticResourceEntry>();
+
+    internal static long KnownObjectByteCharge
+        => checked(
+            CarrierByteCharge
+            + LockByteCharge
+            + (2L * AccessComparerByteCharge)
+            + EntryComparerByteCharge);
 
     internal int DrawCount => _drawCount;
 
