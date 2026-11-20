@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace TerraFX.Graphics;
@@ -149,6 +150,8 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
         ValidateBindingSets(workPacketAlignment);
     }
 
+    internal static int DiagnosticResourceEntryStride => Unsafe.SizeOf<DiagnosticResourceEntry>();
+
     internal int DrawCount => _drawCount;
 
     internal int ExpectedBarrierCount => _expectedBarrierCount;
@@ -179,6 +182,28 @@ internal sealed class SkinnedNormalDiagnosticRecordingRecipe
     }
 
     internal int WorkEntryIndex => _geometryCount + 1;
+
+    internal static long CalculateKnownBackingArrayBytes(int drawCount, int geometryCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(drawCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(geometryCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(geometryCount, drawCount);
+
+        if (drawCount == 0)
+        {
+            return 0;
+        }
+
+        var resourceEntryCount = checked(geometryCount + 3);
+        var accessIndexCount = checked(2 * resourceEntryCount);
+        return checked(
+            CommandRecorderRecordingCapacity.CalculateArrayCharge(drawCount, IntPtr.Size)
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(geometryCount, sizeof(bool))
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(
+                resourceEntryCount,
+                DiagnosticResourceEntryStride)
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(accessIndexCount, sizeof(int)));
+    }
 
     private static void ValidateBarrier(RecordedGraphicsCommand command, DiagnosticResourceEntry entry)
     {

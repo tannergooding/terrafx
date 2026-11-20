@@ -59,6 +59,41 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
     }
 
     [Test]
+    public void DiagnosticRecipeAndStateChargesCoverTheirExactBackingArrays()
+    {
+        static long Charge(long count, long stride)
+        {
+            return checked(64 + ((checked(count * stride) + 15) & ~15L));
+        }
+
+        var recipeExpected = checked(
+            Charge(2, IntPtr.Size)
+            + Charge(1, sizeof(bool))
+            + Charge(4, SkinnedNormalDiagnosticRecordingRecipe.DiagnosticResourceEntryStride)
+            + Charge(8, sizeof(int)));
+        var stateExpected = checked(
+            Charge(4, sizeof(int))
+            + Charge(3, Unsafe.SizeOf<StorageResourceUse>())
+            + Charge(3, sizeof(bool))
+            + Charge(2, Unsafe.SizeOf<StorageResourceUse>()));
+
+        Assert.Multiple(() => {
+            Assert.That(
+                SkinnedNormalDiagnosticRecordingRecipe.CalculateKnownBackingArrayBytes(2, 1),
+                Is.EqualTo(recipeExpected));
+            Assert.That(
+                SkinnedNormalDiagnosticRecordingRecipe.CalculateKnownBackingArrayBytes(0, 0),
+                Is.Zero);
+            Assert.That(
+                SkinnedNormalDiagnosticRecordingState.CalculateKnownBackingArrayBytes(2, 1),
+                Is.EqualTo(stateExpected));
+            Assert.That(
+                SkinnedNormalDiagnosticRecordingState.CalculateKnownBackingArrayBytes(0, 0),
+                Is.Zero);
+        });
+    }
+
+    [Test]
     public void EmptyDiagnosticHasNoPreparationOrRecordingMinimum()
     {
         Assert.That(
@@ -123,6 +158,12 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             + 192
             + Charge(256, IntPtr.Size)
             + Charge(4, IntPtr.Size)
+            + SkinnedNormalDiagnosticRecordingRecipe.CalculateKnownBackingArrayBytes(
+                drawCount: 1,
+                geometryCount: 1)
+            + SkinnedNormalDiagnosticRecordingState.CalculateKnownBackingArrayBytes(
+                drawCount: 1,
+                geometryCount: 1)
             + RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(
                 drawCount: 1,
                 meshAssetCount: 1));

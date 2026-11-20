@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 
 namespace TerraFX.Graphics;
 
@@ -38,6 +39,26 @@ internal sealed class SkinnedNormalDiagnosticRecordingState
     }
 
     internal SkinnedNormalDiagnosticRecordingRecipe Recipe => _recipe;
+
+    internal static long CalculateKnownBackingArrayBytes(int drawCount, int geometryCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(drawCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(geometryCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(geometryCount, drawCount);
+
+        if (drawCount == 0)
+        {
+            return 0;
+        }
+
+        var singletonCount = checked(geometryCount + 2);
+        var storageUseStride = Unsafe.SizeOf<StorageResourceUse>();
+        return checked(
+            CommandRecorderRecordingCapacity.CalculateArrayCharge(4, sizeof(int))
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(singletonCount, storageUseStride)
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(singletonCount, sizeof(bool))
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(drawCount, storageUseStride));
+    }
 
     private static RecordedGraphicsCommand CreateStorageBarrier(
         StorageResourceUse pendingWrite,

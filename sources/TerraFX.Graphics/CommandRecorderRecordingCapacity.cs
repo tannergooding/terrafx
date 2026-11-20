@@ -42,6 +42,13 @@ internal readonly struct CommandRecorderRecordingCapacity
 
     internal int UseLeaseCount { get; }
 
+    internal static long CalculateArrayCharge(long capacity, long stride)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(stride);
+        return checked(64 + ((checked(capacity * stride) + 15) & ~15L));
+    }
+
     internal static long CalculateKnownBackingArrayBytes(long commandCount, long useLeaseCount)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(commandCount);
@@ -51,23 +58,20 @@ internal readonly struct CommandRecorderRecordingCapacity
         if (commandCount != 0)
         {
             bytes = checked(
-                ArrayCharge(Math.Max(4, commandCount), Unsafe.SizeOf<RecordedGraphicsCommand>())
-                + ArrayCharge(commandCount, Unsafe.SizeOf<RecordedGraphicsCommand>()));
+                CalculateArrayCharge(Math.Max(4, commandCount), Unsafe.SizeOf<RecordedGraphicsCommand>())
+                + CalculateArrayCharge(commandCount, Unsafe.SizeOf<RecordedGraphicsCommand>()));
         }
 
         if (useLeaseCount != 0)
         {
             bytes = checked(
                 bytes
-                + ArrayCharge(Math.Max(4, useLeaseCount), IntPtr.Size)
-                + ArrayCharge(useLeaseCount, IntPtr.Size));
+                + CalculateArrayCharge(Math.Max(4, useLeaseCount), IntPtr.Size)
+                + CalculateArrayCharge(useLeaseCount, IntPtr.Size));
         }
 
         return bytes;
     }
-
-    private static long ArrayCharge(long capacity, long stride)
-        => checked(64 + ((checked(capacity * stride) + 15) & ~15L));
 
     private static int GetBackingCapacity(int count)
         => (count == 0) ? 0 : Math.Max(4, count);

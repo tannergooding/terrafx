@@ -74,12 +74,14 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
 
         var maximumGeometryCount = Math.Min(drawCount, meshAssetCount);
         var bindingObjectCount = checked((long)drawCount + maximumGeometryCount + 2);
-        var bindingSetAndInputArrayBytes = checked(BindingSetWarmConstructionTrafficBytes + ArrayCharge(4, IntPtr.Size));
+        var bindingSetAndInputArrayBytes = checked(
+            BindingSetWarmConstructionTrafficBytes
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(4, IntPtr.Size));
         var bindingObjectBytes = checked(bindingObjectCount * BufferBindingWarmAllocationBytes);
         var backingArrayBytes = checked(
-            ArrayCharge(meshAssetCount, IntPtr.Size)
-            + ArrayCharge(drawCount, IntPtr.Size)
-            + ArrayCharge(maximumGeometryCount, IntPtr.Size));
+            CommandRecorderRecordingCapacity.CalculateArrayCharge(meshAssetCount, IntPtr.Size)
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(drawCount, IntPtr.Size)
+            + CommandRecorderRecordingCapacity.CalculateArrayCharge(maximumGeometryCount, IntPtr.Size));
 
         return checked(((long)drawCount * bindingSetAndInputArrayBytes) + bindingObjectBytes + backingArrayBytes);
     }
@@ -112,18 +114,29 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
         {
             // M is at least one, so this bounds the command count before geometry identities are indexed.
             var maximumCommandCount = checked((6L * drawCount) - 3);
+            var maximumGeometryCount = Math.Min(drawCount, meshAssetCount);
             var bindingPlanConstructionBytes = CalculateKnownBindingPlanConstructionBytes(drawCount, meshAssetCount);
+            var recordingRecipeArrayBytes = SkinnedNormalDiagnosticRecordingRecipe.CalculateKnownBackingArrayBytes(
+                drawCount,
+                maximumGeometryCount);
+            var recordingStateArrayBytes = SkinnedNormalDiagnosticRecordingState.CalculateKnownBackingArrayBytes(
+                drawCount,
+                maximumGeometryCount);
             return checked(
-                ArrayCharge(drawCount, Unsafe.SizeOf<RenderMeshC0NormalDiagnosticDraw>())
-                + ArrayCharge(maximumIndexCount, sizeof(int))
-                + ArrayCharge(meshAssetCount, sizeof(byte))
-                + ArrayCharge(maximumWorkBytes, sizeof(byte))
-                + ArrayCharge(resultByteLength, sizeof(byte))
+                CommandRecorderRecordingCapacity.CalculateArrayCharge(
+                    drawCount,
+                    Unsafe.SizeOf<RenderMeshC0NormalDiagnosticDraw>())
+                + CommandRecorderRecordingCapacity.CalculateArrayCharge(maximumIndexCount, sizeof(int))
+                + CommandRecorderRecordingCapacity.CalculateArrayCharge(meshAssetCount, sizeof(byte))
+                + CommandRecorderRecordingCapacity.CalculateArrayCharge(maximumWorkBytes, sizeof(byte))
+                + CommandRecorderRecordingCapacity.CalculateArrayCharge(resultByteLength, sizeof(byte))
                 + CommandRecorderRecordingCapacity.CalculateKnownBackingArrayBytes(maximumCommandCount, drawCount)
                 + GraphicsRecordingUseAdmission.CalculateByteAllowance(drawCount)
                 + GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge
                 + pendingGraphSubmissionBackingByteCharge
-                + bindingPlanConstructionBytes);
+                + bindingPlanConstructionBytes
+                + recordingRecipeArrayBytes
+                + recordingStateArrayBytes);
         }
         catch (OverflowException exception)
         {
@@ -408,9 +421,6 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
         var remainder = value % alignment;
         return (remainder == 0) ? value : checked(value + alignment - remainder);
     }
-
-    private static long ArrayCharge(long length, long stride)
-        => checked(64 + AlignUp(checked(length * stride), 16));
 
     private static long GreatestCommonDivisor(long left, long right)
     {
