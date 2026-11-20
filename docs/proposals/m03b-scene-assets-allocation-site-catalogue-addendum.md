@@ -22,7 +22,6 @@ A_T(n) = 64 + RoundUp16(n * stride(T))
 
 Notation for present code:
 
-- `BM_T(n)`: `ImmutableArray.CreateBuilder<T>(n)` plus the backing retained by `MoveToImmutable`, including builder construction/unwind. The source requests capacity n and adds exactly n items. Source/BCL/code-generation evidence must establish its constructor, empty/cold and move paths; a builder reference is not its backing charge.
 - `CI_T(n)`: a copy-producing immutable collection expression or `CreateRange` call. Qualify its lowering and temporary backing, or replace it with an explicitly owned exact array. Do not equate every spread with either zero copies or two copies.
 - `CP(n)`: the explicit `ReadOnlySpan<byte>.ToArray()` site, with an `A_byte(n)` result.
 - `G_container`: BCL capacity/growth/constructor, comparer and cold-state terms not yet assigned numerical values.
@@ -76,7 +75,7 @@ The scanner is currently exercised only by its regression test; it is not select
 
 ## 3. Scene/Prefab semantic sites
 
-Read-site links: [`SceneAssetReader`](../../sources/TerraFX.Runtime/Scenes/SceneAssetReader.cs), [`SceneEntityReader`](../../sources/TerraFX.Runtime/Scenes/SceneEntityReader.cs), [`SceneHierarchyReader`](../../sources/TerraFX.Runtime/Scenes/SceneHierarchyReader.cs). Every BM/CI below is an actual site, not a per-entity heuristic.
+Read-site links: [`SceneAssetReader`](../../sources/TerraFX.Runtime/Scenes/SceneAssetReader.cs), [`SceneEntityReader`](../../sources/TerraFX.Runtime/Scenes/SceneEntityReader.cs), [`SceneHierarchyReader`](../../sources/TerraFX.Runtime/Scenes/SceneHierarchyReader.cs). Every array/copy term below is an actual site, not a per-entity heuristic.
 
 | Site / validated dimensions | Body term, including nested construction |
 |---|---|
@@ -119,20 +118,20 @@ A direct regression witness is a structurally valid stream array containing two 
 
 Exact-array ownership/adoption is implemented for the listed outputs. UInt16 widening still has the original `ushort[]` and a separate `uint[]`; direct widening would be a further change and must preserve wire validation and failure order. Keep the current semantic-rank validation order and fund the duplicate-stream failure prefix. Do not remove exact triangle/weight/bounds predicates.
 
-#### BigInteger is a separate, bounded mathematical domain
+#### Fixed-limb exact dyadic predicates
 
-`ToScaledInteger`, `ValidateWeightSum`, `ValidateTriangles` and `ValidateBounds` contain allocating BCL arithmetic. Their input bit domains can be derived now:
+The exact Mesh predicates still have these finite input bit domains; they size the fixed-limb arithmetic independently of its implementation:
 
 | Expression | Derived magnitude-bit ceiling and invocation membership |
 |---|---|
 | Finite binary32 scaled by `2^149` | At most 24 significand bits plus shift 253 = **277** bits; this follows from raw finite exponent ≤254. |
-| Difference of two scaled values; triangle products/cross differences | Difference ≤278 bits; product ≤556; cross difference ≤557. Each triangle invokes `ToScaledInteger` twelve times, forms six deltas, six products and three cross differences; triangles = i/3. |
+| Difference of two scaled values; triangle products/cross differences | Difference ≤278 bits; product ≤556; cross difference ≤557. Each triangle converts twelve binary32 coordinate operands, forms six deltas, six products and three cross differences; triangles = i/3. |
 | Bounds | Radius square ≤554 bits. Three squared deltas are ≤556 bits each and their sum ≤558. Eight corners, six scaled coordinate/center calls per corner, plus one radius call. |
-| Weights already checked in [0,1] | Each scaled operand ≤150 bits; four-way sum ≤152; `abs(sum-one)` ≤151; multiplying by 100,000 needs at most 168 bits. Four conversions and one `One << 149` per vertex with a weight stream. |
+| Weights already checked in [0,1] | Each scaled operand ≤150 bits; four-way sum ≤152; `abs(sum-one)` ≤151; multiplying by 100,000 needs at most 168 bits. Four component conversions and one exact-one initialization per vertex with a weight stream. |
 
-These are mathematical ceilings, **not allocated-capacity bounds**. Each operator can retain operand/result arrays and use temporary, normalization or rented storage. `ceil(bits/32)` would be a representation requirement for a 32-bit-limb implementation, not proof of that BCL's backing capacity or scratch. BigInteger itself is a value; charge its allocated children, not a fictional boxed integer at each operator.
+The source now replaces those `BigInteger` operators with private fixed-limb signed-magnitude arithmetic in `RenderMeshAssetCodec`. Every finite binary32 is mapped to its exact integer in units of `2^-149`; checked workspaces use nine 64-bit limbs (576 bits), enough for the 558-bit sum-of-squares ceiling. The implementation uses bounded stack storage: 11 limbs-vectors per triangle pass, 9 for bounds validation, and 4 for each weight-sum check. No BCL limb array, rent or operator result is retained by these predicates.
 
-Close the selected runtime's exact operator/capacity paths over this finite DAG, including shift/sign, multiplication, addition/subtraction, Abs and comparison, cold state and any rent's actual backing. No new arithmetic implementation is needed merely to identify that work. If that path cannot supply a finite owned workspace, the scoped fallback is a fixed-word exact predicate implementation sized from these expression bounds, with explicitly owned intermediates and independently derived dyadic fixtures; do not substitute floating tolerances or select an arbitrary limb budget. Keep this out of the first data-container batch unless the runtime proof actually requires it.
+The fixed-limb boundaries are tested with a finite extreme/subnormal triangle, a sphere boundary whose exact result differs by a subnormal term, and literal binary32 weight values immediately inside and outside the exact `1/100000` tolerance. These checks preserve the prior exact predicates; no float tolerance or arbitrary limb cap is substituted. The stack workspace and checked-overflow invariant remain part of the selected target's native-stack/J review, and impossible-overflow or nonfinite-input exceptions still belong to failure analysis. This closes the Mesh BCL arithmetic subproblem, not operation funding, `C_op`, or actual return.
 
 ### Texture, Atlas and Material 1.0
 
@@ -213,7 +212,7 @@ The conservative sum of those **disjoint backing terms** is also valid. Add the 
 
 1. **Finish exact data-site closure, without invoking Scene preparation.** The fixed-buffer scanner, placement-byte adoption, reader-private path/slot adoption, exact-array Scene/Prefab/Entity/Hierarchy reads, Mesh/Texture/Atlas outputs, and Skeleton joint/scratch reductions are implemented. Complete the checked per-kind data functions and explicit current/candidate/retained partitions from the actual source sites. Do not select the scanner in `AssetEnvelopeDecoder` before an installed operation owner has funded its scratch and result arrays. Keep ordinary public codec/None/Brotli behavior and schema bytes unchanged.
 2. **Make failure prefixes reviewable.** Install each scratch/output prefix before its next allocation, preserve as-coded validation ordering or document/test an intentional precedence change, and use the exact source vector ceilings. Keep scratch until actual synchronous helper return. Do not implement a count-only clone of semantic validation, read before funding, or reuse the hierarchy's unqualified eight-byte formula.
-3. **Close remaining compile/profile and operation-owner inputs.** Obtain exact carrier/stride and generated-construction evidence for the selected target, remaining BM/CI sites, BigInteger finite operator DAG, static initialization and gates. Complete the original-P single-slot/control layouts and source-closed issuer/start/transfer protocol. No Assets-to-Runtime funding callback or new Store pool.
+3. **Close remaining compile/profile and operation-owner inputs.** Obtain exact carrier/stride and generated-construction evidence for the selected target, remaining CI/data sites, fixed-limb stack/J evidence, static initialization and gates. Complete the original-P single-slot/control layouts and source-closed issuer/start/transfer protocol; the [operation-owner proposal](m03b-scene-assets-original-p-operation-and-return-closure.md) identifies current J/K and actual-return blockers. No Assets-to-Runtime funding callback or new Store pool.
 4. **Keep runtime/native ownership as an explicit admission gate.** Task/context/fault captures, real read/cache and physical-close/actual-return evidence must come from their real owning paths. This batch neither reviews that implementation nor supplies synthetic substitutes. Until those and the numerical original-P claim close, publish no usable footprint and remove neither Scene refusal.
 
 Required focused evidence for that batch:
@@ -230,7 +229,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T02:10:14.119314+00:00`; HEAD `fb6fda126922c193798118f349e3b4bf134da293`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
+UTC `2026-11-20T02:54:39.838881+00:00`; HEAD `864c44b9fabcf52208a41710b19645a22a2ca63f`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, fixed-limb Mesh predicates, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -280,6 +279,7 @@ sources\TerraFX.Runtime\Scenes\ScenePrefabPlacement.cs
 sources\TerraFX.Runtime\Scenes\ScenePrefabRootPose.cs
 sources\TerraFX.Runtime\Scenes\ScenePropertyPathSegment.cs
 sources\TerraFX.Runtime\Scenes\SceneReferenceTarget.cs
+tests\TerraFX.Runtime.Tests\Rendering\RenderMeshAssetCodecTests.cs
 tests\TerraFX.Runtime.Tests\Scenes\RendererAssetCodecProfileTests.cs
 ```
 
@@ -287,9 +287,9 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| BASE | 96 | `049232fc561271a870e18cf39a420d32d61cd385e4fad3f104044574e9bf98a1` |
-| ADD | 48 | `42b8b2b7eeebce1e6b81bf0114b2c8ded9f1c9511132e211f6c421a0077c61d6` |
-| ALL | 144 | `0a23123a7eb61a82c0432c60fe825456dcbf0e1e0fa234d31b6fa236ced203fa` |
+| BASE | 96 | `e43bbb4f57ca76789605736efe52f621dba7ed3e0ecaad88fe47781518bcb354` |
+| ADD | 49 | `f89e86c30ff36b0b7f7b30d1e51494d05b6a4f7d27e624fe65b8888c0e862da9` |
+| ALL | 145 | `6370cc0b3b371302fbc73f5a70e84af30d44f0d149d232fa5dabfaef09f378b7` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|
@@ -307,4 +307,4 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-The source and Roadmap now include a fixed-buffer scanner and exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs. They do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
+The source and Roadmap now include a fixed-buffer scanner, exact-array Scene/Prefab/Entity/Hierarchy/Mesh/Texture/Atlas/Skeleton outputs, and fixed-limb exact Mesh predicates. They do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
