@@ -66,6 +66,17 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         var portOwnerField = nativeFile.GetType().GetField("Port", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The bounded file state has no port owner field.");
         Assert.That(portOwnerField.GetValue(nativeFile), Is.Null);
+        var provisionField = backing.GetType().GetField("_boundedProvision", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded backing has no original provision field.");
+        var provision = provisionField.GetValue(backing)
+            ?? throw new InvalidOperationException("The bounded backing has no original provision.");
+        var profileBufferField = provision.GetType().GetField(
+            "_packageProfileBuffer",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded provision has no preclaimed profile buffer.");
+        var profileBuffer = profileBufferField.GetValue(provision) as byte[]
+            ?? throw new InvalidOperationException("The bounded provision has no profile buffer owner.");
+        Assert.That(profileBuffer.Length, Is.EqualTo(65_536));
 
         var firstRelease = admittedDelivery.ReleaseUnstartedPreclaim();
         Assert.That(firstRelease.OwnerReleased, Is.True);

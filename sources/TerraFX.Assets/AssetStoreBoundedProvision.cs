@@ -20,6 +20,7 @@ internal sealed class AssetStoreBoundedProvision
     private readonly int _maximumLiveAssetLeases;
     private readonly AssetBoundedNativePort _nativePort;
     private readonly bool _ownsSharedProvision;
+    private readonly byte[] _packageProfileBuffer;
     private AssetStoreRegistration? _registration;
     private readonly long _reservedBytes;
     private readonly long _sharedProvisionBytes;
@@ -44,6 +45,7 @@ internal sealed class AssetStoreBoundedProvision
         _maximumConcurrentDecodeBytes = maximumConcurrentDecodeBytes;
         _maximumLiveAssetLeases = maximumLiveAssetLeases;
         _nativePort = new AssetBoundedNativePort(Environment.CurrentManagedThreadId);
+        _packageProfileBuffer = new byte[65_536];
         _reservedBytes = reservedBytes;
         _sharedProvisionBytes = sharedProvisionBytes;
         _ownsSharedProvision = ownsSharedProvision;
@@ -67,6 +69,8 @@ internal sealed class AssetStoreBoundedProvision
     internal string PackagePath
         => _absolutePackagePath
             ?? throw new ObjectDisposedException(nameof(AssetStoreBoundedProvision));
+
+    internal Span<byte> PackageProfileBuffer => _packageProfileBuffer;
 
     internal AssetStoreRegistration Registration
         => _registration

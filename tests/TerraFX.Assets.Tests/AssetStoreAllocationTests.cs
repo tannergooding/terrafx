@@ -97,7 +97,7 @@ internal sealed class AssetStoreAllocationTests
             (nameof(AssetStoreRegistration), typeof(AssetStoreRegistration), 48),
             (nameof(AssetBoundedNativeFile), typeof(AssetBoundedNativeFile), 80),
             (nameof(AssetBoundedNativePort), typeof(AssetBoundedNativePort), 144),
-            (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 176),
+            (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 184),
             (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 168),
             (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
         ];

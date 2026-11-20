@@ -7,10 +7,10 @@ namespace TerraFX.Assets;
 
 public sealed partial class AssetStore
 {
-    private const long BoundedControlByteReservation = 528;
+    private const long BoundedControlByteReservation = 536;
     private const long BoundedNativeFileStateByteReservation = 80;
     private const long BoundedNativePortByteReservation = 144;
-    private const long BoundedOpeningBufferByteReservation = 131_343;
+    private const long BoundedOpeningBufferByteReservation = 131_367;
 
     internal long BoundedReservedBytes
     {
