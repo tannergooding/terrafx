@@ -250,4 +250,53 @@ internal sealed partial class SceneAssetStoreTests
             File.Delete(packagePath);
         }
     }
+
+    [Test]
+    public async Task SceneOwnedAtlasPageReadsRequireBuiltInCodecReceipts()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. SceneAssetReaderTests.Fixtures.CreateRegistry().Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+        ]);
+        var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterCodec(new RenderAtlasAssetCodec());
+        _ = registrationBuilder.RegisterCodec(new RenderTextureAssetCodec());
+        var registration = registrationBuilder.Build();
+        var frame = CreateRenderAtlasFrameRecord(
+            new Guid("00000000-0000-0000-0000-000000000001"),
+            page: 0,
+            x: 4,
+            y: 4,
+            width: 4,
+            height: 4);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, CreateRenderAtlasPageTextureRecord(17))),
+            new Package.Entry(2, Package.CreateEnvelope(2, CreateRenderAtlasRecord(1, frame))));
+        var packagePath = Package.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+        AssetLease<RenderAtlasAsset>? atlasLease = null;
+
+        try
+        {
+            atlasLease = await store.LoadAsync<RenderAtlasAsset>(new AssetId(2)).ConfigureAwait(false);
+            using var ownedProgress = new RenderAtlasPageLoader.OwnedProgress();
+
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => await RenderAtlasPageLoader.RetainOwnedAsync(
+                    atlasLease,
+                    ownedProgress).ConfigureAwait(false));
+
+            using var ordinaryPageSet = await RenderAtlasPageLoader.RetainAsync(
+                atlasLease,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(ordinaryPageSet.GetPage(0).Mips[0].Pixels[0], Is.EqualTo(17));
+        }
+        finally
+        {
+            atlasLease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+        }
+    }
 }

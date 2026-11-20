@@ -103,8 +103,10 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         for (var index = 0; index < meshCount; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var meshLease = await plan.LoadFromPackageAsync<RenderMeshAsset>(
-                new AssetId(meshIds[index]),
+            var meshAssetId = new AssetId(meshIds[index]);
+            var meshDescriptor = RendererAssetCodecProfiles.DescribeMeshRead(plan, meshAssetId);
+            using var meshLease = await plan.LoadDescribedFromPackageAsync<RenderMeshAsset>(
+                meshDescriptor,
                 cancellationToken).ConfigureAwait(false);
             var materialSlots = meshLease.Value.MaterialSlots;
             meshMaterialSlots[index] = materialSlots;
@@ -296,8 +298,9 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var assetId = new AssetId(atlasIds[index]);
-                bundle._pendingAtlasLease = await plan.LoadFromPackageAsync<RenderAtlasAsset>(
-                    assetId,
+                var atlasDescriptor = RendererAssetCodecProfiles.DescribeAtlasRead(plan, assetId);
+                bundle._pendingAtlasLease = await plan.LoadDescribedFromPackageAsync<RenderAtlasAsset>(
+                    atlasDescriptor,
                     cancellationToken).ConfigureAwait(false);
                 var atlasLease = bundle._pendingAtlasLease
                     ?? throw new InvalidOperationException("The Atlas load returned no owned lease.");
@@ -319,12 +322,13 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var assetId = new AssetId(meshIds[index]);
-                bundle._pendingMeshLease = await plan.LoadFromPackageAsync<RenderMeshAsset>(
-                    assetId,
+                var meshDescriptor = RendererAssetCodecProfiles.DescribeMeshRead(plan, assetId);
+                bundle._pendingMeshLease = await plan.LoadDescribedFromPackageAsync<RenderMeshAsset>(
+                    meshDescriptor,
                     cancellationToken).ConfigureAwait(false);
                 var meshLease = bundle._pendingMeshLease
                     ?? throw new InvalidOperationException("The Mesh load returned no owned lease.");
-                bundle._pendingSkeletonLease = await RenderMeshAssetBinding.LoadSkeletonAsync(
+                bundle._pendingSkeletonLease = await RenderMeshAssetBinding.LoadProfiledSkeletonAsync(
                     meshLease,
                     cancellationToken).ConfigureAwait(false);
                 bundle._pendingRetainedMeshLease = meshLease.Retain();
@@ -405,8 +409,9 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var assetId = new AssetId(materialIds[index]);
-                bundle._pendingMaterialLease = await plan.LoadFromPackageAsync<RenderMaterialAsset>(
-                    assetId,
+                var materialDescriptor = RendererAssetCodecProfiles.DescribeMaterialRead(plan, assetId);
+                bundle._pendingMaterialLease = await plan.LoadDescribedFromPackageAsync<RenderMaterialAsset>(
+                    materialDescriptor,
                     cancellationToken).ConfigureAwait(false);
                 var materialLease = bundle._pendingMaterialLease
                     ?? throw new InvalidOperationException("The Material load returned no owned lease.");

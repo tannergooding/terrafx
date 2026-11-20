@@ -20,7 +20,9 @@ internal static class RenderAtlasPageLoader
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(assets);
-        var atlasLease = await assets.LoadAsync<RenderAtlasAsset>(atlasAssetId, cancellationToken).ConfigureAwait(false);
+        var atlasLease = await assets.LoadAsync<RenderAtlasAsset>(
+            atlasAssetId,
+            cancellationToken).ConfigureAwait(false);
         return await CreateOwnedAsync(atlasLease, cancellationToken).ConfigureAwait(false);
     }
 
@@ -31,7 +33,10 @@ internal static class RenderAtlasPageLoader
         ArgumentNullException.ThrowIfNull(atlasLease);
         using var progress = new OwnedProgress();
         progress.RetainAtlasLease(atlasLease);
-        var result = await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        var result = await CreateOwnedCoreAsync(
+            progress,
+            RendererAssetReadMode.Ordinary,
+            cancellationToken).ConfigureAwait(false);
         _ = progress.TakeResult();
         return result;
     }
@@ -44,7 +49,10 @@ internal static class RenderAtlasPageLoader
         ArgumentNullException.ThrowIfNull(atlasLease);
         ArgumentNullException.ThrowIfNull(progress);
         progress.RetainAtlasLease(atlasLease);
-        return await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        return await CreateOwnedCoreAsync(
+            progress,
+            RendererAssetReadMode.ScenePreparation,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static int CompareRectangles(PaddedRectangle left, PaddedRectangle right)
@@ -80,13 +88,17 @@ internal static class RenderAtlasPageLoader
     {
         using var progress = new OwnedProgress();
         progress.SetAtlasLease(atlasLease);
-        var result = await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        var result = await CreateOwnedCoreAsync(
+            progress,
+            RendererAssetReadMode.Ordinary,
+            cancellationToken).ConfigureAwait(false);
         _ = progress.TakeResult();
         return result;
     }
 
     private static async Task<RenderAtlasPageSet> CreateOwnedCoreAsync(
         OwnedProgress progress,
+        RendererAssetReadMode readMode,
         CancellationToken cancellationToken)
     {
         var atlasLease = progress.AtlasLease
@@ -98,9 +110,21 @@ internal static class RenderAtlasPageLoader
         foreach (var pageId in atlasLease.Value.Pages)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            progress.PendingPageLease = await atlasLease.LoadFromPackageAsync<RenderTextureAsset>(
-                pageId,
-                cancellationToken).ConfigureAwait(false);
+
+            if (readMode is RendererAssetReadMode.ScenePreparation)
+            {
+                var descriptor = RendererAssetCodecProfiles.DescribeTextureRead(atlasLease, pageId);
+                progress.PendingPageLease = await atlasLease.LoadDescribedFromPackageAsync<RenderTextureAsset>(
+                    descriptor,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                progress.PendingPageLease = await atlasLease.LoadFromPackageAsync<RenderTextureAsset>(
+                    pageId,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var pendingPageLease = progress.PendingPageLease
                 ?? throw new InvalidOperationException("The Atlas page load returned no owned lease.");
             pageLeaseBuilder.Add(pendingPageLease);

@@ -438,6 +438,17 @@ internal sealed class SceneExpansionPlan : IDisposable
         return pathLength;
     }
 
+    internal AssetOwnedReadDescriptor DescribeOwnedRead<TAsset>(
+        AssetId assetId,
+        object profileOrigin)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(profileOrigin);
+        var sceneLease = Volatile.Read(ref _sceneLease)
+            ?? throw new ObjectDisposedException(nameof(SceneExpansionPlan));
+        return sceneLease.DescribeOwnedRead<TAsset>(assetId, profileOrigin);
+    }
+
     internal int GetEntityAssignmentOrdinal(int expandedEntityIndex)
     {
         ThrowIfDisposed();
@@ -542,6 +553,16 @@ internal sealed class SceneExpansionPlan : IDisposable
         var occurrence = _occurrences[entity.OccurrenceIndex];
         var source = GetAssetSource(occurrence.AssetId);
         return source.Entities[entity.SourceEntityIndex];
+    }
+
+    internal Task<AssetLease<TAsset>> LoadDescribedFromPackageAsync<TAsset>(
+        AssetOwnedReadDescriptor descriptor,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        var sceneLease = Volatile.Read(ref _sceneLease)
+            ?? throw new ObjectDisposedException(nameof(SceneExpansionPlan));
+        return sceneLease.LoadDescribedFromPackageAsync<TAsset>(descriptor, cancellationToken);
     }
 
     internal Task<AssetLease<TAsset>> LoadFromPackageAsync<TAsset>(

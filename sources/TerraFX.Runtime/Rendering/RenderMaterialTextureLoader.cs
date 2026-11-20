@@ -32,7 +32,10 @@ internal static class RenderMaterialTextureLoader
         ArgumentNullException.ThrowIfNull(materialLease);
         using var progress = new OwnedProgress();
         progress.RetainMaterialLease(materialLease);
-        var result = await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        var result = await CreateOwnedCoreAsync(
+            progress,
+            RendererAssetReadMode.Ordinary,
+            cancellationToken).ConfigureAwait(false);
         _ = progress.TakeResult();
         return result;
     }
@@ -45,7 +48,10 @@ internal static class RenderMaterialTextureLoader
         ArgumentNullException.ThrowIfNull(materialLease);
         ArgumentNullException.ThrowIfNull(progress);
         progress.RetainMaterialLease(materialLease);
-        return await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        return await CreateOwnedCoreAsync(
+            progress,
+            RendererAssetReadMode.ScenePreparation,
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal static void ValidateSlot(
@@ -62,13 +68,17 @@ internal static class RenderMaterialTextureLoader
     {
         using var progress = new OwnedProgress();
         progress.SetMaterialLease(materialLease);
-        var result = await CreateOwnedCoreAsync(progress, cancellationToken).ConfigureAwait(false);
+        var result = await CreateOwnedCoreAsync(
+            progress,
+            RendererAssetReadMode.Ordinary,
+            cancellationToken).ConfigureAwait(false);
         _ = progress.TakeResult();
         return result;
     }
 
     private static async Task<RenderMaterialTextureSet> CreateOwnedCoreAsync(
         OwnedProgress progress,
+        RendererAssetReadMode readMode,
         CancellationToken cancellationToken)
     {
         var materialLease = progress.MaterialLease
@@ -89,6 +99,7 @@ internal static class RenderMaterialTextureLoader
                     RenderTextureSemantic.Color,
                     expectedColorSpace: null,
                     RenderTextureAlphaMode.Premultiplied,
+                    readMode,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -103,6 +114,7 @@ internal static class RenderMaterialTextureLoader
                     RenderTextureSemantic.Color,
                     RenderTextureColorSpace.Srgb,
                     RenderTextureAlphaMode.Straight,
+                    readMode,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -115,6 +127,7 @@ internal static class RenderMaterialTextureLoader
                     RenderTextureSemantic.Data,
                     RenderTextureColorSpace.Linear,
                     RenderTextureAlphaMode.Straight,
+                    readMode,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -127,6 +140,7 @@ internal static class RenderMaterialTextureLoader
                     RenderTextureSemantic.Normal,
                     RenderTextureColorSpace.Linear,
                     RenderTextureAlphaMode.Straight,
+                    readMode,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -139,6 +153,7 @@ internal static class RenderMaterialTextureLoader
                     RenderTextureSemantic.Color,
                     RenderTextureColorSpace.Srgb,
                     RenderTextureAlphaMode.Straight,
+                    readMode,
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -160,6 +175,7 @@ internal static class RenderMaterialTextureLoader
         RenderTextureSemantic expectedSemantic,
         RenderTextureColorSpace? expectedColorSpace,
         RenderTextureAlphaMode expectedAlphaMode,
+        RendererAssetReadMode readMode,
         CancellationToken cancellationToken)
     {
         var textureLeases = progress.TextureLeases
@@ -179,9 +195,22 @@ internal static class RenderMaterialTextureLoader
             }
         }
 
-        progress.PendingTextureLease = await materialLease.LoadFromPackageAsync<RenderTextureAsset>(
-            binding.TextureAssetId,
-            cancellationToken).ConfigureAwait(false);
+        if (readMode is RendererAssetReadMode.ScenePreparation)
+        {
+            var descriptor = RendererAssetCodecProfiles.DescribeTextureRead(
+                materialLease,
+                binding.TextureAssetId);
+            progress.PendingTextureLease = await materialLease.LoadDescribedFromPackageAsync<RenderTextureAsset>(
+                descriptor,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            progress.PendingTextureLease = await materialLease.LoadFromPackageAsync<RenderTextureAsset>(
+                binding.TextureAssetId,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         var pendingTextureLease = progress.PendingTextureLease
             ?? throw new InvalidOperationException("The Material texture load returned no owned lease.");
         ValidateTexture(

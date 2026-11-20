@@ -12,47 +12,21 @@ namespace TerraFX.Rendering;
 
 internal static class RenderMeshAssetBinding
 {
+    internal static async Task<AssetLease<SkeletonAsset>?> LoadProfiledSkeletonAsync(
+        AssetLease<RenderMeshAsset> meshLease,
+        CancellationToken cancellationToken = default)
+        => await LoadSkeletonCoreAsync(
+            meshLease,
+            RendererAssetReadMode.ScenePreparation,
+            cancellationToken).ConfigureAwait(false);
+
     internal static async Task<AssetLease<SkeletonAsset>?> LoadSkeletonAsync(
         AssetLease<RenderMeshAsset> meshLease,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(meshLease);
-        using var retainedMeshLease = meshLease.Retain();
-        var mesh = retainedMeshLease.Value;
-
-        if (mesh.SkeletonAssetId is not { } skeletonAssetId)
-        {
-            return null;
-        }
-
-        var skeletonLease = await retainedMeshLease.LoadFromPackageAsync<SkeletonAsset>(
-            skeletonAssetId,
+        => await LoadSkeletonCoreAsync(
+            meshLease,
+            RendererAssetReadMode.Ordinary,
             cancellationToken).ConfigureAwait(false);
-        var isValid = false;
-
-        try
-        {
-            foreach (var jointIndex in mesh.JointIndices)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (jointIndex >= skeletonLease.Value.Joints.Length)
-                {
-                    throw new InvalidDataException("A Mesh vertex joint index is outside its selected Skeleton's joint domain.");
-                }
-            }
-
-            isValid = true;
-            return skeletonLease;
-        }
-        finally
-        {
-            if (!isValid)
-            {
-                skeletonLease.Dispose();
-            }
-        }
-    }
 
     internal static void ValidateMaterialBindings(RenderMeshAsset mesh, RenderMaterialAsset material)
     {
@@ -115,6 +89,64 @@ internal static class RenderMeshAssetBinding
             using var materialTextureSet = await RenderMaterialTextureLoader.RetainAsync(
                 materialLease,
                 cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<AssetLease<SkeletonAsset>?> LoadSkeletonCoreAsync(
+        AssetLease<RenderMeshAsset> meshLease,
+        RendererAssetReadMode readMode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(meshLease);
+        using var retainedMeshLease = meshLease.Retain();
+        var mesh = retainedMeshLease.Value;
+
+        if (mesh.SkeletonAssetId is not { } skeletonAssetId)
+        {
+            return null;
+        }
+
+        AssetLease<SkeletonAsset> skeletonLease;
+
+        if (readMode is RendererAssetReadMode.ScenePreparation)
+        {
+            var descriptor = AnimationSupport.DescribeSkeletonRead(
+                retainedMeshLease,
+                skeletonAssetId);
+            skeletonLease = await retainedMeshLease.LoadDescribedFromPackageAsync<SkeletonAsset>(
+                descriptor,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            skeletonLease = await retainedMeshLease.LoadFromPackageAsync<SkeletonAsset>(
+                skeletonAssetId,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var isValid = false;
+
+        try
+        {
+            foreach (var jointIndex in mesh.JointIndices)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (jointIndex >= skeletonLease.Value.Joints.Length)
+                {
+                    throw new InvalidDataException("A Mesh vertex joint index is outside its selected Skeleton's joint domain.");
+                }
+            }
+
+            isValid = true;
+            return skeletonLease;
+        }
+        finally
+        {
+            if (!isValid)
+            {
+                skeletonLease.Dispose();
+            }
         }
     }
 

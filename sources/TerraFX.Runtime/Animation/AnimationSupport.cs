@@ -9,6 +9,8 @@ namespace TerraFX.Animation;
 /// <summary>Registers native Animation asset codecs for one compiled schema registry.</summary>
 public static class AnimationSupport
 {
+    private static readonly object s_skeletonV1CodecOrigin = typeof(SkeletonV1CodecOrigin);
+
     /// <summary>Registers the native Skeleton and Animation Clip asset codecs.</summary>
     /// <param name="builder">The asset-store builder whose registry contains the Animation schemas.</param>
     /// <returns>The builder with both Animation asset codecs registered.</returns>
@@ -17,7 +19,10 @@ public static class AnimationSupport
     public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        _ = builder.RegisterCodec(new SkeletonAssetCodec());
+        _ = builder.RegisterProfiledCodec(
+            new SkeletonAssetCodec(),
+            s_skeletonV1CodecOrigin,
+            AssetPackagePayloadCodec.None);
         return builder.RegisterCodec(new AnimationClipAssetCodec());
     }
 
@@ -32,6 +37,27 @@ public static class AnimationSupport
         return builder.RegisterCodec(new AnimationControllerAssetCodec());
     }
 
+    internal static AssetOwnedReadDescriptor DescribeSkeletonRead<TSource>(
+        AssetLease<TSource> source,
+        AssetId assetId)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return source.DescribeOwnedRead<SkeletonAsset>(assetId, s_skeletonV1CodecOrigin);
+    }
+
+    internal static bool HasBuiltInSkeletonAssetCodecReceipt(AssetStoreRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+
+        return registration.TryGetProfiledCodecReceipt<SkeletonAsset>(
+                s_skeletonV1CodecOrigin,
+                out var receipt)
+            && (receipt.Schema.Major == 1)
+            && (receipt.Schema.Minor == 0)
+            && (receipt.Schema.Scope == ContentSchemaScope.Content)
+            && (receipt.RequiredPackageCodec == AssetPackagePayloadCodec.None);
+    }
+
     internal static WorldRegistrationBuilder RegisterPlayerComponent(
         WorldRegistrationBuilder builder,
         CompiledContentSchemaRegistry schemas)
@@ -39,5 +65,9 @@ public static class AnimationSupport
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(schemas);
         return AnimationComponentDefinitions.RegisterPlayer(builder, schemas);
+    }
+
+    private sealed class SkeletonV1CodecOrigin
+    {
     }
 }

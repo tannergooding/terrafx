@@ -63,10 +63,22 @@ public sealed partial class Renderer
     public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        _ = builder.RegisterCodec(new RenderMeshAssetCodec());
-        _ = builder.RegisterCodec(new RenderTextureAssetCodec());
-        _ = builder.RegisterCodec(new RenderAtlasAssetCodec());
-        return builder.RegisterCodec(new RenderMaterialAssetCodec());
+        _ = builder.RegisterProfiledCodec(
+            new RenderMeshAssetCodec(),
+            RendererAssetCodecProfiles.MeshV1Origin,
+            AssetPackagePayloadCodec.None);
+        _ = builder.RegisterProfiledCodec(
+            new RenderTextureAssetCodec(),
+            RendererAssetCodecProfiles.TextureV1Origin,
+            AssetPackagePayloadCodec.None);
+        _ = builder.RegisterProfiledCodec(
+            new RenderAtlasAssetCodec(),
+            RendererAssetCodecProfiles.AtlasV1Origin,
+            AssetPackagePayloadCodec.None);
+        return builder.RegisterProfiledCodec(
+            new RenderMaterialAssetCodec(),
+            RendererAssetCodecProfiles.MaterialV1Origin,
+            AssetPackagePayloadCodec.None);
     }
 
     internal static Renderer Create(
