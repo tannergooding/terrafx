@@ -526,7 +526,8 @@ internal sealed unsafe partial class AssetBoundedNativePort
     internal AssetBoundedFailureFact ReadExactly(
         AssetBoundedNativeFile file,
         ulong offset,
-        scoped Span<byte> destination)
+        scoped Span<byte> destination,
+        AssetBoundedFailureStage failureStage = AssetBoundedFailureStage.PayloadRead)
     {
         if (destination.IsEmpty)
         {
@@ -538,7 +539,7 @@ internal sealed unsafe partial class AssetBoundedNativePort
         if (refusal is not AssetBoundedRefusal.None)
         {
             return CreateFailure(
-                AssetBoundedFailureStage.PayloadRead,
+                failureStage,
                 AssetBoundedFailureKind.Invariant,
                 AssetBoundedNativeApi.None,
                 0,
@@ -554,14 +555,14 @@ internal sealed unsafe partial class AssetBoundedNativePort
                 || (checked((ulong)destination.Length) > (checked((ulong)file.Length) - offset)))
             {
                 return CreateFailure(
-                    AssetBoundedFailureStage.PayloadRead,
+                    failureStage,
                     AssetBoundedFailureKind.Layout,
                     file.Api,
                     0,
                     file.Disposition);
             }
 
-            return ReadExactlyCore(file, offset, destination);
+            return ReadExactlyCore(file, offset, destination, failureStage);
         }
         finally
         {
@@ -840,7 +841,8 @@ internal sealed unsafe partial class AssetBoundedNativePort
     private AssetBoundedFailureFact ReadExactlyCore(
         AssetBoundedNativeFile file,
         ulong offset,
-        scoped Span<byte> destination)
+        scoped Span<byte> destination,
+        AssetBoundedFailureStage failureStage)
     {
         var read = 0;
 
@@ -851,7 +853,7 @@ internal sealed unsafe partial class AssetBoundedNativePort
                 file,
                 checked(offset + checked((ulong)read)),
                 requested,
-                AssetBoundedFailureStage.PayloadRead,
+                failureStage,
                 out var bytesRead);
 
             if (readFailure.Kind is not AssetBoundedFailureKind.None)
@@ -862,7 +864,7 @@ internal sealed unsafe partial class AssetBoundedNativePort
             if (bytesRead == 0)
             {
                 return CreateFailure(
-                    AssetBoundedFailureStage.PayloadRead,
+                    failureStage,
                     AssetBoundedFailureKind.Layout,
                     file.Api,
                     0,

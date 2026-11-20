@@ -15,6 +15,29 @@ namespace TerraFX.Assets.Tests;
 [TestFixture]
 internal sealed class AssetStoreAllocationTests
 {
+    private static long MeasureByteArrayBytes(int byteCount, int sampleCount)
+    {
+        var warmInstances = new byte[sampleCount][];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = new byte[byteCount];
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new byte[sampleCount][];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = new byte[byteCount];
+        }
+
+        var measuredBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / sampleCount;
+        GC.KeepAlive(measuredInstances);
+        return measuredBytes;
+    }
+
     private static long MeasureCarrierBytes(Type type, int sampleCount)
     {
         var warmInstances = new object[sampleCount];
@@ -70,6 +93,19 @@ internal sealed class AssetStoreAllocationTests
     }
 
     [Test]
+    public void BoundedOpeningBufferArraysMatchMeasuredAllocationCharges()
+    {
+        var profileBufferBytes = MeasureByteArrayBytes(65_536, 64);
+        var directoryBufferBytes = MeasureByteArrayBytes(128, 64);
+
+        Assert.Multiple(() => {
+            Assert.That(profileBufferBytes, Is.EqualTo(65_560));
+            Assert.That(directoryBufferBytes, Is.EqualTo(152));
+        });
+        TestContext.WriteLine($"Bounded profile buffer={profileBufferBytes}; directory buffer={directoryBufferBytes};");
+    }
+
+    [Test]
     public void MeasuresTypedLoadAndPackagePinCarrierShells()
     {
         const int SampleCount = 64;
@@ -97,7 +133,7 @@ internal sealed class AssetStoreAllocationTests
             (nameof(AssetStoreRegistration), typeof(AssetStoreRegistration), 48),
             (nameof(AssetBoundedNativeFile), typeof(AssetBoundedNativeFile), 80),
             (nameof(AssetBoundedNativePort), typeof(AssetBoundedNativePort), 144),
-            (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 184),
+            (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 192),
             (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 168),
             (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
         ];

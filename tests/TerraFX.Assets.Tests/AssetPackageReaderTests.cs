@@ -104,6 +104,128 @@ internal sealed class AssetPackageReaderTests
 
     private static ulong Align16(ulong value) => (value + 15) & ~15UL;
 
+    private static AssetBoundedFailureFact ParseBoundedMetadata(
+        byte[] package,
+        out AssetPackageEntry firstEntry,
+        out AssetPackageEntry secondEntry,
+        out SpatialProfileId profileId,
+        out SpatialSettings spatialSettings)
+    {
+        var profileLength = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(package.AsSpan(24)));
+        var directoryOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(package.AsSpan(32)));
+        var directoryLength = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(package.AsSpan(40)));
+        var directory = package.AsSpan(directoryOffset, directoryLength).ToArray();
+
+        return AssetPackageReader.ParseBoundedMetadata(
+            package.Length,
+            1_048_576,
+            package.AsSpan(0, 64),
+            package.AsSpan(64, profileLength),
+            directory,
+            AssetBoundedFileDisposition.NotFinal,
+            out firstEntry,
+            out secondEntry,
+            out profileId,
+            out spatialSettings);
+    }
+
+    [Test]
+    public void BoundedMetadataParserAdmitsTwoNoneEntriesWithoutAllocatingAnEntryTable()
+    {
+        var package = CreatePackage(
+            new TestEntry(3, [0xA5, 0xC3]),
+            new TestEntry(11, [0x5A]));
+        var failure = ParseBoundedMetadata(
+            package,
+            out var firstEntry,
+            out var secondEntry,
+            out var profileId,
+            out var spatialSettings);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+            Assert.That(firstEntry.AssetId.Value, Is.EqualTo(3));
+            Assert.That(firstEntry.Codec, Is.Zero);
+            Assert.That(firstEntry.StoredLength, Is.EqualTo(2));
+            Assert.That(firstEntry.DecodedLength, Is.EqualTo(2));
+            Assert.That(secondEntry.AssetId.Value, Is.EqualTo(11));
+            Assert.That(secondEntry.Codec, Is.Zero);
+            Assert.That(secondEntry.StoredLength, Is.EqualTo(1));
+            Assert.That(secondEntry.DecodedLength, Is.EqualTo(1));
+            Assert.That(profileId, Is.EqualTo(SpatialProfileId.Default));
+            Assert.That(spatialSettings, Is.EqualTo(SpatialSettings.Default));
+        });
+    }
+
+    [Test]
+    public void BoundedMetadataParserRejectsBrotliEntries()
+    {
+        var package = CreatePackage(
+            new TestEntry(3, [0xA5], Codec: 1),
+            new TestEntry(11, [0x5A]));
+        var failure = ParseBoundedMetadata(
+            package,
+            out _,
+            out _,
+            out _,
+            out _);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Directory));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.UnsupportedContent));
+    }
+
+    [Test]
+    public void BoundedMetadataParserRejectsEntryCountsOutsideItsTwoEntryFamily()
+    {
+        var package = CreatePackage(new TestEntry(3, [0xA5]));
+        var failure = ParseBoundedMetadata(
+            package,
+            out _,
+            out _,
+            out _,
+            out _);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Directory));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.UnsupportedContent));
+    }
+
+    [Test]
+    public void BoundedMetadataParserRejectsMalformedDirectoryHeaders()
+    {
+        var package = CreatePackage(
+            new TestEntry(3, [0xA5]),
+            new TestEntry(11, [0x5A]));
+        var directoryOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(package.AsSpan(32)));
+        BinaryPrimitives.WriteUInt16LittleEndian(package.AsSpan(directoryOffset + 4), 2);
+
+        var failure = ParseBoundedMetadata(
+            package,
+            out _,
+            out _,
+            out _,
+            out _);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Directory));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Layout));
+    }
+
+    [Test]
+    public void BoundedMetadataParserRejectsUnsortedAssetIds()
+    {
+        var package = CreatePackage(
+            new TestEntry(11, [0xA5]),
+            new TestEntry(3, [0x5A]));
+        var failure = ParseBoundedMetadata(
+            package,
+            out _,
+            out _,
+            out _,
+            out _);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Directory));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Layout));
+    }
+
     [Test]
     public async Task PackageAdmissionRejectsChecksumMismatchBeforeParsingHeader()
     {

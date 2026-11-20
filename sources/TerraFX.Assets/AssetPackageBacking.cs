@@ -184,8 +184,11 @@ internal sealed class AssetPackageBacking
             out fileRelease);
     }
 
-    internal AssetBoundedFailureFact ReadBoundedExactlyAt(ulong offset, scoped Span<byte> destination)
-        => BoundedNativePort.ReadExactly(BoundedNativeFile, offset, destination);
+    internal AssetBoundedFailureFact ReadBoundedExactlyAt(
+        ulong offset,
+        scoped Span<byte> destination,
+        AssetBoundedFailureStage failureStage = AssetBoundedFailureStage.PayloadRead)
+        => BoundedNativePort.ReadExactly(BoundedNativeFile, offset, destination, failureStage);
 
     internal ValueTask ReadExactlyAtAsync(ulong offset, Memory<byte> destination, CancellationToken cancellationToken)
     {

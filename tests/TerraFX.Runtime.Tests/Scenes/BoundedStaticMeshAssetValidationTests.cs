@@ -77,6 +77,13 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         var profileBuffer = profileBufferField.GetValue(provision) as byte[]
             ?? throw new InvalidOperationException("The bounded provision has no profile buffer owner.");
         Assert.That(profileBuffer.Length, Is.EqualTo(65_536));
+        var directoryBufferField = provision.GetType().GetField(
+            "_packageDirectoryBuffer",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The bounded provision has no preclaimed directory buffer.");
+        var directoryBuffer = directoryBufferField.GetValue(provision) as byte[]
+            ?? throw new InvalidOperationException("The bounded provision has no directory buffer owner.");
+        Assert.That(directoryBuffer.Length, Is.EqualTo(128));
 
         var firstRelease = admittedDelivery.ReleaseUnstartedPreclaim();
         Assert.That(firstRelease.OwnerReleased, Is.True);
