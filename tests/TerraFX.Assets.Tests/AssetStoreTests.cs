@@ -643,18 +643,23 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
-    [TestCase(0, 0, 192)]
-    [TestCase(1, 1, 272)]
-    [TestCase(3, 2, 336)]
-    [TestCase(4, 4, 400)]
+    [TestCase(0, 0, 128, 64)]
+    [TestCase(1, 1, 176, 96)]
+    [TestCase(3, 2, 224, 112)]
+    [TestCase(4, 4, 240, 160)]
     public void AssetReferenceScannerMeasuresFixedScanDataBytes(
         int referenceCount,
         int uniqueCount,
-        long expectedBytes)
+        long expectedWorkspaceBytes,
+        long expectedResultBytes)
     {
-        Assert.That(
-            AssetReferenceScanner.GetFixedScanDataBytes(referenceCount, uniqueCount),
-            Is.EqualTo(expectedBytes));
+        var (workspaceBytes, resultBytes) = AssetReferenceScanner.GetFixedScanDataBytes(referenceCount, uniqueCount);
+
+        Assert.Multiple(() => {
+            Assert.That(workspaceBytes, Is.EqualTo(expectedWorkspaceBytes));
+            Assert.That(resultBytes, Is.EqualTo(expectedResultBytes));
+            Assert.That(checked(workspaceBytes + resultBytes), Is.GreaterThan(workspaceBytes));
+        });
     }
 
     [Test]

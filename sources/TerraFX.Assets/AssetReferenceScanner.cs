@@ -116,17 +116,20 @@ internal static class AssetReferenceScanner
         return referenceCount;
     }
 
-    internal static long GetFixedScanDataBytes(int referenceCount, int uniqueCount)
+    internal static (long WorkspaceBytes, long ResultBytes) GetFixedScanDataBytes(
+        int referenceCount,
+        int uniqueCount)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(referenceCount);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(referenceCount, MaximumReferences);
         ArgumentOutOfRangeException.ThrowIfNegative(uniqueCount);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(uniqueCount, referenceCount);
 
-        return checked(
+        var workspaceBytes = checked(
             ArrayBytes<AssetReference>(referenceCount)
-            + ArrayBytes<int>(referenceCount)
-            + ArrayBytes<AssetReference>(uniqueCount));
+            + ArrayBytes<int>(referenceCount));
+        var resultBytes = ArrayBytes<AssetReference>(uniqueCount);
+        return (workspaceBytes, resultBytes);
     }
 
     internal static ImmutableArray<AssetReference> Scan(
