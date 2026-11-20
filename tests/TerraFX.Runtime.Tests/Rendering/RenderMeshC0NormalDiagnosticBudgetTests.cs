@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
@@ -56,6 +57,70 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             Assert.That(
                 Charge(checked((5L * distinctGeometryFirstOverBudget) - 2), commandStride),
                 Is.GreaterThan(budget));
+        });
+    }
+
+    [Test]
+    public void CommandRecorderDiagnosticScratchBackingAllocationIsMeasured()
+    {
+        const int BindingCount = 4;
+        const int SampleCount = 64;
+
+        _ = new Dictionary<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding), ShaderResourceAccess>()
+            .EnsureCapacity(BindingCount);
+        _ = new HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>()
+            .EnsureCapacity(BindingCount);
+        _ = new List<(bool IsTexture, ulong ResourceId)>().EnsureCapacity(BindingCount);
+
+        var expectedBindings = new Dictionary<
+            (ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding),
+            ShaderResourceAccess>[SampleCount];
+        var actualBindings = new HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>[SampleCount];
+        var barrierResources = new List<(bool IsTexture, ulong ResourceId)>[SampleCount];
+        var boundStorageUses = new StorageResourceUse[SampleCount][];
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            expectedBindings[index] = [];
+            actualBindings[index] = [];
+            barrierResources[index] = [];
+        }
+
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            _ = expectedBindings[index].EnsureCapacity(BindingCount);
+            _ = actualBindings[index].EnsureCapacity(BindingCount);
+            _ = barrierResources[index].EnsureCapacity(BindingCount);
+            boundStorageUses[index] = new StorageResourceUse[BindingCount];
+        }
+
+        var allocatedBytesPerSample = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        var dictionaryCapacity = expectedBindings[0].EnsureCapacity(0);
+        var hashSetCapacity = actualBindings[0].EnsureCapacity(0);
+        var barrierListCapacity = barrierResources[0].Capacity;
+        GC.KeepAlive(expectedBindings);
+        GC.KeepAlive(actualBindings);
+        GC.KeepAlive(barrierResources);
+        GC.KeepAlive(boundStorageUses);
+
+        Assert.Multiple(() => {
+            Assert.That(GraphicsRecordingUseAdmission.IsSupportedProfile, Is.True);
+            Assert.That(dictionaryCapacity, Is.EqualTo(7));
+            Assert.That(hashSetCapacity, Is.EqualTo(7));
+            Assert.That(barrierListCapacity, Is.EqualTo(BindingCount));
+            Assert.That(
+                Unsafe.SizeOf<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>(),
+                Is.EqualTo(16));
+            Assert.That(Unsafe.SizeOf<StorageResourceUse>(), Is.EqualTo(72));
+            Assert.That(allocatedBytesPerSample, Is.EqualTo(952));
+            Assert.That(
+                CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchArrayBytes(),
+                Is.EqualTo(1184));
+            Assert.That(
+                CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchArrayBytes(),
+                Is.GreaterThanOrEqualTo(allocatedBytesPerSample));
         });
     }
 
@@ -229,6 +294,7 @@ internal sealed class RenderMeshC0NormalDiagnosticBudgetTests
             + SkinnedNormalDiagnosticRecordingState.CalculateKnownBackingArrayBytes(
                 drawCount: 1,
                 geometryCount: 1)
+            + CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchArrayBytes()
             + SkinnedNormalDiagnosticRecordingRecipe.KnownObjectByteCharge
             + SkinnedNormalDiagnosticRecordingState.CarrierByteCharge
             + RenderMeshC0NormalDiagnosticWork.CalculateKnownBindingPlanConstructionBytes(

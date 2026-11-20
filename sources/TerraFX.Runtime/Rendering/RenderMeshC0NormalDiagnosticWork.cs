@@ -135,6 +135,7 @@ internal readonly struct RenderMeshC0NormalDiagnosticWork
                 + GraphicsOwnerRequestQueue.KnownRequestBackingByteCharge
                 + pendingGraphSubmissionBackingByteCharge
                 + bindingPlanConstructionBytes
+                + CommandRecorderRecordingCapacity.CalculateKnownFourBindingScratchArrayBytes()
                 + SkinnedNormalDiagnosticRecordingRecipe.KnownObjectByteCharge
                 + SkinnedNormalDiagnosticRecordingState.CarrierByteCharge
                 + recordingRecipeArrayBytes

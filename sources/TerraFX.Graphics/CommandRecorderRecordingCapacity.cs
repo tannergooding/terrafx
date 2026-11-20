@@ -73,6 +73,31 @@ internal readonly struct CommandRecorderRecordingCapacity
         return bytes;
     }
 
+    internal static long CalculateKnownFourBindingScratchArrayBytes()
+    {
+        if (!GraphicsRecordingUseAdmission.IsSupportedProfile)
+        {
+            GraphicsRecordingUseAdmission.ThrowUnavailable();
+        }
+
+        const int BindingCount = 4;
+        // Dictionary and HashSet EnsureCapacity(4) use capacity 7 on the selected .NET 11 profile.
+        const int DictionaryAndHashSetCapacity = 7;
+        var bindingKeyStride = Unsafe.SizeOf<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>();
+        var hashSetEntryStride = checked((2 * sizeof(int)) + bindingKeyStride);
+        var dictionaryEntryStride = checked(
+            (2 * sizeof(int))
+            + bindingKeyStride
+            + Unsafe.SizeOf<ShaderResourceAccess>());
+        return checked(
+            CalculateArrayCharge(BindingCount, Unsafe.SizeOf<StorageResourceUse>())
+            + CalculateArrayCharge(BindingCount, Unsafe.SizeOf<(bool IsTexture, ulong ResourceId)>())
+            + CalculateArrayCharge(DictionaryAndHashSetCapacity, sizeof(int))
+            + CalculateArrayCharge(DictionaryAndHashSetCapacity, dictionaryEntryStride)
+            + CalculateArrayCharge(DictionaryAndHashSetCapacity, sizeof(int))
+            + CalculateArrayCharge(DictionaryAndHashSetCapacity, hashSetEntryStride));
+    }
+
     private static int GetBackingCapacity(int count)
         => (count == 0) ? 0 : Math.Max(4, count);
 
