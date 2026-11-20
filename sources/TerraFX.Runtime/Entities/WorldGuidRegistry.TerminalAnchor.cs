@@ -202,7 +202,12 @@ internal sealed partial class WorldGuidRegistry
             || (ownerUseCell._state != CellStateReserved)
             || (ownerUseCell._role != UseRoleOwner)
             || (ownerUseCell._bindingCellIndex != grant.BindingCellIndex)
-            || (ownerUseCell._bindingGeneration != grant.BindingGeneration))
+            || (ownerUseCell._bindingGeneration != grant.BindingGeneration)
+            || (keyCell._roleCount < 2)
+            || (_bindingRoleCount <= 0)
+            || (_useRoleCount <= 0)
+            || (_retainedKeyCount <= 0)
+            || ((keyCell._roleCount == 2) && (_indexEntryCount <= 0)))
         {
             return false;
         }
@@ -224,15 +229,15 @@ internal sealed partial class WorldGuidRegistry
             return false;
         }
 
+        if (!domain.CompleteTerminalAnchorBindingRelease(this, grant))
+        {
+            return false;
+        }
+
         ReleaseBindingCell(grant.BindingCellIndex, ref bindingCell);
         ReleaseUseCell(grant.OwnerUseCellIndex, ref ownerUseCell);
         keyCell._roleCount -= 2;
         ReleaseKeyIfUnowned(grant.KeyCellIndex, ref keyCell);
-
-        if (!domain.CompleteTerminalAnchorBindingRelease(this, grant))
-        {
-            throw new InvalidOperationException("The released terminal binding could not complete its admission-domain return.");
-        }
 
         return true;
     }

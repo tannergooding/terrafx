@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading;
 using TerraFX;
 
 namespace TerraFX.Entities;
@@ -29,6 +30,7 @@ public sealed partial class WorldAdmissionDomain
     internal bool CompleteTerminalAnchorBindingRelease(WorldGuidRegistry registry, in WorldGuidGrant grant)
     {
         ArgumentNullException.ThrowIfNull(registry);
+        var releaseRegistrarCharge = false;
 
         using (ReentrantGate.EnterScope(ref _growthGate))
         using (ReentrantGate.EnterScope(ref _gate))
@@ -55,7 +57,7 @@ public sealed partial class WorldAdmissionDomain
 
                 if (_retirement.Task.IsCompleted)
                 {
-                    _registryCharge = 0;
+                    releaseRegistrarCharge = true;
                     _terminalWorldReturnReady = false;
                     _terminalAnchorState = TerminalAnchorStateNone;
                 }
@@ -73,8 +75,14 @@ public sealed partial class WorldAdmissionDomain
             _terminalGrant = default;
             _terminalLifetime = null;
             _terminalFailure = null;
-            return true;
         }
+
+        if (releaseRegistrarCharge)
+        {
+            _ = Interlocked.Exchange(ref _registryCharge, 0);
+        }
+
+        return true;
     }
 
     internal bool IsTerminalAnchorBound(WorldGuidRegistry registry, in WorldGuidGrant grant, WorldLifetimeControl lifetime)

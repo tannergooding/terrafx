@@ -525,6 +525,7 @@ internal sealed class WorldGuidRegistryTests
         var registry = WorldGuidRegistry.GetSelected();
         var worldGuid = Guid.NewGuid();
         using var world = CreateEmptyWorld(worldGuid);
+        var domain = GetAdmissionDomain(world);
 
         Assert.That(world.TryAttachTerminalAnchorForDefaultDomain(), Is.True);
         Assert.That(registry.TryReserveFresh(worldGuid, out _, out var retainedRefusal), Is.False);
@@ -533,6 +534,7 @@ internal sealed class WorldGuidRegistryTests
 
         world.Dispose();
 
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
         Assert.That(registry.TryReserveFresh(worldGuid, out var replacement, out _), Is.True);
         Assert.That(registry.TryReleaseFresh(replacement), Is.True);
     }
