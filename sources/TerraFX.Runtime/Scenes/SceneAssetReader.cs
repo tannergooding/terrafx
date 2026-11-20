@@ -139,7 +139,7 @@ internal static class SceneAssetReader
             limits,
             allowInstanceAbsoluteSources: true,
             allowInstanceAbsoluteTargets: true);
-        var entities = ImmutableArray.CreateBuilder<SceneEntity>(entityCount);
+        var entities = new SceneEntity[entityCount];
         var entityIds = hierarchyWorkspace.EntityIds;
         var previousEntityId = Guid.Empty;
         var entityReferenceLeafCount = 0;
@@ -163,11 +163,11 @@ internal static class SceneAssetReader
 
             previousEntityId = entity.AuthoredEntityId;
             entityIds[entityIndex] = entity.AuthoredEntityId;
-            entities.Add(entity);
+            entities[entityIndex] = entity;
         }
 
         var hierarchy = SceneHierarchyReader.Read(record.GetRecord(3).EncodedBytes, limits);
-        var placements = ImmutableArray.CreateBuilder<ScenePrefabPlacement>(placementCount);
+        var placements = new ScenePrefabPlacement[placementCount];
         var placementIds = hierarchyWorkspace.Placements;
         var previousPlacementId = Guid.Empty;
 
@@ -188,7 +188,7 @@ internal static class SceneAssetReader
 
             previousPlacementId = placement.PlacementId;
             placementIds[placementIndex] = new SceneHierarchyPlacement(placement.PlacementId, placement.ParentEntityId);
-            placements.Add(placement);
+            placements[placementIndex] = placement;
         }
 
         var validation = SceneHierarchyValidator.Validate(
@@ -222,9 +222,9 @@ internal static class SceneAssetReader
 
         return new SceneAsset(
             sceneId,
-            entities.MoveToImmutable(),
+            ImmutableCollectionsMarshal.AsImmutableArray(entities),
             hierarchy,
-            placements.MoveToImmutable(),
+            ImmutableCollectionsMarshal.AsImmutableArray(placements),
             references,
             overrides,
             externalSlots,
@@ -279,7 +279,7 @@ internal static class SceneAssetReader
             limits,
             allowInstanceAbsoluteSources: false,
             allowInstanceAbsoluteTargets: false);
-        var entities = ImmutableArray.CreateBuilder<SceneEntity>(entityCount);
+        var entities = new SceneEntity[entityCount];
         var entityIds = hierarchyWorkspace.EntityIds;
         var previousEntityId = Guid.Empty;
         var entityReferenceLeafCount = 0;
@@ -303,11 +303,11 @@ internal static class SceneAssetReader
 
             previousEntityId = entity.AuthoredEntityId;
             entityIds[entityIndex] = entity.AuthoredEntityId;
-            entities.Add(entity);
+            entities[entityIndex] = entity;
         }
 
         var hierarchy = SceneHierarchyReader.Read(record.GetRecord(4).EncodedBytes, limits);
-        var placements = ImmutableArray.CreateBuilder<ScenePrefabPlacement>(placementCount);
+        var placements = new ScenePrefabPlacement[placementCount];
         var placementIds = hierarchyWorkspace.Placements;
         var previousPlacementId = Guid.Empty;
 
@@ -328,7 +328,7 @@ internal static class SceneAssetReader
 
             previousPlacementId = placement.PlacementId;
             placementIds[placementIndex] = new SceneHierarchyPlacement(placement.PlacementId, placement.ParentEntityId);
-            placements.Add(placement);
+            placements[placementIndex] = placement;
         }
 
         var validation = SceneHierarchyValidator.Validate(
@@ -352,9 +352,9 @@ internal static class SceneAssetReader
 
         return new ScenePrefabAsset(
             prefabId,
-            entities.MoveToImmutable(),
+            ImmutableCollectionsMarshal.AsImmutableArray(entities),
             hierarchy,
-            placements.MoveToImmutable(),
+            ImmutableCollectionsMarshal.AsImmutableArray(placements),
             references,
             externalSlots,
             schemas,
@@ -654,7 +654,7 @@ internal static class SceneAssetReader
         bool allowInstanceAbsoluteTargets)
     {
         var count = checked((int)field.Count);
-        var references = ImmutableArray.CreateBuilder<SceneEntityReferenceBinding>(count);
+        var references = new SceneEntityReferenceBinding[count];
         SceneEntityReferenceBinding? previousReference = null;
 
         for (var index = 0; index < count; index++)
@@ -672,11 +672,11 @@ internal static class SceneAssetReader
                 throw new InvalidDataException("Entity-reference bindings are not uniquely sorted by source key.");
             }
 
-            references.Add(reference);
+            references[index] = reference;
             previousReference = reference;
         }
 
-        return references.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(references);
     }
 
     private static SceneEntitySelector ReadEntitySelector(EbinRecordReadView record, EbinReadLimits limits)
@@ -685,12 +685,12 @@ internal static class SceneAssetReader
         var scope = ReadUInt8(record, tag: 1);
         var placementPathField = GetFixedGuidArrayField(record, tag: 2, maximumCount: 32, limits);
         var pathCount = checked((int)placementPathField.Count);
-        var placementPath = ImmutableArray.CreateBuilder<Guid>(pathCount);
+        var placementPath = new Guid[pathCount];
         var pathPayload = placementPathField.Payload[32..];
 
         for (var index = 0; index < pathCount; index++)
         {
-            placementPath.Add(ReadGuidPayload(pathPayload.Slice(index * 16, 16)));
+            placementPath[index] = ReadGuidPayload(pathPayload.Slice(index * 16, 16));
         }
 
         if (scope is not (byte)SceneEntitySelectorScope.OccurrenceRelative
@@ -701,7 +701,7 @@ internal static class SceneAssetReader
 
         return new SceneEntitySelector(
             (SceneEntitySelectorScope)scope,
-            placementPath.MoveToImmutable(),
+            ImmutableCollectionsMarshal.AsImmutableArray(placementPath),
             ReadGuid(record, tag: 3, isRequired: true));
     }
 
@@ -722,7 +722,7 @@ internal static class SceneAssetReader
 
         var requiredComponentsField = GetRecordArrayField(record, tag: 4, maximumCount: 256, limits);
         var count = checked((int)requiredComponentsField.Count);
-        var requiredComponents = ImmutableArray.CreateBuilder<ContentSchemaReference>(count);
+        var requiredComponents = new ContentSchemaReference[count];
         ContentSchemaReference? previousSchema = null;
 
         for (var index = 0; index < count; index++)
@@ -749,7 +749,7 @@ internal static class SceneAssetReader
                 throw new InvalidDataException("External-slot RequiredComponents are not uniquely sorted by schema tuple.");
             }
 
-            requiredComponents.Add(schema);
+            requiredComponents[index] = schema;
             previousSchema = schema;
         }
 
@@ -757,7 +757,7 @@ internal static class SceneAssetReader
             slotId,
             required,
             allowNull,
-            requiredComponents.MoveToImmutable());
+            ImmutableCollectionsMarshal.AsImmutableArray(requiredComponents));
     }
 
     private static ImmutableArray<SceneExternalSlot> ReadExternalSlots(
@@ -768,7 +768,7 @@ internal static class SceneAssetReader
         EbinReadLimits limits)
     {
         var count = checked((int)field.Count);
-        var externalSlots = ImmutableArray.CreateBuilder<SceneExternalSlot>(count);
+        var externalSlots = new SceneExternalSlot[count];
         Guid? previousSlotId = null;
 
         for (var index = 0; index < count; index++)
@@ -781,11 +781,11 @@ internal static class SceneAssetReader
                 throw new InvalidDataException("External slots are not uniquely sorted by RFC SlotId.");
             }
 
-            externalSlots.Add(externalSlot);
+            externalSlots[index] = externalSlot;
             previousSlotId = externalSlot.SlotId;
         }
 
-        return externalSlots.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(externalSlots);
     }
 
     private static Guid ReadGuid(EbinRecordReadView record, uint tag, bool isRequired)
@@ -844,7 +844,7 @@ internal static class SceneAssetReader
         EbinReadLimits limits)
     {
         var count = checked((int)field.Count);
-        var bindings = ImmutableArray.CreateBuilder<ScenePlacementSlotBinding>(count);
+        var bindings = new ScenePlacementSlotBinding[count];
         Guid? previousSlotId = null;
 
         for (var index = 0; index < count; index++)
@@ -857,11 +857,11 @@ internal static class SceneAssetReader
                 throw new InvalidDataException("Placement slot bindings are not uniquely sorted by RFC SlotId.");
             }
 
-            bindings.Add(binding);
+            bindings[index] = binding;
             previousSlotId = binding.SlotId;
         }
 
-        return bindings.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(bindings);
     }
 
     private static ScenePrefabOverride ReadPrefabOverride(
@@ -1080,13 +1080,13 @@ internal static class SceneAssetReader
         bool allowInstanceAbsoluteOverrideTargets)
     {
         var count = checked((int)field.Count);
-        var overrides = ImmutableArray.CreateBuilder<ScenePrefabOverride>(count);
 
         if (count == 0)
         {
-            return overrides.MoveToImmutable();
+            return [];
         }
 
+        var overrides = new ScenePrefabOverride[count];
         var fixedLiteralSchemas = GetPrefabOverrideLiteralSchemas(schemas);
         ScenePrefabOverride? previousOverride = null;
 
@@ -1114,11 +1114,11 @@ internal static class SceneAssetReader
                 }
             }
 
-            overrides.Add(currentOverride);
+            overrides[index] = currentOverride;
             previousOverride = currentOverride;
         }
 
-        return overrides.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(overrides);
     }
 
     private static ScenePrefabPlacement ReadPrefabPlacement(
@@ -1233,14 +1233,14 @@ internal static class SceneAssetReader
         EbinReadLimits limits)
     {
         var count = checked((int)field.Count);
-        var rootPoses = ImmutableArray.CreateBuilder<ScenePrefabRootPose>(count);
+        var rootPoses = new ScenePrefabRootPose[count];
 
         for (var index = 0; index < count; index++)
         {
-            rootPoses.Add(ReadPrefabRootPose(record.GetRecordArrayElement(4, index), limits));
+            rootPoses[index] = ReadPrefabRootPose(record.GetRecordArrayElement(4, index), limits);
         }
 
-        return rootPoses.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(rootPoses);
     }
 
     private static ImmutableArray<ScenePropertyPathSegment> ReadPropertyPath(
@@ -1249,7 +1249,7 @@ internal static class SceneAssetReader
         EbinFieldReadView field)
     {
         var count = checked((int)field.Count);
-        var segments = ImmutableArray.CreateBuilder<ScenePropertyPathSegment>(count);
+        var segments = new ScenePropertyPathSegment[count];
 
         for (var index = 0; index < count; index++)
         {
@@ -1265,11 +1265,11 @@ internal static class SceneAssetReader
                     throw new InvalidDataException("A Prefab property FieldTag segment must be nonzero.");
                 }
 
-                segments.Add(new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, value));
+                segments[index] = new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, value);
             }
             else if (kind == (byte)ScenePropertyPathSegmentKind.FixedArrayIndex)
             {
-                segments.Add(new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, value));
+                segments[index] = new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, value);
             }
             else
             {
@@ -1277,7 +1277,7 @@ internal static class SceneAssetReader
             }
         }
 
-        return segments.MoveToImmutable();
+        return ImmutableCollectionsMarshal.AsImmutableArray(segments);
     }
 
     private static SceneReferenceTarget ReadReferenceTarget(EbinRecordReadView record, EbinReadLimits limits)
@@ -1386,10 +1386,10 @@ internal static class SceneAssetReader
     }
 
     private static void ValidateRootPositionComponents(
-        ImmutableArray<SceneEntity>.Builder entities,
+        SceneEntity[] entities,
         SceneHierarchy hierarchy)
     {
-        for (var entityIndex = 0; entityIndex < entities.Count; entityIndex++)
+        for (var entityIndex = 0; entityIndex < entities.Length; entityIndex++)
         {
             var entity = entities[entityIndex];
             var isRoot = hierarchy.Nodes[entityIndex].ParentEntityId is null;
