@@ -2,6 +2,10 @@
 
 **Status: tentative implementation guidance under the user's blocker-proposal policy, not an accepted design contract. No complete allocation profile, implemented native worker, or Scene capability is established. Keep `PreparedScene.QualifiedFootprint` null.**
 
+Acquisition-free Batch A now installs an original `AssetStore` and pre-opening `AssetPackageBacking`, seals the canonical 81-schema/two-codec Static-Mesh family, and rejects sourced tokens, ambient contexts, unsupported paths, and insufficient budgets before package access. On the 44-character test path, Debug and Release both observed 870,920 cold and 10,872 warm managed bytes within 1,196,983 cold and 148,407 warm reserved bytes. The one-megabyte process-lifetime shared partition and 16-KiB per-Store registration/delivery provision cover only this acquisition-free prefix; no file, worker, typed load, CLI option, native close, or full failure/return profile is enabled.
+
+Acquisition-free Batch A now installs an original `AssetStore` and pre-opening `AssetPackageBacking`, seals the canonical 81-schema/two-codec Static-Mesh family, and rejects sourced tokens, ambient contexts, unsupported paths, and insufficient budgets before package access. On the 44-character test path, Debug and Release both observed 870,920 cold and 10,872 warm managed bytes within 1,196,983 cold and 148,407 warm reserved bytes. The one-megabyte process-lifetime shared partition and 16-KiB per-Store registration/delivery provision cover only this acquisition-free prefix; no file, worker, typed load, CLI option, native close, or full failure/return profile is enabled.
+
 ## 1. Decision
 
 Implement a **separate, internal, synchronous, closed-input Assets lane**, first consumed by the existing `cook-static-mesh` production command through a new explicit option:
@@ -373,6 +377,6 @@ Critical raw source identities:
 
 The local runtime identity file names `11.0.0-rc.3.26522.148`, unified-source revision `5254d8bcf59917edc1e1abc33bdf2442b77b1c70`; this is not a testhost/native-binary attestation. [Thread.UnsafeStart documentation](https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.unsafestart?view=net-11.0) verifies the selected no-ExecutionContext-flow API; its native/runtime costs still require qualification.
 
-Recheck these bytes before disposition or implementation. Changed inputs require scoped reassessment, not reuse of an old proposal's hash table.
+The Batch A implementation intentionally changes listed Assets inputs; the hashes above remain the pre-implementation freeze. Recheck all bytes and the dirty-path set before any further disposition or before reviewing later implementation bytes. Changed inputs require scoped reassessment, not reuse of an old proposal's hash table.
 
-**Document-only work:** source paths/symbols, catalogue membership and input hashes were checked. No build/test/native/allocation experiment was run and no 50/50 test result is claimed as new evidence here. Source, tests, current proposals, design chapters and Roadmap are unchanged by this task.
+Batch A source and tests now implement and verify only the acquisition-free preclaim/registration owner in Debug and Release. The frozen manifest remains the pre-implementation review input; re-freeze before reviewing subsequent source changes. No worker, file acquisition, native-close, CLI, typed-load, Scene, or consumer qualification is claimed, and maintained design contracts remain unchanged.

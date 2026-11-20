@@ -15,11 +15,13 @@ internal sealed class AssetPackageBacking
     private static AssetPackageBacking? s_failedReleaseRoot;
     private static readonly Lock s_failedReleaseRootGate = new();
     private readonly AssetPackageBackingToken _backingToken = new();
+    private AssetStoreBoundedProvision? _boundedProvision;
     private readonly Lock _gate = new();
     private bool _isFailedReleaseRooted;
     private AssetPackageBacking? _nextFailedRelease;
     private bool _ownerReleased;
     private readonly EbinReadLimits _readLimits;
+    private AssetStoreRegistration? _registration;
     private Exception? _releaseFailure;
     private int _releaseState;
     private FileStream? _stream;
@@ -42,18 +44,42 @@ internal sealed class AssetPackageBacking
         MaximumConcurrentDecodeBytes = options.MaximumConcurrentDecodeBytes;
         MaximumDecodedAssetBytes = options.MaximumDecodedAssetBytes;
         MaximumLiveAssetLeases = options.MaximumLiveAssetLeases;
-        Registration = options.Registration;
+        _registration = options.Registration;
         _readLimits = CreateReadLimits(options.MaximumDecodedAssetBytes);
         SpatialSettings = spatialSettings;
     }
 
+    internal AssetPackageBacking(AssetStoreBoundedProvision boundedProvision)
+    {
+        ArgumentNullException.ThrowIfNull(boundedProvision);
+        _boundedProvision = boundedProvision;
+        Entries = [];
+        PackageByteLength = 0;
+        ProfileId = default;
+        CpuAssetBudgetBytes = boundedProvision.CpuAssetBudgetBytes;
+        ExpectedPackageSha256 = [];
+        MaximumConcurrentDecodeBytes = boundedProvision.MaximumConcurrentDecodeBytes;
+        MaximumDecodedAssetBytes = boundedProvision.MaximumDecodedAssetBytes;
+        MaximumLiveAssetLeases = boundedProvision.MaximumLiveAssetLeases;
+        _readLimits = CreateReadLimits(boundedProvision.MaximumDecodedAssetBytes);
+        SpatialSettings = default;
+    }
+
     internal AssetPackageBackingToken BackingToken => _backingToken;
+
+    internal AssetStoreBoundedProvision BoundedProvision
+        => _boundedProvision
+            ?? throw new InvalidOperationException("The package backing has no bounded opening provision.");
+
+    internal long BoundedReservedBytes => _boundedProvision?.ReservedBytes ?? 0;
 
     internal long CpuAssetBudgetBytes { get; }
 
     internal ImmutableArray<AssetPackageEntry> Entries { get; }
 
     internal ImmutableArray<byte> ExpectedPackageSha256 { get; }
+
+    internal bool IsBoundedOpening => _boundedProvision is not null;
 
     internal int MaximumConcurrentDecodeBytes { get; }
 
@@ -67,7 +93,10 @@ internal sealed class AssetPackageBacking
 
     internal EbinReadLimits ReadLimits => _readLimits;
 
-    internal AssetStoreRegistration Registration { get; }
+    internal AssetStoreRegistration Registration
+        => _registration
+            ?? _boundedProvision?.Registration
+            ?? throw new InvalidOperationException("The package backing has no installed codec registration.");
 
     internal SpatialSettings SpatialSettings { get; }
 
@@ -118,6 +147,13 @@ internal sealed class AssetPackageBacking
         return new AssetOwnedReadDescriptor(store, this, entry, codecReceipt);
     }
 
+    internal void FailBoundedInitialization(AssetBoundedFailureFact primary)
+    {
+        var boundedProvision = _boundedProvision
+            ?? throw new InvalidOperationException("The package backing has no bounded opening provision.");
+        boundedProvision.FailInitialization(primary);
+    }
+
     internal ValueTask ReadExactlyAtAsync(ulong offset, Memory<byte> destination, CancellationToken cancellationToken)
     {
         var stream = Volatile.Read(ref _stream);
@@ -131,11 +167,33 @@ internal sealed class AssetPackageBacking
     internal void ReleaseReference()
         => ReleaseReference(releaseOwner: false);
 
+    internal AssetBoundedPreclaimRelease ReleaseUnstartedBoundedPreclaim()
+    {
+        lock (_gate)
+        {
+            var boundedProvision = _boundedProvision
+                ?? throw new InvalidOperationException("The package backing has no bounded opening provision.");
+
+            if ((_stream is not null) || (_referenceCount != 1) || (_releaseState != 0))
+            {
+                throw new InvalidOperationException("The bounded package opening is not in its unstarted owner state.");
+            }
+
+            var release = boundedProvision.ReleaseUnstartedPreclaim();
+            _boundedProvision = null;
+            _registration = null;
+            _referenceCount = 0;
+            _releaseState = 2;
+            _ownerReleased = true;
+            return release;
+        }
+    }
+
     internal bool TryAcquireReference()
     {
         lock (_gate)
         {
-            if ((_releaseState is not 0) || (_referenceCount == 0))
+            if ((_boundedProvision is not null) || (_releaseState is not 0) || (_referenceCount == 0))
             {
                 return false;
             }
@@ -146,6 +204,25 @@ internal sealed class AssetPackageBacking
             }
 
             _referenceCount++;
+            return true;
+        }
+    }
+
+    internal bool TryBindBoundedStaticMeshRegistration(AssetStoreRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+
+        lock (_gate)
+        {
+            if ((_boundedProvision is not { } boundedProvision)
+                || (_stream is not null)
+                || (_releaseState != 0)
+                || !boundedProvision.TryBindRegistration(registration))
+            {
+                return false;
+            }
+
+            _registration = registration;
             return true;
         }
     }
@@ -187,6 +264,11 @@ internal sealed class AssetPackageBacking
 
         lock (_gate)
         {
+            if (_boundedProvision is not null)
+            {
+                throw new InvalidOperationException("The bounded package opening must end through its original Store delivery.");
+            }
+
             if (releaseOwner)
             {
                 if (_ownerReleased)

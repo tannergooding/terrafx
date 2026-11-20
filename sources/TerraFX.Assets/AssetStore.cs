@@ -17,7 +17,7 @@ public sealed partial class AssetStore : IAsyncDisposable
     private readonly Lock _gate = new();
     private long _activeDecodeBytes;
     private AssetPackageBacking? _currentBacking;
-    private readonly TaskCompletionSource _disposeCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource? _disposeCompletion;
     private int _disposeState;
     private bool _disposed;
     private long _liveAssetBytes;
@@ -30,6 +30,18 @@ public sealed partial class AssetStore : IAsyncDisposable
     private AssetStore(AssetPackageBacking backing)
     {
         _currentBacking = backing;
+        _disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private AssetStore(AssetPackageBacking backing, bool isBoundedOpening)
+    {
+        if (!isBoundedOpening || !backing.IsBoundedOpening)
+        {
+            throw new ArgumentException("The bounded Store requires its original opening backing.", nameof(backing));
+        }
+
+        _currentBacking = backing;
+        _disposeCompletion = null;
     }
 
     /// <summary>Opens and validates one immutable EPKG2 content-set package.</summary>
@@ -77,6 +89,8 @@ public sealed partial class AssetStore : IAsyncDisposable
         Justification = "The terminal package-release failure is retained for every concurrent and later disposal caller.")]
     public async ValueTask DisposeAsync()
     {
+        var disposeCompletion = _disposeCompletion
+            ?? throw new InvalidOperationException("The bounded Assets issuer is closed by its delivery owner.");
         AssetPackageBacking? backing;
         AssetPackageBacking? pendingBacking;
         Exception? firstFailure;
@@ -101,7 +115,7 @@ public sealed partial class AssetStore : IAsyncDisposable
 
         if (!ownsDisposal)
         {
-            await _disposeCompletion.Task.ConfigureAwait(false);
+            await disposeCompletion.Task.ConfigureAwait(false);
             return;
         }
 
@@ -154,7 +168,7 @@ public sealed partial class AssetStore : IAsyncDisposable
                 _disposeState = 2;
             }
 
-            _ = _disposeCompletion.TrySetResult();
+            _ = disposeCompletion.TrySetResult();
         }
         catch (Exception failure)
         {
@@ -163,7 +177,7 @@ public sealed partial class AssetStore : IAsyncDisposable
                 _disposeState = 3;
             }
 
-            _ = _disposeCompletion.TrySetException(failure);
+            _ = disposeCompletion.TrySetException(failure);
             throw;
         }
     }

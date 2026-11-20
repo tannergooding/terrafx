@@ -57,6 +57,18 @@ public sealed class AssetStoreRegistrationBuilder
         return this;
     }
 
+    internal AssetStoreRegistration BuildBoundedStaticMeshValidationV1()
+    {
+        if (_codecsByType.Count != 2)
+        {
+            throw new InvalidOperationException("The bounded static-Mesh registration requires exactly two codecs.");
+        }
+
+        return AssetStoreRegistration.CreateBoundedStaticMeshValidationV1(
+            _schemas,
+            [.. _codecsByType.Values]);
+    }
+
     internal AssetStoreRegistrationBuilder RegisterProfiledCodec<T>(
         IContextualBinarySchemaCodec<T> codec,
         object profileOrigin,
