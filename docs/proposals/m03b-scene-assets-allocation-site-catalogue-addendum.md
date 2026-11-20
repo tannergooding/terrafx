@@ -6,7 +6,7 @@
 
 This is the source-site addendum to [closed-read allocation authority](m03b-scene-assets-closed-read-allocation-authority.md), against HEAD `737773e25fa013c81151116a6a9534f96d586ab3`. Earlier input hashes are superseded by the current freeze below. The five unrelated dirty tests were rehashed and match their previously recorded bytes.
 
-The selected typed calls are Scene/Prefab 2.0, Mesh/Texture/Atlas/Material 1.0, and Skeleton 1.0, all package `None`. Current [Rendering origins](../../sources/TerraFX.Runtime/Rendering/RendererAssetCodecProfiles.cs), [Skeleton origin](../../sources/TerraFX.Runtime/Animation/AnimationSupport.cs), bundle roots and owned helper paths establish that dispatch selection; they do not supply allocation authority. Ordinary helper branches remain distinct through `RendererAssetReadMode`. The exact-array Mesh/Texture/Atlas decode changes are behavior-tested, but these tests do not supply allocation or Scene-return evidence.
+The selected typed calls are Scene/Prefab 2.0, Mesh/Texture/Atlas/Material 1.0, and Skeleton 1.0, all package `None`. Current [Rendering origins](../../sources/TerraFX.Runtime/Rendering/RendererAssetCodecProfiles.cs), [Skeleton origin](../../sources/TerraFX.Runtime/Animation/AnimationSupport.cs), bundle roots and owned helper paths establish that dispatch selection; they do not supply allocation authority. Ordinary helper branches remain distinct through `RendererAssetReadMode`. The exact-array Mesh/Texture/Atlas/Skeleton decode changes are behavior-tested, but these tests do not supply allocation or Scene-return evidence.
 
 Owners remain Chapters [04](../design/04-capacity-and-workload-profiles.md#3-budget-composition-and-failure), [11](../design/11-assets-import-streaming-and-packages.md#3-package-loading-leases-and-update-behavior), [16](../design/16-scenes-transforms-and-cameras.md#2-prefabs-and-streaming), [30](../design/30-public-api-review-surface.md#6-assets-schema-codecs-and-packages), and [35](../design/35-implementation-roadmap.md#m04m05-capability-and-observation-sequencing). This catalogue does not assess the bounded native-port implementation.
 
@@ -235,7 +235,7 @@ Use the existing owning NUnit projects and [ordinary developer workflow](../proj
 
 ## Current input freeze
 
-UTC `2026-11-20T01:54:20.1962936Z`; HEAD `737773e25fa013c81151116a6a9534f96d586ab3`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array decode outputs, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
+UTC `2026-11-20T01:58:19.426067+00:00`; HEAD `958e492eee97f278eb841e15fcc64835cb0b5ee2`. HEAD, the input paths and the separately listed dirty Scene/Sprite tests were checked before this freeze. The old proposal's **96-path manifest is reused only as path membership**, not as accepted bytes/hashes. Its current raw SHA-256 is `ca7d2505b012f4b79becc1be6d5c8a410918167d445b55f1dc540cb7ef6c50a5`. BASE below rehashes those paths at the current revision, including the scanner, exact-array Mesh/Texture/Atlas/Skeleton outputs, Roadmap and described-read helpers/tests. ADD is the following closed supplemental set; ALL is the union. Neither set includes bounded native-port-specific implementation inputs or this proposal artifact.
 
 ```text
 docs\proposals\m03b-scene-assets-closed-read-allocation-authority.md
@@ -292,9 +292,9 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| BASE | 96 | `931f5109a108bea14edb213b0779cb2912e8ef1f4e187fc6f551934098333b1a` |
+| BASE | 96 | `717b349909c946f3c71d5edbc7315bb718767ff92d85cb0899f24a1c2165980f` |
 | ADD | 48 | `42b8b2b7eeebce1e6b81bf0114b2c8ded9f1c9511132e211f6c421a0077c61d6` |
-| ALL | 144 | `b685306944bd05f718e125cd1338b06e84bdd4098d7b9d948b637171f6665568` |
+| ALL | 144 | `9884863fbd112c1d6394af3e4de6cc58b9bd49fc707f85813328186b3260ff37` |
 
 | Unchanged schema/registry source beneath `sources` | Raw SHA-256 |
 |---|---|
@@ -312,4 +312,4 @@ Hash recipe: raw-file SHA-256; set SHA-256 over ordinal-sorted `relative-Windows
 | `RendererExtractionTests.cs` | `abaeea4d0f6be941af73e640b7fce41ec753d2199654343fa4668d54ec20fc6a` |
 | `SceneAssetStoreTests.EngineHost.cs` | `4c0841a40295a891b68974fddd8078dfd0181c31b35ab0bcb0b5114fe0fd1039` |
 
-The source and Roadmap now include a fixed-buffer scanner and exact-array Mesh/Texture/Atlas outputs. They do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
+The source and Roadmap now include a fixed-buffer scanner and exact-array Mesh/Texture/Atlas/Skeleton outputs. They do not wire the scanner into Scene admission, change schema bytes, or open the footprint gate. The five unrelated dirty Scene/Sprite tests remain unchanged from their listed hashes; this addendum remains outside its own input set.
