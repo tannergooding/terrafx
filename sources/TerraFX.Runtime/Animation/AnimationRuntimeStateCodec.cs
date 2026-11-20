@@ -44,9 +44,9 @@ internal static class AnimationRuntimeStateCodec
 
         var root = new EbinRecordReadView(source);
         var players = root.GetField(1).Count;
-        // Each reference array coexists with its immutable constructor copy. The 256-byte
-        // object envelope covers every fixed author field; spatial values are added explicitly.
-        var bytes = checked(4096 + 256 + (2 * ArrayBytes(players, IntPtr.Size)));
+        // Reader-owned exact arrays are adopted by their authors, so each array has one backing.
+        // The 256-byte object envelope covers fixed author fields; spatial values are explicit.
+        var bytes = checked(4096 + 256 + ArrayBytes(players, IntPtr.Size));
 
         for (var playerIndex = 0; playerIndex < checked((int)players); playerIndex++)
         {
@@ -54,22 +54,22 @@ internal static class AnimationRuntimeStateCodec
             _ = player.TryGetField(7, out var bindings);
             _ = player.TryGetField(8, out var layers);
             bytes = checked(bytes + 256
-                + (2 * ArrayBytes(bindings.Count, IntPtr.Size))
-                + (2 * ArrayBytes(layers.Count, IntPtr.Size))
+                + ArrayBytes(bindings.Count, IntPtr.Size)
+                + ArrayBytes(layers.Count, IntPtr.Size)
                 + ((long)bindings.Count * (512 + Unsafe.SizeOf<SpatialPosition3?>())));
 
             for (var layerIndex = 0; layerIndex < checked((int)layers.Count); layerIndex++)
             {
                 var layer = player.GetRecordArrayElement(8, layerIndex);
                 _ = layer.TryGetField(3, out var clips);
-                bytes = checked(bytes + 256 + (2 * ArrayBytes(clips.Count, IntPtr.Size))
+                bytes = checked(bytes + 256 + ArrayBytes(clips.Count, IntPtr.Size)
                     + ((long)clips.Count * 256));
 
                 if (layer.TryGetField(4, out var transition))
                 {
                     var transitionRecord = new EbinRecordReadView(transition.Payload);
                     _ = transitionRecord.TryGetField(4, out var weights);
-                    bytes = checked(bytes + 256 + (2 * ArrayBytes(weights.Count, sizeof(float))));
+                    bytes = checked(bytes + 256 + ArrayBytes(weights.Count, sizeof(float)));
                 }
             }
         }
@@ -137,12 +137,12 @@ internal static class AnimationRuntimeStateCodec
             var fieldCount = 3 + (record.TryGetField(4, out _) ? 1 : 0);
             ValidateHeader(record, s_layerSchemaId, fieldCount);
             var clipsField = ReadRecordArrayField(record, tag: 3, 0, 4);
-            var clips = ImmutableArray.CreateBuilder<AnimationActiveClipAuthor>(checked((int)clipsField.Count));
+            var clips = new AnimationActiveClipAuthor[checked((int)clipsField.Count)];
 
-            for (var index = 0; index < clips.Capacity; index++)
+            for (var index = 0; index < clips.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                clips.Add(ReadActiveClip(record.GetRecordArrayElement(3, index)));
+                clips[index] = ReadActiveClip(record.GetRecordArrayElement(3, index));
             }
 
             AnimationTransitionStateAuthor? transition = null;
@@ -153,10 +153,10 @@ internal static class AnimationRuntimeStateCodec
                 transition = ReadTransition(new EbinRecordReadView(transitionField.Payload));
             }
 
-            return new AnimationLayerStateAuthor(
+            return AnimationLayerStateAuthor.CreateOwned(
                 ReadUInt8(record, tag: 1),
                 ReadSingle(record, tag: 2),
-                clips.MoveToImmutable(),
+                clips,
                 transition);
         }
 
@@ -176,24 +176,24 @@ internal static class AnimationRuntimeStateCodec
                 + (record.TryGetField(9, out _) ? 1 : 0);
             ValidateHeader(record, s_playerSchemaId, fieldCount);
             var bindingsField = ReadRecordArrayField(record, tag: 7, 0, 4352);
-            var bindings = ImmutableArray.CreateBuilder<AnimationTargetBindingAuthor>(checked((int)bindingsField.Count));
+            var bindings = new AnimationTargetBindingAuthor[checked((int)bindingsField.Count)];
 
-            for (var index = 0; index < bindings.Capacity; index++)
+            for (var index = 0; index < bindings.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                bindings.Add(ReadTargetBinding(record.GetRecordArrayElement(7, index)));
+                bindings[index] = ReadTargetBinding(record.GetRecordArrayElement(7, index));
             }
 
             var layersField = ReadRecordArrayField(record, tag: 8, 1, 8);
-            var layers = ImmutableArray.CreateBuilder<AnimationLayerStateAuthor>(checked((int)layersField.Count));
+            var layers = new AnimationLayerStateAuthor[checked((int)layersField.Count)];
 
-            for (var index = 0; index < layers.Capacity; index++)
+            for (var index = 0; index < layers.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                layers.Add(ReadLayer(record.GetRecordArrayElement(8, index), cancellationToken));
+                layers[index] = ReadLayer(record.GetRecordArrayElement(8, index), cancellationToken);
             }
 
-            return new AnimationPlayerStateAuthor(
+            return AnimationPlayerStateAuthor.CreateOwned(
                 ReadGuid(record, tag: 1),
                 ReadGuid(record, tag: 2),
                 ReadAssetReference(
@@ -202,8 +202,8 @@ internal static class AnimationRuntimeStateCodec
                 ReadSingle(record, tag: 4),
                 ReadInt64(record, tag: 5),
                 ReadOptionalInt64(record, tag: 6),
-                bindings.MoveToImmutable(),
-                layers.MoveToImmutable(),
+                bindings,
+                layers,
                 ReadOptionalGuid(record, tag: 9));
         }
 
@@ -232,7 +232,7 @@ internal static class AnimationRuntimeStateCodec
         internal static AnimationTransitionStateAuthor ReadTransition(scoped EbinRecordReadView record)
         {
             ValidateHeader(record, s_transitionSchemaId, fieldCount: 5);
-            return new AnimationTransitionStateAuthor(
+            return AnimationTransitionStateAuthor.CreateOwned(
                 ReadGuid(record, tag: 1),
                 ReadInt64(record, tag: 2),
                 ReadUInt16(record, tag: 3),
@@ -246,15 +246,15 @@ internal static class AnimationRuntimeStateCodec
         {
             ValidateHeader(record, s_worldStateSchemaId, fieldCount: 2);
             var playersField = ReadRecordArrayField(record, tag: 2, 0, 4096);
-            var players = ImmutableArray.CreateBuilder<AnimationPlayerStateAuthor>(checked((int)playersField.Count));
+            var players = new AnimationPlayerStateAuthor[checked((int)playersField.Count)];
 
-            for (var index = 0; index < players.Capacity; index++)
+            for (var index = 0; index < players.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                players.Add(ReadPlayer(record.GetRecordArrayElement(2, index), cancellationToken));
+                players[index] = ReadPlayer(record.GetRecordArrayElement(2, index), cancellationToken);
             }
 
-            return new AnimationRuntimeAuthor(ReadInt64(record, tag: 1), players.MoveToImmutable());
+            return AnimationRuntimeAuthor.CreateOwned(ReadInt64(record, tag: 1), players);
         }
 
         private static WorldAssetReference ReadAssetReference(
@@ -289,7 +289,7 @@ internal static class AnimationRuntimeStateCodec
             return field.Payload[0] != 0;
         }
 
-        private static ImmutableArray<float> ReadFloatFixedArray(scoped EbinRecordReadView record, uint tag)
+        private static float[] ReadFloatFixedArray(scoped EbinRecordReadView record, uint tag)
         {
             var field = ReadRequiredField(record, tag, kind: 23, count: null);
             var count = checked((int)field.Count);
@@ -303,14 +303,14 @@ internal static class AnimationRuntimeStateCodec
                 throw new InvalidDataException("Animation transition SourceWeights does not match its FixedArray schema.");
             }
 
-            var values = ImmutableArray.CreateBuilder<float>(count);
+            var values = new float[count];
 
             for (var index = 0; index < count; index++)
             {
-                values.Add(EbinPrimitives.Single(payload[(32 + (index * sizeof(float)))..]));
+                values[index] = EbinPrimitives.Single(payload[(32 + (index * sizeof(float)))..]);
             }
 
-            return values.MoveToImmutable();
+            return values;
         }
 
         private static Guid ReadGuid(scoped EbinRecordReadView record, uint tag)

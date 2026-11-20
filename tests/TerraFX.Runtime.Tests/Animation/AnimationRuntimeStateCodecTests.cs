@@ -141,6 +141,8 @@ internal sealed class AnimationRuntimeStateCodecTests
 
             provider.Binding.ValidateAuthor(in decoded);
             var decodedPlayer = decoded.Players.Single();
+            var expectedEncoded = encoded.ToArray();
+            Array.Fill(encoded, (byte)0);
 
             Assert.Multiple(() => {
                 Assert.That(decodedPlayer.Controller, Is.EqualTo(new WorldAssetReference(37, 1)));
@@ -149,7 +151,7 @@ internal sealed class AnimationRuntimeStateCodecTests
                 Assert.That(decodedPlayer.Bindings.Single().RootBaseline, Is.EqualTo(target.RootBaseline));
                 Assert.That(decodedPlayer.Layers.Single().Clips.Single().Fraction, Is.EqualTo(clip.Fraction));
                 Assert.That(decodedPlayer.Layers.Single().Transition?.SourceWeights, Is.EqualTo(ImmutableArray.Create(0.25f, 0.75f)));
-                Assert.That(AnimationRuntimeStateCodec.Encode(decoded), Is.EqualTo(encoded));
+                Assert.That(AnimationRuntimeStateCodec.Encode(decoded), Is.EqualTo(expectedEncoded));
             });
         }
         finally

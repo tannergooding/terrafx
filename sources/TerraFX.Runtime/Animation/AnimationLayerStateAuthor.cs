@@ -18,6 +18,16 @@ internal sealed class AnimationLayerStateAuthor
         float weight,
         ImmutableArray<AnimationActiveClipAuthor> clips,
         AnimationTransitionStateAuthor? transition)
+        : this(index, weight, clips, transition, takeOwnership: false)
+    {
+    }
+
+    private AnimationLayerStateAuthor(
+        byte index,
+        float weight,
+        ImmutableArray<AnimationActiveClipAuthor> clips,
+        AnimationTransitionStateAuthor? transition,
+        bool takeOwnership)
     {
         if (index > 7)
         {
@@ -29,7 +39,9 @@ internal sealed class AnimationLayerStateAuthor
             throw new ArgumentOutOfRangeException(nameof(weight), "Animation layer weight must be finite and in [0,1].");
         }
 
-        _clips = AnimationRuntimeAuthorValidation.CopyRequired(clips, 0, 4, nameof(clips));
+        _clips = takeOwnership
+            ? clips
+            : AnimationRuntimeAuthorValidation.CopyRequired(clips, 0, 4, nameof(clips));
 
         for (var clipIndex = 0; clipIndex < _clips.Length; clipIndex++)
         {
@@ -54,4 +66,18 @@ internal sealed class AnimationLayerStateAuthor
     internal AnimationTransitionStateAuthor? Transition => _transition;
 
     internal float Weight => _weight;
+
+    internal static AnimationLayerStateAuthor CreateOwned(
+        byte index,
+        float weight,
+        AnimationActiveClipAuthor[] clips,
+        AnimationTransitionStateAuthor? transition)
+    {
+        var ownedClips = AnimationRuntimeAuthorValidation.TakeRequired(
+            clips,
+            0,
+            4,
+            nameof(clips));
+        return new AnimationLayerStateAuthor(index, weight, ownedClips, transition, takeOwnership: true);
+    }
 }

@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using TerraFX.Entities;
 
 namespace TerraFX.Animation;
@@ -20,6 +21,17 @@ internal sealed class AnimationTransitionStateAuthor
         ushort fraction,
         ImmutableArray<float> sourceWeights,
         Guid targetClipSlotId)
+        : this(transitionId, elapsedTicks, fraction, sourceWeights, targetClipSlotId, takeOwnership: false)
+    {
+    }
+
+    private AnimationTransitionStateAuthor(
+        Guid transitionId,
+        long elapsedTicks,
+        ushort fraction,
+        ImmutableArray<float> sourceWeights,
+        Guid targetClipSlotId,
+        bool takeOwnership)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(transitionId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(elapsedTicks);
@@ -36,7 +48,7 @@ internal sealed class AnimationTransitionStateAuthor
             throw new ArgumentException("Animation transition source weights must be initialized with one to four entries.", nameof(sourceWeights));
         }
 
-        _sourceWeights = ImmutableArrayCopy.Create(sourceWeights);
+        _sourceWeights = takeOwnership ? sourceWeights : ImmutableArrayCopy.Create(sourceWeights);
 
         foreach (var weight in _sourceWeights)
         {
@@ -61,4 +73,21 @@ internal sealed class AnimationTransitionStateAuthor
     internal Guid TargetClipSlotId => _targetClipSlotId;
 
     internal Guid TransitionId => _transitionId;
+
+    internal static AnimationTransitionStateAuthor CreateOwned(
+        Guid transitionId,
+        long elapsedTicks,
+        ushort fraction,
+        float[] sourceWeights,
+        Guid targetClipSlotId)
+    {
+        ArgumentNullException.ThrowIfNull(sourceWeights);
+        return new AnimationTransitionStateAuthor(
+            transitionId,
+            elapsedTicks,
+            fraction,
+            ImmutableCollectionsMarshal.AsImmutableArray(sourceWeights),
+            targetClipSlotId,
+            takeOwnership: true);
+    }
 }

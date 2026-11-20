@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using TerraFX.Entities;
 using TerraFX.Numerics;
 
@@ -16,23 +17,21 @@ internal static class AnimationRuntimeAuthorValidation
         string parameterName)
         where T : class
     {
-        if (values.IsDefault)
-        {
-            throw new ArgumentException("Animation author arrays must be initialized.", parameterName);
-        }
-
-        ArgumentOutOfRangeException.ThrowIfLessThan(values.Length, minimumCount, parameterName);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(values.Length, maximumCount, parameterName);
-
-        for (var index = 0; index < values.Length; index++)
-        {
-            if (values[index] is null)
-            {
-                throw new ArgumentException("Animation author arrays cannot contain null entries.", parameterName);
-            }
-        }
-
+        ValidateRequired(values, minimumCount, maximumCount, parameterName);
         return ImmutableArrayCopy.Create(values);
+    }
+
+    internal static ImmutableArray<T> TakeRequired<T>(
+        T[] values,
+        int minimumCount,
+        int maximumCount,
+        string parameterName)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var immutableValues = ImmutableCollectionsMarshal.AsImmutableArray(values);
+        ValidateRequired(immutableValues, minimumCount, maximumCount, parameterName);
+        return immutableValues;
     }
 
     internal static void ValidateLocalPose(Vector3 position, Quaternion rotation, Vector3 scale)
@@ -60,6 +59,30 @@ internal static class AnimationRuntimeAuthorValidation
             || (float.Abs(scale.Z) > 1000.0f))
         {
             throw new ArgumentException("An Animation local-pose scale must be finite with component magnitudes in [0.0001, 1000].", nameof(scale));
+        }
+    }
+
+    private static void ValidateRequired<T>(
+        ImmutableArray<T> values,
+        int minimumCount,
+        int maximumCount,
+        string parameterName)
+        where T : class
+    {
+        if (values.IsDefault)
+        {
+            throw new ArgumentException("Animation author arrays must be initialized.", parameterName);
+        }
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(values.Length, minimumCount, parameterName);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(values.Length, maximumCount, parameterName);
+
+        for (var index = 0; index < values.Length; index++)
+        {
+            if (values[index] is null)
+            {
+                throw new ArgumentException("Animation author arrays cannot contain null entries.", parameterName);
+            }
         }
     }
 }

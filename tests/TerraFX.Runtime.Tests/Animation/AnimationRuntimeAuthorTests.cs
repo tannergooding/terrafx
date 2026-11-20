@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Animation;
@@ -161,6 +162,72 @@ internal sealed class AnimationRuntimeAuthorTests
             1.0f,
             [CreateClip(duplicateId, 1), CreateClip(duplicateId, 2)],
             transition: null));
+    }
+
+    [Test]
+    public void CopyingAuthorConstructorsDoNotRetainMutableArrayAliases()
+    {
+        var firstPlayer = CreatePlayer(new Guid("10000000-0000-4000-8000-000000000001"));
+        var replacementPlayer = CreatePlayer(new Guid("10000000-0000-4000-8000-000000000002"));
+        var players = new[] { firstPlayer };
+        var author = new AnimationRuntimeAuthor(
+            1,
+            ImmutableCollectionsMarshal.AsImmutableArray(players));
+        players[0] = replacementPlayer;
+
+        var firstClip = CreateClip(Guid.NewGuid(), 1);
+        var replacementClip = CreateClip(Guid.NewGuid(), 2);
+        var clips = new[] { firstClip };
+        var layer = new AnimationLayerStateAuthor(
+            0,
+            1.0f,
+            ImmutableCollectionsMarshal.AsImmutableArray(clips),
+            transition: null);
+        clips[0] = replacementClip;
+
+        var firstBinding = new AnimationTargetBindingAuthor(
+            0,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            CreatePose(),
+            rootBaseline: null);
+        var replacementBinding = new AnimationTargetBindingAuthor(
+            0,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            CreatePose(),
+            rootBaseline: null);
+        var bindings = new[] { firstBinding };
+        var layers = new[] { layer };
+        var player = new AnimationPlayerStateAuthor(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new WorldAssetReference(37, 1),
+            1.0f,
+            1,
+            null,
+            ImmutableCollectionsMarshal.AsImmutableArray(bindings),
+            ImmutableCollectionsMarshal.AsImmutableArray(layers),
+            motionActorId: null);
+        bindings[0] = replacementBinding;
+        layers[0] = new AnimationLayerStateAuthor(0, 0.5f, [], transition: null);
+
+        float[] sourceWeights = [0.25f, 0.75f];
+        var transition = new AnimationTransitionStateAuthor(
+            Guid.NewGuid(),
+            0,
+            0,
+            ImmutableCollectionsMarshal.AsImmutableArray(sourceWeights),
+            Guid.NewGuid());
+        sourceWeights[0] = 0.5f;
+
+        Assert.Multiple(() => {
+            Assert.That(author.Players[0], Is.SameAs(firstPlayer));
+            Assert.That(layer.Clips[0], Is.SameAs(firstClip));
+            Assert.That(player.Bindings[0], Is.SameAs(firstBinding));
+            Assert.That(player.Layers[0], Is.SameAs(layer));
+            Assert.That(transition.SourceWeights[0], Is.EqualTo(0.25f));
+        });
     }
 
     [Test]

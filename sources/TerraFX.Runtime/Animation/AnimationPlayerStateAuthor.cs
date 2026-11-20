@@ -28,6 +28,31 @@ internal sealed class AnimationPlayerStateAuthor
         ImmutableArray<AnimationTargetBindingAuthor> bindings,
         ImmutableArray<AnimationLayerStateAuthor> layers,
         Guid? motionActorId)
+        : this(
+            actorEntityId,
+            sceneInstanceId,
+            controller,
+            speed,
+            nextPlaySequence,
+            lastSampleTick,
+            bindings,
+            layers,
+            motionActorId,
+            takeOwnership: false)
+    {
+    }
+
+    private AnimationPlayerStateAuthor(
+        Guid actorEntityId,
+        Guid sceneInstanceId,
+        WorldAssetReference controller,
+        float speed,
+        long nextPlaySequence,
+        long? lastSampleTick,
+        ImmutableArray<AnimationTargetBindingAuthor> bindings,
+        ImmutableArray<AnimationLayerStateAuthor> layers,
+        Guid? motionActorId,
+        bool takeOwnership)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(actorEntityId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
@@ -54,7 +79,9 @@ internal sealed class AnimationPlayerStateAuthor
             throw new ArgumentException("A present MotionActorId cannot be empty.", nameof(motionActorId));
         }
 
-        _bindings = AnimationRuntimeAuthorValidation.CopyRequired(bindings, 0, 4352, nameof(bindings));
+        _bindings = takeOwnership
+            ? bindings
+            : AnimationRuntimeAuthorValidation.CopyRequired(bindings, 0, 4352, nameof(bindings));
 
         for (var index = 1; index < _bindings.Length; index++)
         {
@@ -69,7 +96,9 @@ internal sealed class AnimationPlayerStateAuthor
             }
         }
 
-        _layers = AnimationRuntimeAuthorValidation.CopyRequired(layers, 1, 8, nameof(layers));
+        _layers = takeOwnership
+            ? layers
+            : AnimationRuntimeAuthorValidation.CopyRequired(layers, 1, 8, nameof(layers));
 
         for (var index = 0; index < _layers.Length; index++)
         {
@@ -105,4 +134,38 @@ internal sealed class AnimationPlayerStateAuthor
     internal Guid SceneInstanceId => _sceneInstanceId;
 
     internal float Speed => _speed;
+
+    internal static AnimationPlayerStateAuthor CreateOwned(
+        Guid actorEntityId,
+        Guid sceneInstanceId,
+        WorldAssetReference controller,
+        float speed,
+        long nextPlaySequence,
+        long? lastSampleTick,
+        AnimationTargetBindingAuthor[] bindings,
+        AnimationLayerStateAuthor[] layers,
+        Guid? motionActorId)
+    {
+        var ownedBindings = AnimationRuntimeAuthorValidation.TakeRequired(
+            bindings,
+            0,
+            4352,
+            nameof(bindings));
+        var ownedLayers = AnimationRuntimeAuthorValidation.TakeRequired(
+            layers,
+            1,
+            8,
+            nameof(layers));
+        return new AnimationPlayerStateAuthor(
+            actorEntityId,
+            sceneInstanceId,
+            controller,
+            speed,
+            nextPlaySequence,
+            lastSampleTick,
+            ownedBindings,
+            ownedLayers,
+            motionActorId,
+            takeOwnership: true);
+    }
 }
