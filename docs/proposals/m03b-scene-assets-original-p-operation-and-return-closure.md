@@ -39,7 +39,7 @@ This is not the current source revision. Section 9 records the current decision-
 | [`PreparedScene.Preparation`](../../sources/TerraFX.Runtime/Scenes/PreparedScene.Preparation.cs) | Scalar producer claims and pending/phase installation elections exist. `_supplierProducersUnjoined` is set before planner invocation and is never cleared. Completion Actions and public `TrySet*` do not supply the missing transitive return. |
 | [`WorldGuidUseControl`](../../sources/TerraFX.Runtime/Entities/WorldGuidUseControl.cs), [`WorldAdmissionDomain`](../../sources/TerraFX.Runtime/Entities/WorldAdmissionDomain.cs), [preclaimed Scene workspace](../../sources/TerraFX.Runtime/Entities/WorldAdmissionDomain.ScenePreclaimedWorkspace.cs) | The real original use has exact generations, retained-owner/quarantine anchoring, checked workspace accounting and covered receiver construction/transfer. Its final release retains the exact parent's return part. Reuse these owners, not a second quota or a Scene imitation of their internals. |
 | [Registry terminal invocation](../../sources/TerraFX.Runtime/Entities/WorldGuidRegistry.TerminalAnchor.cs), [domain terminal anchor](../../sources/TerraFX.Runtime/Entities/WorldAdmissionDomain.TerminalAnchor.cs) | `InvokeTerminalWorldClose` observes `DisposeWithinTerminalInvocation` returning before accepting terminal caller return. This is a concrete enclosing-caller pattern, not a general certificate for Scene Tasks or permission for Scenes to call Entities' terminal methods. |
-| [`AssetStore.Bounded`](../../sources/TerraFX.Assets/AssetStore.Bounded.cs), [`AssetStoreBoundedProvision`](../../sources/TerraFX.Assets/AssetStoreBoundedProvision.cs), and the [compile-only port](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) | Batch A still preclaims an acquisition-free Static-Mesh opening/registration prefix. B1 now roots a 144-byte port shell and an 80-byte per-generation native-file state before acquisition; its 240-byte reservation growth also includes 16 bytes for the backing/provision reference fields. The ordinary `FileStream`-backed `AssetPackageBacking` leaves its bounded-file field null and measures 168 bytes as a shell / 296 bytes as a constructor group. The preclaim regression confirms no port initialization, file owner installation or package opening occurs; no production caller initializes the port. The two-codec family and synchronous Batch B candidate do not provide the original-Store asynchronous Scene read, original-exception envelope, native-close proof or actual return. |
+| [`AssetStore.Bounded`](../../sources/TerraFX.Assets/AssetStore.Bounded.cs), [`AssetStoreBoundedProvision`](../../sources/TerraFX.Assets/AssetStoreBoundedProvision.cs), and the [compile-only port](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) | Batch A still preclaims an acquisition-free Static-Mesh opening/registration prefix. B1 now roots the 144-byte port shell, 80-byte per-generation native-file state, and 65,536-byte profile buffer before acquisition. The reservation has grown by 272 bytes from the pre-port prefix: 224 bytes for port/file state, 24 bytes for the profile-buffer allocation overhead, and 24 bytes for the three new owner references. The ordinary `FileStream`-backed `AssetPackageBacking` leaves its bounded-file field null and measures 168 bytes as a shell / 296 bytes as a constructor group. Current preclaim tests measure 936,728/1,197,255 cold and 76,680/148,679 warm bytes, but confirm no port initialization or package opening; no production caller initializes the port. The two-codec family and synchronous Batch B candidate do not provide the original-Store asynchronous Scene read, original-exception envelope, native-close proof or actual return. |
 
 Two distinguishing schedules follow directly from these edges; neither is an executed failure observation:
 
@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T17:00:33.0463400Z`; HEAD `d7d5e7f2aaed6b75acae7369af8418f4b18a2ec4`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T17:12:18.1605374Z`; HEAD `40e53b7ae29cb2e4f63ee8cb33415a40b8cb41fa`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -429,16 +429,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `244dfcd1289224b48922f6e698dbead10196ddbe7316c919fd5db65e1b8a1d27` |
-| P | 10 | `43bcf758c98bc834087a8b35e3f185e776d3704630cb7e6dc4235468fe661d99` |
-| A | 31 | `c5aeb82400f257d2fd4d61b0e2c22777e5f839f648ba38604b6c0b803ba8f676` |
+| P | 10 | `d8108ef3b96c1d6e5ba0a7c6e31f75afbb94974ee89c3d34c30f26550f4e98f1` |
+| A | 31 | `266708795dbb98b174dda52ef986f76b427005239a88c33b6bc4436a0dc89dbe` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 18 | `c2ded1985fa781db98bdff3e8179385b56d3899c8658b8e61204903959c83d45` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 9 | `6409685f0a1ec0a0662ec51e08bbe1984ab87d699eeb4d27dc345f5090146fff` |
+| T | 9 | `9db33c3fda33f07fe77684c450bfd5a14a13683b4c87401c0425e62d6297cc12` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 126 | `eb068cdfafd16c6c1d65b806357097d3510ed6d97af75956672f3a1af6b8aa3d` |
+| ALL | 126 | `b38d19df3ecedd59ac104511917339e33a7ef67a7a170bd072c1f8b721a2f110` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
