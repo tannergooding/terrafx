@@ -4,9 +4,9 @@
 
 **Tentative evidence/implementation sequence, pending review. There is not yet a demonstrated safe production return-control implementation. The complete 32/16-MiB admission gate remains NO-GO.**
 
-[Async-return ownership](m05-skinned-normal-diagnostic-async-return-ownership-addendum.md) selects the owners correctly, but its qualification-before-handoff instruction does not identify a compiled experiment or close the return needed when admission itself fails. [Task/waiter lifetime](m05-skinned-normal-diagnostic-task-waiter-lifetime-addendum.md) remains authoritative for the additional submission worker and uncertainty frontier. This proposal supplies a finite next experiment and separates a candidate implementation from authority to use its grants.
+[Async-return ownership](m05-skinned-normal-diagnostic-async-return-ownership-addendum.md) selects the owners correctly, but its qualification-before-handoff instruction does not identify an entry-funded returned Task when admission itself fails. [Task/waiter lifetime](m05-skinned-normal-diagnostic-task-waiter-lifetime-addendum.md) remains authoritative for the additional submission worker and uncertainty frontier. Section 7 records current compiled-return and actual-task evidence without treating it as ownership qualification.
 
-The next dependency-ready batch is **evidence for the four actual returned-operation families**, not another request-only allowance. Evidence tests and read-only inspection of ordinary build outputs can start now. A production factory/grant batch cannot safely start from the present evidence. A subsequent, bounded ownership candidate may be compiled to establish its own retention proof, but cannot enable complete admission or reusable refunds before that proof and its entry-return funding are closed.
+The current-source compiled-return census and focused actual-task probes are recorded in §7. They establish emitted return shapes for the selected methods and two actual return-path retention outcomes, but do not cover every family's failure/suspension behavior or provide a usable retained-owner link. The next dependency is first-return funding and the complete entry-owner design; until that is closed, no production factory/grant or reusable refund is permitted. The 32/16-MiB admission gate remains NO-GO.
 
 This refines the preceding addendum's implementation stop only to permit an unpublished measurement candidate. It does not require the final candidate's compiled proof before that candidate can exist, or treat candidate execution as byte-qualified admission.
 
@@ -24,7 +24,7 @@ These are observations of the frozen files and property evaluations below, **not
 | Runtime `RecordPassCallbacksAsync` | Returns `Task<ImmutableArray<RecordedPassCommandList>>`; its builder, earlier successful command lists, per-pass captures and failure cleanup are another closed family. Graphics recording evidence does not cover it. |
 | Runtime public `Renderer.SubmitAsync` | Returns `Task<RenderSubmissionReceipt>` after submission, readback, typed-result creation and `finally` cleanup. Its current null/token checks occur inside the async body; token checking precedes later snapshot/graph validation. This is not evidence that Chapter 02's synchronous usage-error and usage-before-pre-cancellation contract is implemented. A front-door change must explicitly reconcile and test this discrepancy, not silently change exception timing during accounting work. |
 
-The cancellation distinction is a concrete discriminator even without native execution: a recording callback can throw `OperationCanceledException`. The private request promise's status and the returned operation's status must both be recorded. An exception-type-only assertion would miss an incorrect faulted-versus-canceled return. No such compiled experiment was run for this review.
+The cancellation distinction is a concrete discriminator even without native execution: a recording callback can throw `OperationCanceledException`. The private request promise's status and the returned operation's status must both be recorded. An exception-type-only assertion would miss an incorrect faulted-versus-canceled return. No compiled experiment was run for the earlier frozen source review; current-source census and focused behavior results are recorded in §7.
 
 ### Effective settings, not an assumed SDK/runtime pair
 
@@ -87,19 +87,21 @@ Any entry/refusal reserve must be an enumerated, already-funded baseline term in
 
 ## 4. Smallest measurable sequence and stop gates
 
-### A. Current compiled-return census — next nonblocked action
+### A. Current compiled-return census and targeted task probes
 
-Use the ordinary owning project builds and NUnit harnesses in [Building](../project/Building.md), Debug before Release. Capture compiler arguments, exact runtime identity, assembly hashes and emitted bodies for **only** the four methods in section 2. Inspect actual lowering and public Task observations; do not size a Task from the state-machine struct or its reference count.
+The current metadata census and targeted probes have run using the ordinary owning projects and NUnit harnesses in [Building](../project/Building.md). They establish selected compiled Task types and behavior, not all of section 5's outcomes. Do not infer Task size from a state-machine struct or treat a completed Task as an owner when the test shows it retains no owner state.
 
-Extend the existing owning fixtures, rather than adding a second implementation:
+Current probes use the existing owning fixtures, not a second implementation:
 
-- `GraphicsPipelineRequestTests`: actual `RecordPassAsync` calls, building on `CompletedRecordingTaskDoesNotRetainTheCallbackCapture` and the existing blocked-owner/refusal cases.
-- `EngineHostGraphSubmissionTests`: actual submission, fence-blocked, failure and cancellation paths through the real Runtime entry and lower Graphics method.
-- `RenderSnapshotMeshGpuTests`: its existing World/package-produced static-skinning snapshot and plan for a positive diagnostic return when the exact profile is available. Do not fabricate a `RenderSnapshot` or run an unchanged unsupported profile and call the refusal a success.
+- `GraphicsPipelineRequestTests`: three `CompletedRecordingTask` tests pass in Debug/Release. The held `RecordPassAsync` Task is an `AsyncStateMachineBox`, is suspended before callback completion, releases the callback capture/device after completion, and preserves callback cancellation status, exception object, and token.
+- `EngineHostOptionsTests` in `EngineHostGraphSubmissionTests.cs`: `D3D12GraphSubmissionRetainsTargetUntilFenceCompletion` passes in Debug/Release. The actual `Renderer.SubmitAsync` Task is an `AsyncStateMachineBox` while suspended. After D3D12 completion and cleanup, retaining only that Task retains none of the snapshot, plan, Renderer, or device.
+- `RenderSnapshotMeshGpuTests`: the positive diagnostic-return row remains unsupported behind the fail-closed `PreparedScene` guard. Do not fabricate a `RenderSnapshot` or call unsupported-profile refusal a success.
 
-For each family record the actual returned Task independently of the request's promise: result type/value, status, cancellation token, exception identity/channel, actual suspension, completion-before-first-observation, cleanup order, and retained roots. Hold only the returned Task in a non-inlined test helper after request dequeue/terminal cleanup; dispose/drop independent results and caller input roots. Determine which existing owners it actually retains. There is no construction interest in today's source to prove retained; do not insert one merely for this census. Include the complementary dropped-Task case, with other legitimate roots identified. Forced GC is test evidence, never the release/admission mechanism.
+The exact emitted-method census passes 1/1 in Debug and Release for the methods listed in section 2. It reports `Task<T>` declarations, emitted state-machine/MoveNext lengths and hashes, and the actual Runtime/architecture. `Renderer.SubmitAsync` is a synchronous wrapper returning the Task from `SubmitAsyncCore`; the latter is the async state machine. The complete output is in the §7 TRX paths.
 
-**Stop A:** missing Runtime producer/profile is an unsupported row, not a synthetic substitute. A successful current callback-detachment test is not positive interest-retention evidence. If the emitted outer return has no usable owner link, record that negative result and proceed only to the closed candidate design below; do not assign it a guessed charge.
+Remaining section 5 observations include independently holding/dropping the `SubmitGraphAsync` and `RecordPassCallbacksAsync` Tasks, queue/refusal and worker-failure paths, and an accepted positive diagnostic consumer. The D3D12 result is a negative owner-link observation for the completed public Renderer Task, not positive interest-retention evidence.
+
+**Stop A:** a missing Runtime producer/profile is an unsupported row, not a synthetic substitute. The completed Renderer Task cannot be treated as the owner of the disposed graph resources. Proceed only to entry-design closure; do not assign it a guessed charge or turn on admission.
 
 ### B. Close the entry design, then compile one coherent measurement candidate
 
@@ -174,4 +176,20 @@ Load-bearing whole-file SHA-256 values:
 | `sources\TerraFX.Runtime\Rendering\RenderSubmissionReceipt.cs` | `77120676F289AD7D8891875A783BAFA05E64B7F0317BC09BECC2545AC42E5846` |
 | `sources\TerraFX.Runtime\Rendering\RenderMeshC0NormalDiagnosticWork.cs` | `DF6C554342A3D0BD023F398AA2A7137FC47DA9481174FCFA809C1C7AFBAD0E1D` |
 
-Recheck frozen hashes before applying a disposition. **Current evidence establishes source boundaries and effective evaluation settings only.** No build, test, allocation, emitted-return retention, native or AOT result is claimed. Next: section 4A's four-family compiled-return census, with the exact process runtime/profile recorded and unsupported rows left open.
+Recheck frozen hashes before applying a disposition to that review. **The frozen review itself established source boundaries and effective evaluation settings only.** Later execution evidence and its limits are in §7.
+
+## 7. Post-freeze execution evidence
+
+The current-source evidence was captured at HEAD `e80af320dc46b9fb51f47ff908fa11b66118e7a0`, using `.NET 11.0.0-rc.3.26522.148` on X64:
+
+| Evidence | Debug | Release | Scope |
+|---|---|---|---|
+| `AsyncReturnCensusRecordsFourReturnFamilies` | 1/1 passed | 1/1 passed | Records assembly and emitted-body hashes for `RecordPassAsync`, `SubmitGraphAsync`, `RecordPassCallbacksAsync`, `Renderer.SubmitAsync`, and `SubmitAsyncCore`. All declare `Task<T>`; four async methods expose state-machine metadata, while `Renderer.SubmitAsync` is a 25-byte Debug / 20-byte Release synchronous wrapper whose core contains the async body. Actual `AsyncStateMachineBox` instances were observed for `RecordPassAsync` and `SubmitAsyncCore`; the other two async Tasks were not individually retained-root tested. |
+| `GraphicsPipelineRequestTests` `CompletedRecordingTask` filter | 3/3 passed | 3/3 passed | Real `RecordPassAsync` Task type/suspended status, callback/device detachment after completion, and fault-versus-canceled callback behavior including exception identity and token. |
+| `EngineHostOptionsTests.D3D12GraphSubmissionRetainsTargetUntilFenceCompletion` | 1/1 passed | 1/1 passed | Real D3D12 submission Task type and suspended status; the completed caller Task retains none of the snapshot, plan, Renderer, or device after cleanup. This is not a positive diagnostic consumer. |
+
+Fresh results are `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_02_04_48_net11.0.trx`, `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_02_05_41_net11.0.trx`, `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_02_06_12_net11.0.trx`, `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_02_06_17_net11.0.trx`, `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_02_06_44_net11.0.trx`, and `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_02_06_50_net11.0.trx`.
+
+These are observations of existing returns, not adoption of the proposed stateful-promise candidate. The completed Renderer Task's negative owner-link result confirms it cannot fund the continued lifetime of its graph resources. No first-return funding owner, actual submit-graph/callback-task retained-root proof, full worker-failure/suspension set, or positive Scene-backed diagnostic observation has been supplied. Preserve the 32/16-MiB NO-GO and the existing public signatures; do not introduce a request cap, fallback Task, or wrapper-elision shortcut.
+
+The older frozen input set in `m05-skinned-normal-diagnostic-public-task-retention-boundary.md` records a previous hash for this proposal. This post-freeze update invalidates that referenced input hash; do not apply that review's disposition without a new freeze.
