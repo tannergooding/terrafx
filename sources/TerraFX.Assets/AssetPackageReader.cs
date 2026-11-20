@@ -228,7 +228,8 @@ internal static class AssetPackageReader
         out AssetPackageEntry secondEntry,
         out SpatialProfileId profileId,
         out SpatialSettings spatialSettings,
-        out AssetBoundedFailureFact hashProviderRelease)
+        out AssetBoundedFailureFact hashProviderRelease,
+        out AssetPackageBackingToken? packageBackingToken)
     {
         ArgumentNullException.ThrowIfNull(backing);
         firstEntry = default;
@@ -236,6 +237,7 @@ internal static class AssetPackageReader
         profileId = default;
         spatialSettings = default;
         hashProviderRelease = default;
+        packageBackingToken = null;
 
         var file = backing.BoundedNativeFile;
 
@@ -352,10 +354,17 @@ internal static class AssetPackageReader
             return paddingFailure;
         }
 
-        return ReadBoundedZeroPadding(
+        paddingFailure = ReadBoundedZeroPadding(
             backing,
             secondPayloadEnd,
             checked(Align16(secondPayloadEnd) - secondPayloadEnd));
+
+        if (paddingFailure.Kind is AssetBoundedFailureKind.None)
+        {
+            packageBackingToken = backing.BackingToken;
+        }
+
+        return paddingFailure;
     }
 
     internal static AssetBoundedFailureFact ParseBoundedMetadata(
@@ -518,6 +527,59 @@ internal static class AssetPackageReader
         return default;
     }
 
+    internal static AssetBoundedFailureFact ReadBoundedPayload(
+        AssetPackageBacking backing,
+        AssetPackageBackingToken? packageBackingToken,
+        AssetPackageEntry entry,
+        scoped Span<byte> destination)
+    {
+        ArgumentNullException.ThrowIfNull(backing);
+
+        if (!ReferenceEquals(packageBackingToken, backing.BackingToken))
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.Invariant,
+                AssetBoundedFileDisposition.NotAttempted);
+        }
+
+        if (!backing.IsBoundedOpening)
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.Invariant,
+                AssetBoundedFileDisposition.NotAttempted);
+        }
+
+        var file = backing.BoundedNativeFile;
+
+        if (!file.IsOpen)
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.Invariant,
+                file.Disposition);
+        }
+
+        var failure = ValidateBoundedPayloadRange(
+            entry,
+            file.Length,
+            backing.MaximumDecodedAssetBytes,
+            destination.Length,
+            file.Disposition);
+
+        if (failure.Kind is not AssetBoundedFailureKind.None)
+        {
+            return failure;
+        }
+
+        var payloadLength = checked((int)entry.DecodedLength);
+        return backing.ReadBoundedExactlyAt(
+            entry.PayloadOffset,
+            destination[..payloadLength],
+            AssetBoundedFailureStage.PayloadRead);
+    }
+
     internal static async ValueTask ReadExactlyAtAsync(
         FileStream stream,
         ulong offset,
@@ -542,6 +604,59 @@ internal static class AssetPackageReader
 
             read += count;
         }
+    }
+
+    internal static AssetBoundedFailureFact ValidateBoundedPayloadRange(
+        AssetPackageEntry entry,
+        long packageByteLength,
+        int maximumDecodedAssetBytes,
+        int destinationLength,
+        AssetBoundedFileDisposition fileDisposition)
+    {
+        if ((packageByteLength < PackageHeaderSize)
+            || (maximumDecodedAssetBytes < 0)
+            || !entry.AssetId.IsValid
+            || (entry.Codec > 1)
+            || (entry.StoredLength == 0)
+            || (entry.DecodedLength == 0)
+            || (entry.DecodedLength > checked((ulong)maximumDecodedAssetBytes)))
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.Layout,
+                fileDisposition);
+        }
+
+        if (entry.Codec != 0)
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.UnsupportedContent,
+                fileDisposition);
+        }
+
+        var packageByteLengthValue = checked((ulong)packageByteLength);
+
+        if ((entry.StoredLength != entry.DecodedLength)
+            || ((entry.PayloadOffset & 15) != 0)
+            || (entry.PayloadOffset > packageByteLengthValue)
+            || (entry.StoredLength > (packageByteLengthValue - entry.PayloadOffset)))
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.Layout,
+                fileDisposition);
+        }
+
+        if (entry.DecodedLength > checked((ulong)destinationLength))
+        {
+            return CreateBoundedFailure(
+                AssetBoundedFailureStage.PayloadRead,
+                AssetBoundedFailureKind.Invariant,
+                fileDisposition);
+        }
+
+        return default;
     }
 
     private static ulong Align16(ulong value) => checked((value + 15) & ~15UL);

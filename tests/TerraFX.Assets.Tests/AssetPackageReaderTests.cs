@@ -227,6 +227,65 @@ internal sealed class AssetPackageReaderTests
     }
 
     [Test]
+    public void BoundedPayloadRangePreflightAcceptsLargerDestination()
+    {
+        var entry = new AssetPackageEntry(new AssetId(3), 0, 128, 2, 2);
+        var failure = AssetPackageReader.ValidateBoundedPayloadRange(
+            entry,
+            packageByteLength: 144,
+            maximumDecodedAssetBytes: 1024,
+            destinationLength: 4,
+            AssetBoundedFileDisposition.NotFinal);
+
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+    }
+
+    [Test]
+    public void BoundedPayloadRangePreflightRejectsInsufficientDestination()
+    {
+        var entry = new AssetPackageEntry(new AssetId(3), 0, 128, 2, 2);
+        var failure = AssetPackageReader.ValidateBoundedPayloadRange(
+            entry,
+            packageByteLength: 144,
+            maximumDecodedAssetBytes: 1024,
+            destinationLength: 1,
+            AssetBoundedFileDisposition.NotFinal);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.PayloadRead));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Invariant));
+    }
+
+    [Test]
+    public void BoundedPayloadRangePreflightRejectsOutOfPackageExtent()
+    {
+        var entry = new AssetPackageEntry(new AssetId(3), 0, 128, 2, 2);
+        var failure = AssetPackageReader.ValidateBoundedPayloadRange(
+            entry,
+            packageByteLength: 129,
+            maximumDecodedAssetBytes: 1024,
+            destinationLength: 2,
+            AssetBoundedFileDisposition.NotFinal);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.PayloadRead));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Layout));
+    }
+
+    [Test]
+    public void BoundedPayloadRangePreflightRejectsUnsupportedCodec()
+    {
+        var entry = new AssetPackageEntry(new AssetId(3), 1, 128, 2, 2);
+        var failure = AssetPackageReader.ValidateBoundedPayloadRange(
+            entry,
+            packageByteLength: 144,
+            maximumDecodedAssetBytes: 1024,
+            destinationLength: 2,
+            AssetBoundedFileDisposition.NotFinal);
+
+        Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.PayloadRead));
+        Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.UnsupportedContent));
+    }
+
+    [Test]
     public async Task PackageAdmissionRejectsChecksumMismatchBeforeParsingHeader()
     {
         var expectedPackage = CreatePackage();

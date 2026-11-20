@@ -3,6 +3,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX.Rendering;
@@ -12,6 +13,29 @@ namespace TerraFX.Runtime.Tests.Scenes;
 [TestFixture]
 internal sealed class BoundedStaticMeshAssetValidationTests
 {
+    private static long MeasureClassShell(Type type, int sampleCount)
+    {
+        var warmInstances = new object[sampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[sampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        var allocatedBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / sampleCount;
+        GC.KeepAlive(measuredInstances);
+        return allocatedBytes;
+    }
+
     [Test]
     public void BoundedStaticMeshPreclaimCreatesDeliveryWithoutOpeningPackage()
     {
@@ -261,5 +285,26 @@ internal sealed class BoundedStaticMeshAssetValidationTests
 
         Assert.That(overlongRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.InvalidOptions));
         Assert.That(overlongDelivery, Is.Null);
+    }
+
+    [Test]
+    public void TypedAssetClassShellAllocationsMatchSelectedRuntime()
+    {
+        const int SampleCount = 64;
+
+        if (IntPtr.Size != 8)
+        {
+            Assert.Ignore("The bounded static-Mesh allocation profile is x64-only.");
+        }
+
+        var meshShellBytes = MeasureClassShell(typeof(RenderMeshAsset), SampleCount);
+        var materialShellBytes = MeasureClassShell(typeof(RenderMaterialAsset), SampleCount);
+        Assert.Multiple(() => {
+            Assert.That(meshShellBytes, Is.EqualTo(176));
+            Assert.That(materialShellBytes, Is.EqualTo(240));
+        });
+        TestContext.WriteLine(
+            $"RenderMeshAsset={meshShellBytes}; RenderMaterialAsset={materialShellBytes}; "
+            + $"RuntimeMvid={typeof(RenderMeshAsset).Module.ModuleVersionId};");
     }
 }
