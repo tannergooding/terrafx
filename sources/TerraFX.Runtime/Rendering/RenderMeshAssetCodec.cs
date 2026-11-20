@@ -9,12 +9,13 @@ using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Numerics;
-using BigInteger = System.Numerics.BigInteger;
 
 namespace TerraFX.Rendering;
 
 internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCodec<RenderMeshAsset>
 {
+    // Three squared 278-bit binary32 deltas require at most 558 bits.
+    private const int ExactDyadicLimbCount = 9;
     private const int FixedArrayHeaderBytes = 32;
     private const float UnitVectorTolerance = 2.0e-6f;
 
@@ -720,29 +721,6 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
         return values;
     }
 
-    private static BigInteger ToScaledInteger(float value)
-    {
-        // Units of 2^-149 make every finite binary32 value an exact integer.
-        var bits = unchecked((uint)BitConverter.SingleToInt32Bits(value));
-        var exponent = checked((int)((bits >> 23) & 0xFF));
-        var fraction = bits & 0x007F_FFFF;
-
-        if (exponent == 0xFF)
-        {
-            throw new ArgumentOutOfRangeException(nameof(value), "Exact Mesh predicates require finite binary32 values.");
-        }
-
-        var significand = (exponent == 0) ? fraction : (fraction | 0x0080_0000);
-        var integer = new BigInteger(significand);
-
-        if (exponent > 1)
-        {
-            integer <<= exponent - 1;
-        }
-
-        return ((bits & 0x8000_0000) == 0) ? integer : -integer;
-    }
-
     private static void ValidateBounds(ImmutableArray<Vector3> positions, RenderMeshBounds bounds)
     {
         for (var index = 0; index < positions.Length; index++)
@@ -757,19 +735,42 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
             }
         }
 
-        var radius = ToScaledInteger(bounds.SphereRadius);
-        var radiusSquared = radius * radius;
+        Span<ulong> workspace = stackalloc ulong[ExactDyadicLimbCount * 9];
+        var dx = new MeshExactDyadic(workspace[..ExactDyadicLimbCount]);
+        var dy = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount, ExactDyadicLimbCount));
+        var dz = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 2, ExactDyadicLimbCount));
+        var left = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 3, ExactDyadicLimbCount));
+        var right = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 4, ExactDyadicLimbCount));
+        var product = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 5, ExactDyadicLimbCount));
+        var squaredDistance = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 6, ExactDyadicLimbCount));
+        var radius = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 7, ExactDyadicLimbCount));
+        var radiusSquared = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 8, ExactDyadicLimbCount));
+        radius.SetSingle(bounds.SphereRadius);
+        radiusSquared.SetProduct(radius, radius);
 
         for (var corner = 0; corner < 8; corner++)
         {
             var x = ((corner & 1) == 0) ? bounds.Minimum.X : bounds.Maximum.X;
             var y = ((corner & 2) == 0) ? bounds.Minimum.Y : bounds.Maximum.Y;
             var z = ((corner & 4) == 0) ? bounds.Minimum.Z : bounds.Maximum.Z;
-            var dx = ToScaledInteger(x) - ToScaledInteger(bounds.SphereCenter.X);
-            var dy = ToScaledInteger(y) - ToScaledInteger(bounds.SphereCenter.Y);
-            var dz = ToScaledInteger(z) - ToScaledInteger(bounds.SphereCenter.Z);
+            squaredDistance.SetZero();
+            left.SetSingle(x);
+            right.SetSingle(bounds.SphereCenter.X);
+            dx.SetDifference(left, right);
+            product.SetProduct(dx, dx);
+            squaredDistance.AddMagnitude(product);
+            left.SetSingle(y);
+            right.SetSingle(bounds.SphereCenter.Y);
+            dy.SetDifference(left, right);
+            product.SetProduct(dy, dy);
+            squaredDistance.AddMagnitude(product);
+            left.SetSingle(z);
+            right.SetSingle(bounds.SphereCenter.Z);
+            dz.SetDifference(left, right);
+            product.SetProduct(dz, dz);
+            squaredDistance.AddMagnitude(product);
 
-            if (((dx * dx) + (dy * dy) + (dz * dz)) > radiusSquared)
+            if (squaredDistance.CompareMagnitude(radiusSquared) > 0)
             {
                 throw new InvalidDataException("The Mesh bounding sphere does not enclose its axis-aligned bounds.");
             }
@@ -831,22 +832,58 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
 
     private static void ValidateTriangles(ImmutableArray<Vector3> positions, ImmutableArray<uint> indices)
     {
+        Span<ulong> workspace = stackalloc ulong[ExactDyadicLimbCount * 11];
+        var abX = new MeshExactDyadic(workspace[..ExactDyadicLimbCount]);
+        var abY = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount, ExactDyadicLimbCount));
+        var abZ = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 2, ExactDyadicLimbCount));
+        var acX = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 3, ExactDyadicLimbCount));
+        var acY = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 4, ExactDyadicLimbCount));
+        var acZ = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 5, ExactDyadicLimbCount));
+        var left = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 6, ExactDyadicLimbCount));
+        var right = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 7, ExactDyadicLimbCount));
+        var firstProduct = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 8, ExactDyadicLimbCount));
+        var secondProduct = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 9, ExactDyadicLimbCount));
+        var cross = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 10, ExactDyadicLimbCount));
+
         for (var index = 0; index < indices.Length; index += 3)
         {
             var a = positions[checked((int)indices[index])];
             var b = positions[checked((int)indices[index + 1])];
             var c = positions[checked((int)indices[index + 2])];
-            var abX = ToScaledInteger(b.X) - ToScaledInteger(a.X);
-            var abY = ToScaledInteger(b.Y) - ToScaledInteger(a.Y);
-            var abZ = ToScaledInteger(b.Z) - ToScaledInteger(a.Z);
-            var acX = ToScaledInteger(c.X) - ToScaledInteger(a.X);
-            var acY = ToScaledInteger(c.Y) - ToScaledInteger(a.Y);
-            var acZ = ToScaledInteger(c.Z) - ToScaledInteger(a.Z);
-            var crossX = (abY * acZ) - (abZ * acY);
-            var crossY = (abZ * acX) - (abX * acZ);
-            var crossZ = (abX * acY) - (abY * acX);
 
-            if (crossX.IsZero && crossY.IsZero && crossZ.IsZero)
+            left.SetSingle(b.X);
+            right.SetSingle(a.X);
+            abX.SetDifference(left, right);
+            left.SetSingle(b.Y);
+            right.SetSingle(a.Y);
+            abY.SetDifference(left, right);
+            left.SetSingle(b.Z);
+            right.SetSingle(a.Z);
+            abZ.SetDifference(left, right);
+            left.SetSingle(c.X);
+            right.SetSingle(a.X);
+            acX.SetDifference(left, right);
+            left.SetSingle(c.Y);
+            right.SetSingle(a.Y);
+            acY.SetDifference(left, right);
+            left.SetSingle(c.Z);
+            right.SetSingle(a.Z);
+            acZ.SetDifference(left, right);
+
+            firstProduct.SetProduct(abY, acZ);
+            secondProduct.SetProduct(abZ, acY);
+            cross.SetDifference(firstProduct, secondProduct);
+            var zeroArea = cross.IsZero;
+            firstProduct.SetProduct(abZ, acX);
+            secondProduct.SetProduct(abX, acZ);
+            cross.SetDifference(firstProduct, secondProduct);
+            zeroArea &= cross.IsZero;
+            firstProduct.SetProduct(abX, acY);
+            secondProduct.SetProduct(abY, acX);
+            cross.SetDifference(firstProduct, secondProduct);
+            zeroArea &= cross.IsZero;
+
+            if (zeroArea)
             {
                 throw new InvalidDataException("Mesh triangles must have nonzero exact dyadic area.");
             }
@@ -855,13 +892,24 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
 
     private static void ValidateWeightSum(Vector4 value)
     {
-        var sum = ToScaledInteger(value.X)
-            + ToScaledInteger(value.Y)
-            + ToScaledInteger(value.Z)
-            + ToScaledInteger(value.W);
-        var one = BigInteger.One << 149;
+        Span<ulong> workspace = stackalloc ulong[ExactDyadicLimbCount * 4];
+        var sum = new MeshExactDyadic(workspace[..ExactDyadicLimbCount]);
+        var component = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount, ExactDyadicLimbCount));
+        var one = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 2, ExactDyadicLimbCount));
+        var difference = new MeshExactDyadic(workspace.Slice(ExactDyadicLimbCount * 3, ExactDyadicLimbCount));
+        component.SetSingle(value.X);
+        sum.AddMagnitude(component);
+        component.SetSingle(value.Y);
+        sum.AddMagnitude(component);
+        component.SetSingle(value.Z);
+        sum.AddMagnitude(component);
+        component.SetSingle(value.W);
+        sum.AddMagnitude(component);
+        one.SetSingle(1.0f);
+        difference.SetDifference(sum, one);
+        difference.MultiplySmall(100_000);
 
-        if ((BigInteger.Abs(sum - one) * 100_000) > one)
+        if (difference.CompareMagnitude(one) > 0)
         {
             throw new InvalidDataException("Each Mesh weight vector must sum to one within the exact dyadic tolerance 1/100000.");
         }
@@ -960,6 +1008,300 @@ internal sealed partial class RenderMeshAssetCodec : IContextualBinarySchemaCode
         encodedRecord.CopyTo(destination);
         bytesWritten = encodedRecord.Length;
         return BinaryRecordStatus.Complete;
+    }
+
+    private ref struct MeshExactDyadic
+    {
+        private bool _isNegative;
+        private readonly Span<ulong> _magnitude;
+
+        internal MeshExactDyadic(Span<ulong> magnitude)
+        {
+            if (magnitude.Length != ExactDyadicLimbCount)
+            {
+                throw new ArgumentException("The exact Mesh workspace has an invalid limb count.", nameof(magnitude));
+            }
+
+            _magnitude = magnitude;
+            _magnitude.Clear();
+            _isNegative = false;
+        }
+
+        internal readonly bool IsZero => GetLimbLength(_magnitude) == 0;
+
+        private static void AddMagnitude(
+            scoped Span<ulong> destination,
+            scoped ReadOnlySpan<ulong> left,
+            scoped ReadOnlySpan<ulong> right)
+        {
+            UInt128 carry = 0;
+
+            for (var index = 0; index < destination.Length; index++)
+            {
+                var sum = (UInt128)left[index] + right[index] + carry;
+                destination[index] = unchecked((ulong)sum);
+                carry = sum >> 64;
+            }
+
+            if (carry != 0)
+            {
+                ThrowOverflow();
+            }
+        }
+
+        private static int CompareMagnitude(
+            scoped ReadOnlySpan<ulong> left,
+            scoped ReadOnlySpan<ulong> right)
+        {
+            for (var index = left.Length - 1; index >= 0; index--)
+            {
+                if (left[index] != right[index])
+                {
+                    return (left[index] < right[index]) ? -1 : 1;
+                }
+            }
+
+            return 0;
+        }
+
+        private static int GetLimbLength(scoped ReadOnlySpan<ulong> value)
+        {
+            for (var index = value.Length - 1; index >= 0; index--)
+            {
+                if (value[index] != 0)
+                {
+                    return index + 1;
+                }
+            }
+
+            return 0;
+        }
+
+        private static void MultiplyMagnitude(
+            scoped Span<ulong> destination,
+            scoped ReadOnlySpan<ulong> left,
+            scoped ReadOnlySpan<ulong> right)
+        {
+            destination.Clear();
+            var leftLength = GetLimbLength(left);
+            var rightLength = GetLimbLength(right);
+
+            for (var leftIndex = 0; leftIndex < leftLength; leftIndex++)
+            {
+                UInt128 carry = 0;
+
+                for (var rightIndex = 0; rightIndex < rightLength; rightIndex++)
+                {
+                    var destinationIndex = leftIndex + rightIndex;
+
+                    if (destinationIndex >= destination.Length)
+                    {
+                        ThrowOverflow();
+                    }
+
+                    var product = ((UInt128)left[leftIndex] * right[rightIndex])
+                        + destination[destinationIndex]
+                        + carry;
+                    destination[destinationIndex] = unchecked((ulong)product);
+                    carry = product >> 64;
+                }
+
+                var carryIndex = leftIndex + rightLength;
+
+                while (carry != 0)
+                {
+                    if (carryIndex >= destination.Length)
+                    {
+                        ThrowOverflow();
+                    }
+
+                    var sum = (UInt128)destination[carryIndex] + carry;
+                    destination[carryIndex] = unchecked((ulong)sum);
+                    carry = sum >> 64;
+                    carryIndex++;
+                }
+            }
+        }
+
+        private static void SubtractMagnitude(
+            scoped Span<ulong> destination,
+            scoped ReadOnlySpan<ulong> left,
+            scoped ReadOnlySpan<ulong> right)
+        {
+            ulong borrow = 0;
+
+            for (var index = 0; index < destination.Length; index++)
+            {
+                var subtrahend = (UInt128)right[index] + borrow;
+                var minuend = (UInt128)left[index];
+                destination[index] = unchecked((ulong)(minuend - subtrahend));
+                borrow = (minuend < subtrahend) ? 1ul : 0ul;
+            }
+
+            if (borrow != 0)
+            {
+                throw new InvalidOperationException("Exact Mesh magnitude subtraction underflowed.");
+            }
+        }
+
+        private static void ThrowOverflow()
+            => throw new InvalidOperationException("The exact Mesh predicate exceeded its fixed dyadic workspace.");
+
+        internal readonly void AddMagnitude(scoped in MeshExactDyadic value)
+        {
+            if (_isNegative || value._isNegative || _magnitude.Overlaps(value._magnitude))
+            {
+                throw new InvalidOperationException("Exact Mesh magnitude addition requires distinct nonnegative values.");
+            }
+
+            AddMagnitude(_magnitude, _magnitude, value._magnitude);
+        }
+
+        internal readonly int CompareMagnitude(scoped in MeshExactDyadic value)
+            => CompareMagnitude(_magnitude, value._magnitude);
+
+        internal void MultiplySmall(ulong multiplier)
+        {
+            if (multiplier == 0)
+            {
+                SetZero();
+                return;
+            }
+
+            UInt128 carry = 0;
+
+            for (var index = 0; index < _magnitude.Length; index++)
+            {
+                var product = ((UInt128)_magnitude[index] * multiplier) + carry;
+                _magnitude[index] = unchecked((ulong)product);
+                carry = product >> 64;
+            }
+
+            if (carry != 0)
+            {
+                ThrowOverflow();
+            }
+        }
+
+        internal void SetDifference(scoped in MeshExactDyadic left, scoped in MeshExactDyadic right)
+        {
+            if (_magnitude.Overlaps(left._magnitude) || _magnitude.Overlaps(right._magnitude))
+            {
+                throw new InvalidOperationException("Exact Mesh difference requires a distinct destination.");
+            }
+
+            var leftIsZero = left.IsZero;
+            var rightIsZero = right.IsZero;
+
+            if (leftIsZero)
+            {
+                if (rightIsZero)
+                {
+                    SetZero();
+                }
+                else
+                {
+                    right._magnitude.CopyTo(_magnitude);
+                    _isNegative = !right._isNegative;
+                }
+
+                return;
+            }
+
+            if (rightIsZero)
+            {
+                left._magnitude.CopyTo(_magnitude);
+                _isNegative = left._isNegative;
+                return;
+            }
+
+            if (left._isNegative != right._isNegative)
+            {
+                AddMagnitude(_magnitude, left._magnitude, right._magnitude);
+                _isNegative = left._isNegative;
+                return;
+            }
+
+            var comparison = CompareMagnitude(left._magnitude, right._magnitude);
+
+            if (comparison == 0)
+            {
+                SetZero();
+            }
+            else if (comparison > 0)
+            {
+                SubtractMagnitude(_magnitude, left._magnitude, right._magnitude);
+                _isNegative = left._isNegative;
+            }
+            else
+            {
+                SubtractMagnitude(_magnitude, right._magnitude, left._magnitude);
+                _isNegative = !left._isNegative;
+            }
+        }
+
+        internal void SetProduct(scoped in MeshExactDyadic left, scoped in MeshExactDyadic right)
+        {
+            if (_magnitude.Overlaps(left._magnitude) || _magnitude.Overlaps(right._magnitude))
+            {
+                throw new InvalidOperationException("Exact Mesh multiplication requires a distinct destination.");
+            }
+
+            MultiplyMagnitude(_magnitude, left._magnitude, right._magnitude);
+            _isNegative = !(left.IsZero || right.IsZero)
+                && (left._isNegative != right._isNegative);
+        }
+
+        internal void SetSingle(float value)
+        {
+            var bits = BitConverter.SingleToUInt32Bits(value);
+            var exponent = checked((int)((bits >> 23) & 0xFF));
+
+            if (exponent == 0xFF)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), "Exact Mesh predicates require finite binary32 values.");
+            }
+
+            var fraction = bits & 0x007F_FFFF;
+            var significand = (exponent == 0) ? fraction : (fraction | 0x0080_0000u);
+            _magnitude.Clear();
+
+            if (significand == 0)
+            {
+                _isNegative = false;
+                return;
+            }
+
+            // Scaling by 2^149 maps every finite binary32 value to an exact integer.
+            var shift = (exponent == 0) ? 0 : exponent - 1;
+            var limbIndex = shift / 64;
+            var bitShift = shift % 64;
+
+            if (limbIndex >= _magnitude.Length)
+            {
+                ThrowOverflow();
+            }
+
+            _magnitude[limbIndex] = (ulong)significand << bitShift;
+
+            if (bitShift > 40)
+            {
+                if ((limbIndex + 1) >= _magnitude.Length)
+                {
+                    ThrowOverflow();
+                }
+
+                _magnitude[limbIndex + 1] = (ulong)significand >> (64 - bitShift);
+            }
+
+            _isNegative = (bits & 0x8000_0000u) != 0;
+        }
+
+        internal void SetZero()
+        {
+            _magnitude.Clear();
+            _isNegative = false;
+        }
     }
 
     private struct ReadAction : IAction<EbinRecordReadView>

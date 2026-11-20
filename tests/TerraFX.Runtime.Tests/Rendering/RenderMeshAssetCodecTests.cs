@@ -700,6 +700,64 @@ internal sealed class RenderMeshAssetCodecTests
     }
 
     [Test]
+    public async Task MeshAssetCodecPreservesExactDyadicPredicatesAcrossBinary32Range()
+    {
+        var schemas = CreateRegistry();
+        var builder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(builder);
+        var maximumCoordinate = float.MaxValue / 2.0f;
+        var positions = new[] {
+            Vector3.Zero,
+            new Vector3(0.0f, float.Epsilon, 0.0f),
+            new Vector3(maximumCoordinate, 0.0f, 0.0f),
+        };
+        var streams = new[] { CreatePositionStream(positions) };
+        var indices = new ushort[] { 0, 1, 2 };
+        var groups = new[] { CreateMeshGroup(0, 3, 0) };
+        var minimum = Vector3.Zero;
+        var maximum = new Vector3(maximumCoordinate, float.Epsilon, 0.0f);
+        var center = new Vector3(-float.Epsilon, 0.0f, 0.0f);
+        var validBounds = new RenderMeshBounds(minimum, maximum, center, MathF.BitIncrement(maximumCoordinate));
+        var boundaryBounds = new RenderMeshBounds(minimum, maximum, center, maximumCoordinate);
+        var validMesh = CreateMeshRecord(positions, streams, indices, groups, validBounds);
+        var boundaryMesh = CreateMeshRecord(positions, streams, indices, groups, boundaryBounds);
+        var maximumFinite = float.MaxValue;
+        var largeProductPositions = new[] {
+            new Vector3(-maximumFinite, -maximumFinite, 0.0f),
+            new Vector3(maximumFinite, maximumFinite, 0.0f),
+            new Vector3(-maximumFinite, maximumFinite, 0.0f),
+        };
+        var largeProductMesh = CreateMeshRecord(
+            largeProductPositions,
+            [CreatePositionStream(largeProductPositions)],
+            indices,
+            groups,
+            new RenderMeshBounds(
+                new Vector3(-maximumFinite, -maximumFinite, 0.0f),
+                new Vector3(maximumFinite, maximumFinite, 0.0f),
+                Vector3.Zero,
+                maximumFinite));
+        var (store, packagePath) = await CreateStoreAsync(
+            CreatePackage([validMesh, boundaryMesh, largeProductMesh]),
+            builder.Build()).ConfigureAwait(false);
+
+        try
+        {
+            using var validMeshLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(1)).ConfigureAwait(false);
+            Assert.That(validMeshLease.Value.Positions, Is.EqualTo(positions));
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await store.LoadAsync<RenderMeshAsset>(new AssetId(2)).ConfigureAwait(false));
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await store.LoadAsync<RenderMeshAsset>(new AssetId(3)).ConfigureAwait(false));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     public async Task MeshAssetCodecRejectsDegenerateTrianglesAndUnconservativeBounds()
     {
         var schemas = CreateRegistry();
@@ -808,6 +866,72 @@ internal sealed class RenderMeshAssetCodecTests
         }
         finally
         {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task MeshAssetCodecUsesExactWeightToleranceAroundTheBoundary()
+    {
+        var schemas = CreateRegistry();
+        var builder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(builder);
+        _ = AnimationSupport.RegisterAssetCodecs(builder);
+        // Below 0.25, adjacent binary32 values are 2^-26 apart; these steps bracket 1/100000.
+        var acceptedWeight = BitConverter.UInt32BitsToSingle(0x3E80_0000u - 671u);
+        var rejectedWeight = BitConverter.UInt32BitsToSingle(0x3E80_0000u - 672u);
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var jointStream = CreateJointStream(new ushort[12]);
+        var validWeights = CreateWeightStream([
+            new Vector4(0.25f, 0.25f, 0.25f, acceptedWeight),
+            new Vector4(0.25f, 0.25f, 0.25f, acceptedWeight),
+            new Vector4(0.25f, 0.25f, 0.25f, acceptedWeight),
+        ]);
+        var invalidWeights = CreateWeightStream([
+            new Vector4(0.25f, 0.25f, 0.25f, rejectedWeight),
+            new Vector4(0.25f, 0.25f, 0.25f, rejectedWeight),
+            new Vector4(0.25f, 0.25f, 0.25f, rejectedWeight),
+        ]);
+        var bounds = new RenderMeshBounds(
+            Vector3.Zero,
+            new Vector3(1.0f, 1.0f, 0.0f),
+            new Vector3(0.5f, 0.5f, 0.0f),
+            1.0f);
+        var validMesh = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), jointStream, validWeights],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            bounds,
+            includeSkeleton: true);
+        var invalidMesh = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), jointStream, invalidWeights],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            bounds,
+            includeSkeleton: true);
+        var skeleton = CreateSkeletonRecord(new Guid("70000000-0000-4000-8000-000000000003"));
+        var (store, packagePath) = await CreateStoreAsync(
+            CreatePackage([validMesh, invalidMesh], skeleton),
+            builder.Build()).ConfigureAwait(false);
+        AssetLease<RenderMeshAsset>? unexpectedInvalidLease = null;
+
+        try
+        {
+            using var validMeshLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(1)).ConfigureAwait(false);
+            Assert.That(validMeshLease.Value.Weights[0].W, Is.EqualTo(acceptedWeight));
+            _ = Assert.ThrowsAsync<InvalidDataException>(
+                async () => unexpectedInvalidLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(2)).ConfigureAwait(false));
+        }
+        finally
+        {
+            unexpectedInvalidLease?.Dispose();
             await store.DisposeAsync().ConfigureAwait(false);
             File.Delete(packagePath);
         }
