@@ -79,6 +79,38 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void PrefabLeaseCacheCapacityQueriesDoNotAllocate()
+    {
+        const int SampleCount = 64;
+        var emptyCache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>?>();
+        var populatedCache = new Dictionary<AssetId, AssetLease<ScenePrefabAsset>?> {
+            [new AssetId(1)] = null,
+        };
+        var expectedEmptyCapacity = emptyCache.EnsureCapacity(0);
+        var expectedPopulatedCapacity = populatedCache.EnsureCapacity(0);
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        var observedEmptyCapacity = -1;
+        var observedPopulatedCapacity = -1;
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            observedEmptyCapacity = emptyCache.EnsureCapacity(0);
+            observedPopulatedCapacity = populatedCache.EnsureCapacity(0);
+        }
+
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        GC.KeepAlive(emptyCache);
+        GC.KeepAlive(populatedCache);
+
+        Assert.Multiple(() => {
+            Assert.That(expectedEmptyCapacity, Is.Zero);
+            Assert.That(observedEmptyCapacity, Is.EqualTo(expectedEmptyCapacity));
+            Assert.That(observedPopulatedCapacity, Is.EqualTo(expectedPopulatedCapacity));
+            Assert.That(allocatedBytes, Is.Zero);
+        });
+    }
+
+    [Test]
     public void PrefabLeaseCacheCarrierMatchesSelectedRuntimeLayout()
     {
         const int SampleCount = 64;
