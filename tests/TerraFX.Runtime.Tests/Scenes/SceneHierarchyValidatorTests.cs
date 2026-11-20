@@ -109,10 +109,10 @@ internal sealed class SceneHierarchyValidatorTests
     [Test]
     public void PrefabLeaseCacheGrowthFitsPerEntryAllocationAllowance()
     {
-        const int EntryCount = 65_536;
         const long PrefabLeaseCacheCarrierBytes = 80;
         const long PerPrefabEntryAllowanceBytes = 256;
-        var assetIds = new AssetId[EntryCount];
+        var maximumUniquePrefabCount = new SceneLoadOptions().MaximumExpandedOccurrences - 1;
+        var assetIds = new AssetId[maximumUniquePrefabCount];
 
         for (var index = 0; index < assetIds.Length; index++)
         {
@@ -146,6 +146,11 @@ internal sealed class SceneHierarchyValidatorTests
         }
 
         GC.KeepAlive(cache);
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        var allowanceBytesAtMaximum = PrefabLeaseCacheCarrierBytes
+            + (PerPrefabEntryAllowanceBytes * assetIds.Length);
+        TestContext.WriteLine(
+            $"Entries={assetIds.Length}; AllocatedBytes={allocatedBytes}; AllowanceBytes={allowanceBytesAtMaximum}");
 
         Assert.That(
             firstExceededEntryCount,

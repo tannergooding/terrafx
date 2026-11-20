@@ -48,19 +48,12 @@ If package replacement occurs between count and build, the existing cache contin
 
 Let `CachePrefix(n)` denote a **monotone, qualified charge function**, not a new budget. It must cover constructor/comparer work and charged bucket/entry capacities, including old-plus-new growth at every allocation-reaching prefix. Keep its temporary/return terms distinct from the exact retained cache.
 
-`SceneHierarchyValidatorTests` contains shell and growth tests using `80 + 256*n` for the closed dictionary type through 65,536 insertions. After the input freeze, a targeted Runtime selection passed **4/4 in Debug and Release**, including both cache cases. The shallow shell assertion is 80 B; the growth test passes the cumulative-allocation bound with **null lease values**. This confirms only the dictionary carrier/growth candidate. It does not establish cold-state costs, the prescribed `64 + RoundUp16` charged-array ledger, lease/Prefab graphs, `.Values` collection construction during cleanup, faults, or exact surviving capacity. Therefore it is not an accepted `CachePrefix` or retained-data amount.
+`SceneHierarchyValidatorTests` now iterates the maximum unique Prefab count, `SceneLoadOptions.MaximumExpandedOccurrences - 1 = 1,048,575`. A combined Runtime selection passed **4/4 in Debug and Release**, including the cache shell, maximum-growth, typed-result-shell, and element-stride cases. In both TRX outputs the growth measurement is `Entries=1048575; AllocatedBytes=75443600; AllowanceBytes=268435280`; values remain null. This proves only the selected .NET 11 x64 dictionary shell and cumulative growth traffic under that test; cold initialization, leased values/Prefab graphs, `.Values` cleanup enumeration, fault prefixes, actual package reads, and return remain unmeasured. It is not a complete `CachePrefix`.
 
 | Configuration | Runtime assembly (MVID; SHA-256) | Test assembly (MVID; SHA-256) | TRX (path; SHA-256) |
 |---|---|---|---|
-| Debug | `62d263b1-740a-414e-862d-1465f7ad10c2`; `C68EF8E8C5834D724F38C0325759BCE8EA4352897B5FC46A304CB66D92DCC928` | `3fc8bfa8-25af-4b8d-bd53-29b01931b22a`; `214963112BB3A9D366F886077E34BCD71574877A5FC52DBDE197F49F14221A55` | `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_11_51_19_net11.0.trx`; `D856BBC58B3F5F735C79E6F452EA8149188A3802B012A9F827AFC59481543CAD` |
-| Release | `94a49a9f-934f-4705-9aff-fd3cf461c79d`; `F942A806D60D0EF0A837BEC41D929A84444E2802C7E1FABEA92F80BF8A664915` | `10ce38dc-a896-47b7-88a2-2024601053bc`; `D408B459387202594D64317A7BB330CB4F7E8CB982A4002106EDA87FB026EC10` | `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_11_51_25_net11.0.trx`; `D68028AD7C32279503D307974BF15BD012BF9F5878832DDC129DED12E5308FC8` |
-
-These are managed dictionary-shell/growth observations only. They exercised no Scene package, lease value, replacement, Store close, preclaim, receiver transfer, or actual-return path.
-
-| Configuration | Runtime assembly (MVID; SHA-256) | Test assembly (MVID; SHA-256) | TRX (path; SHA-256) |
-|---|---|---|---|
-| Debug | `62d263b1-740a-414e-862d-1465f7ad10c2`; `C68EF8E8C5834D724F38C0325759BCE8EA4352897B5FC46A304CB66D92DCC928` | `3fc8bfa8-25af-4b8d-bd53-29b01931b22a`; `214963112BB3A9D366F886077E34BCD71574877A5FC52DBDE197F49F14221A55` | `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_11_51_19_net11.0.trx`; `D856BBC58B3F5F735C79E6F452EA8149188A3802B012A9F827AFC59481543CAD` |
-| Release | `94a49a9f-934f-4705-9aff-fd3cf461c79d`; `F942A806D60D0EF0A837BEC41D929A84444E2802C7E1FABEA92F80BF8A664915` | `10ce38dc-a896-47b7-88a2-2024601053bc`; `D408B459387202594D64317A7BB330CB4F7E8CB982A4002106EDA87FB026EC10` | `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_11_51_25_net11.0.trx`; `D68028AD7C32279503D307974BF15BD012BF9F5878832DDC129DED12E5308FC8` |
+| Debug | `56166b49-e941-424f-8596-51de972112eb`; `B27F5BC80319F567B7623D4FC4A0A7D8CA64445F90127288AE204C2D46C7994C` | `b6b48029-891e-4c99-8027-cc976503a80e`; `136791124B66B5AF1CE2271088DD00A1027836171B3A2DEEE97AA8A12A4326F5` | `artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_12_02_07_net11.0.trx`; `3A1DAF90904A17703E28659BF5119EE413F25CC76021068D61807896B231496D` |
+| Release | `c1ae5741-10ac-43a5-9c56-c04760d72680`; `2B76B2C49C33EEE58533AE5019DD4DE55786EFC36D7AAB7DAA5B8B36588D5C39` | `922d1fdf-3941-4452-ad14-5f22d666e532`; `D740C5ACABE52DC17E47F6B7EF95DEA08F7C217FF9404EE3648BEC9346A3DBAE` | `artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_12_02_12_net11.0.trx`; `B7F844B25B8B7A052FB3D830244D1D660AA10323D6F6B7E137313E5FB7876684` |
 
 These are managed dictionary-shell/growth observations only. They exercised no Scene package, lease value, replacement, Store close, preclaim, receiver transfer, or actual-return path.
 
@@ -101,7 +94,7 @@ All rows remain open; these are existing owner obligations, not new acceptance I
 
 ## Frozen raw-input manifest
 
-Freeze completed **2026-11-20T19:38:37.9926473Z**, HEAD **`fe7a4031868e41be01dfb30a31028ac155569db9`**. The input set is these 47 evidence/guidance files plus the five preservation files below. SHA-256 covers raw file bytes without newline/BOM normalization. Paths are repository-relative. Whole-file hashes bind even where only relevant ranges were inspected; prior proposals' embedded historical hashes/results are not adopted.
+Freeze completed **2026-11-20T20:05:59.0940481Z**, HEAD **`b6d95f643363da05eb090a89c09f11e4ed6dea59`**. The input set is these 47 evidence/guidance files plus the five preservation files below. SHA-256 covers raw file bytes without newline/BOM normalization. Paths are repository-relative. Whole-file hashes bind even where only relevant ranges were inspected; prior proposals' embedded historical hashes/results are not adopted.
 
 This is a task-scoped review freeze, not a repository-wide inventory, runtime manifest, new acceptance pipeline, or claim of qualification. The new proposal is the output, not its own input.
 
@@ -122,8 +115,8 @@ b0bfa5771f1029bdfb21a0e01556467d3169953f71cbfdf18a06381a11cee461  docs\design\27
 49598161138febbf889f2a5176e3504af8d8bb8481d2157fbcfbbd94d2b46604  docs\design\29-project-setup-build-and-deployment.md
 d4f622d69ed58ab96118c36fbbf4e2d31e062a3cbf3ce3ba1d64309f662fe4ed  docs\design\30-public-api-review-surface.md
 24eec6e92b7ad904d552f290ef748ffc8fce13b6b94a89ebd9f39487d4584d87  docs\design\35-implementation-roadmap.md
-0ab2776d4b0baa87e7ee2bbb2b97e6e79d38d815701a523715f094557663ec53  docs\proposals\m03b-scene-assets-original-p-operation-and-return-closure.md
-6f06e3099002b5a05fec47fc71075ebfd3b4ace8bfc834f19c6c98b3fcf82490  docs\proposals\m03b-scene-assets-allocation-site-catalogue-addendum.md
+32f039b929226b5849d2ba5f68519429a475b78b868f7d3f0cb0f708f381cf35  docs\proposals\m03b-scene-assets-original-p-operation-and-return-closure.md
+93e79e7d77d5ba007b260614152c90fb6eb369794731e3f218287e171d5434bb  docs\proposals\m03b-scene-assets-allocation-site-catalogue-addendum.md
 aa32cf9b40d034a94b6972f8b716519710a70d9f797f91830dc616f71b1db9e4  sources\TerraFX.Runtime\Scenes\ScenePrefabExpansionPlanner.cs
 4903a86fc323ed906a0045288bebab68b37c5b6beeff6312ea0440a9d05d453c  sources\TerraFX.Runtime\Scenes\SceneLoader.cs
 8a822c991792d18bbcf3d58718c7c420833c45a261f406487c7a6dd2e2ef3df0  sources\TerraFX.Runtime\Scenes\PreparedScene.cs
@@ -152,7 +145,7 @@ cddee36ba0c515a5bd2a0155aa5b5812ea9762cf50919c602bf4775e5c39f18a  sources\TerraF
 c28c48aa9f1423285e447c8aa2b70e907aa1fb3bec5f1f48352bb8370c26d19f  sources\TerraFX.Assets\AssetLeaseLifetime.cs
 248e4d31711c60944861361d7d0d0cf9ab93e9dc74fb11e9e1ef57350328dc0b  sources\TerraFX.Assets\AssetPackageBacking.cs
 1bdf040211fdaad0a1347ce9c1d8a478d65743ed543f362bf60d1e16159b5d03  sources\TerraFX.Assets\AssetPayloadReader.cs
-60230adfefb17269fe1dd3a5519f57571244a73febf334d154c033e3cc2494cd  tests\TerraFX.Runtime.Tests\Scenes\SceneHierarchyValidatorTests.cs
+69e3ab78022be945d869599178df172f68dec2d80a5c485a34ea1bead88fe89c  tests\TerraFX.Runtime.Tests\Scenes\SceneHierarchyValidatorTests.cs
 ```
 
 ### Five existing dirty tests: preservation only

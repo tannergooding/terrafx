@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T19:25:02.6116930Z`; HEAD `55c378c781c03da8e8d2d2787a010f6727ece913`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T20:05:36.1427461Z`; HEAD `b6d95f643363da05eb090a89c09f11e4ed6dea59`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -430,16 +430,16 @@ SceneAssetStoreTests.EngineHost.cs
 | Group | Files | SHA-256 |
 |---|---:|---|
 | C | 17 | `f3de7c20966cd0ab0ff00eeda60be44b54d157e170728ca5e27e33fb91577c93` |
-| P | 10 | `1877234d86303b3a1474c261b88834774703e59a85b4d844528bff0b6b4881bd` |
+| P | 10 | `b00794b0deecafe1c6c5f11ae9b60c3cf7be96b4a1d4d084712a65aa2e6637a6` |
 | A | 31 | `c64a75c8d7ee67b04bd0ab395d309218aef35a89f27e41f8bcfd997d6bb832b2` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 18 | `c2ded1985fa781db98bdff3e8179385b56d3899c8658b8e61204903959c83d45` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 10 | `e814fc7477dac90b9db8baed8f1fd6fdabaeb0ba9c325d51ae2e9bb77dbcf39c` |
+| T | 10 | `899f080061e7185142e08fc2ddb8ad8871a8e5b5ee44090f8cdd77570282c431` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 127 | `587d5c96f1de2236deca982b8e9be09448431e4048180061bf7e32022c1a3ed7` |
+| ALL | 127 | `8000d4dc72c815384aef551c87b676a0396458ed1eb34e886b8b6ad8fa21e05f` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
