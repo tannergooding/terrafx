@@ -8,12 +8,12 @@
 
 The worker cannot **currently** be funded and fully retired under the selected proof obligations without unsupported assumptions. This is not evidence that the default 536,870,912-byte budget is numerically too small, nor that BCL threads are generally unusable. Section 2 identifies the missing evidence and a concrete reconsideration procedure. The narrow alternative lets Batch B implementation proceed without making that unresolved execution service a prerequisite for a synchronous tool.
 
-| Inspected evidence at `40e53b7a` | Consequence |
+| Inspected evidence at `528e5525` | Consequence |
 |---|---|
-| [`AssetStore.Bounded.cs`][preclaim], [`AssetStoreBoundedProvision.cs`][provision] | The 536-byte control (24 bytes of added owner references), 131,367-byte opening subtotal, 80-byte per-generation native-file shell, and 144-byte native-port shell are preclaimed before acquisition. The opening subtotal includes the 65,536-byte profile array plus its measured 24-byte allocation overhead. On the 44-character Windows path, cold/warm reservations are 1,197,255/148,679 bytes. `_reservedBytes` remains readonly; native port initialization and file acquisition are still unavailable. |
+| [`AssetStore.Bounded.cs`][preclaim], [`AssetStoreBoundedProvision.cs`][provision] | The 544-byte control (32 bytes of added owner references), 131,391-byte opening subtotal, 80-byte per-generation native-file shell, and 144-byte native-port shell are preclaimed before acquisition. The opening subtotal includes 65,536-byte profile and 128-byte directory arrays plus measured 24-byte allocation overhead for each. On the 44-character Windows path, cold/warm reservations are 1,197,287/148,711 bytes. `_reservedBytes` remains readonly; native port initialization and file acquisition are still unavailable. |
 | [`AssetStoreBoundedBootstrap.cs`][bootstrap], [`BoundedStaticMeshAssetValidation.cs`][validation] and its [factory][factory] | The one-MiB attributed shared partition and 16-KiB per-Store provision cover the acquisition-free registration prefix. The factory closes precisely two codecs over 25 + 8 + 4 + 18 + 26 schema members; Rendering also initializes nine M05 descriptors outside that membership. None of these counts bounds thread/runtime/native storage. |
-| Existing [preclaim tests][preclaim-tests], [`AssetStoreAllocationTests`](../../tests/TerraFX.Assets.Tests/AssetStoreAllocationTests.cs), and the four TRX inputs in section 8 | Runtime preclaim tests execute 6/6 cases and the complete Assets suite executes 79/79 in Debug and Release. Cold/warm preclaim allocation is 936,728/76,680 managed bytes against 1,197,255/148,679 reserved bytes on the 44-character Windows path. These runs cover managed declarations, carrier sizes, and acquisition-free preclaim only; they execute no native file open/read/close or actual-return path. |
-| [`AssetPackageReader`][reader], [`AssetPackageBacking`][backing], [`AssetPayloadReader`][payload] | Ordinary opening/hashing still uses `FileStream`; reads reach BCL `RandomAccess`. The ordinary backing constructor leaves its added bounded-file reference null. A bounded generation roots its own file state and preclaims a 65,536-byte profile buffer; it must never migrate or reopen a BCL-owned generation. The pre-opening backing still refuses ordinary reference acquisition. |
+| Existing [preclaim tests][preclaim-tests], [`AssetStoreAllocationTests`](../../tests/TerraFX.Assets.Tests/AssetStoreAllocationTests.cs), and the four TRX inputs in section 8 | Runtime preclaim tests execute 6/6 cases and the complete Assets suite executes 85/85 in Debug and Release. Cold/warm preclaim allocation is 936,888/76,840 managed bytes against 1,197,287/148,711 reserved bytes on the 44-character Windows path. These runs cover managed declarations, carrier sizes, pure metadata parsing, and acquisition-free preclaim only; they execute no native file open/read/close or actual-return path. |
+| [`AssetPackageReader`][reader], [`AssetPackageBacking`][backing], [`AssetPayloadReader`][payload] | Ordinary opening/hashing still uses `FileStream`; reads reach BCL `RandomAccess`. The ordinary backing constructor leaves its added bounded-file reference null. The bounded candidate roots file state and fixed profile/directory buffers and has an internal two-entry None metadata reader/parser, but no production caller invokes it. The pre-opening backing still refuses ordinary reference acquisition. |
 | [`AssetBoundedNativePort`](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) and its [ABI declarations](../../sources/TerraFX.Assets/AssetBoundedLinuxStatX64.cs) | The compile-only candidate contains caller-thread open/read/hash/close/control operations and a 65,536-byte native scratch range. Managed tests lock declaration and shell layouts, but do not validate native headers, execute either platform port, or establish native-close/actual-return evidence. No current production caller initializes the port. |
 | Pinned CoreCLR [`Thread.CoreCLR.cs`][thread-core], [`Thread.Unix.cs`][thread-unix], [native finalization][thread-finalize] and [PAL creation][thread-pal] | `OnThreadExited` explicitly runs while the unmanaged thread is still alive and signals the Unix join event. Unix `JoinInternal` waits on that event; PAL creates a detached pthread. `Thread` also has native finalization work. Managed join is therefore not a receipt for destruction of the entire native thread/control suffix. |
 
@@ -104,7 +104,7 @@ Map transient closed-code exceptions to scalar facts only after actual helper un
 
 | Stage | Work and exit boundary |
 |---|---|
-| **B1 — complete compile-only port** | The current candidate preclaims and roots the port, per-generation file state, and 65,536-byte profile buffer and compiles Windows/Linux x64 open/read/hash/close/control primitives. It has no production caller, package-validation reader, scalar terminal receipt, or last-generation delivery/return chain yet. Complete those owners while keeping initialization and acquisition unavailable. Managed declaration-layout tests are not native-header or native-close evidence. Preserve ordinary Assets behavior and dependency direction: Assets references Core, never Platform/Runtime. |
+| **B1 — complete compile-only port** | The current candidate preclaims and roots the port, per-generation file state, and fixed profile/directory buffers; it includes caller-executed native open/read/hash/close/control primitives and a pure two-entry None metadata parser. The internal metadata path has no production caller. Typed Mesh/Material validation, scalar terminal receipt, and last-generation delivery/return chain remain absent. Complete those owners while keeping initialization and acquisition unavailable. Managed declaration-layout and pure-parser tests are not native-header or native-close evidence. Preserve ordinary Assets behavior and dependency direction: Assets references Core, never Platform/Runtime. |
 | **B2 — closed profile, then real native opening** | Derive the complete simultaneous provision before execution. Use exact-fit/one-byte-short admission, then real missing/inaccessible/regular package files for accepted prefixes. Reconcile cold/warm managed/native/caller-stack evidence with the derivation and actual one-shot release. Default-budget useful fit is required, not an always-refusing “profile.” An unsupported native term keeps only that target unavailable. |
 | **C — both actual typed roots and late generations** | Route all bounded hashing, metadata, None reads, envelope/reference inspection and both sealed codecs through this same generation's port. Derive malformed/rejected-input and retained-result peaks. Validate the existing independently authored GLB/OBJ triangle packages: three vertices/indices, one group/material slot, no Skeleton/textures. Exercise retained/anchored handles across replacement and Store close under unchanged `B0`. |
 | **D/E — actual recipient, then explicit CLI** | Integrate the synchronous Runtime driver → actual Content.Tools recipient → `EndDelivery` chain. Only after full applicable ownership/profile/native/return gates and owner-contract reconciliation add `--package-validation bounded-v1`, phased cancellation and receipt printing. Execute the actual published NativeAOT tool on each admitted target; verify standard/bounded output bytes match and refusal/failure/cancellation never replaces prior output. No automatic standard-mode retry. |
@@ -125,11 +125,11 @@ If a required genuine native close failure, partial-acquisition failure, blocked
 
 This choice unblocks **implementation** of a real bounded native opening port and follow-on Mesh/Material validation/CLI work without inventing a worker allowance. It can supply M05's actual static-adapter/package-validation capability once its own gates pass. Other dependency-ready M05 work continues under Chapter 35's per-capability sequencing. It neither closes Scene planner/cache/receiver/publication ownership nor qualifies a Scene invoker, nonempty restore, extraction/submission or public renderer consumer. Keep `PreparedScene.QualifiedFootprint` null. The diagnostics return-path correction at `2f4f6a41` is outside this blocker and remains resolved.
 
-No source, test, maintained contract, roadmap or existing proposal is changed here. No new public API, schema/diagnostic/acceptance ID, budget increase, commit, push or PR is selected. This documentation task ran no build, test or native experiment; existing results are cited only for their executed acquisition-free scope.
+Current boundary: B1 now has rooted port/file/profile/directory owners, a compile-only same-file metadata-reader path, and a pure two-entry None parser. No production caller invokes that path; native initialization/acquisition, typed Mesh/Material validation, scalar terminal delivery, and actual-return closure remain unavailable. This remains tentative guidance, not a maintained-contract amendment or qualification; no public API, schema/diagnostic/acceptance ID, budget increase, or remote publication is selected.
 
 ## 8. Review-input identity
 
-Snapshot UTC `2026-11-20T17:10:47.0356111Z`; HEAD `40e53b7ae29cb2e4f63ee8cb33415a40b8cb41fa`, branch `tannergooding-m05-implementation-plan`. All listed technical tracked inputs were clean. The five unrelated dirty tests in P are preservation-only, not reviewed implementation. Exclude this output.
+Snapshot UTC `2026-11-20T17:26:28.9149974Z`; HEAD `528e5525968e5afddc5c2dc98bbef71aeaa88cfc`, branch `tannergooding-m05-implementation-plan`. All listed technical tracked inputs were clean. The five unrelated dirty tests in P are preservation-only, not reviewed implementation. Exclude this output.
 
 Set digests are SHA-256 of ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` rows, LF-joined, UTF-8 without BOM/trailing newline. ALL unions A/R/S/T/D/C/V/E. External runtime links select unified-source revision `5254d8bcf59917edc1e1abc33bdf2442b77b1c70`; the local V marker identifies `11.0.0-rc.3.26522.148`, not a loaded runtime/native binary or NativeAOT qualification. The consulted Windows stack page identifies documentation revision `3aee48ac3f48e187d17bdfd56951741737331749`; Linux `pthread_join(3)` is man-pages 6.19, dated 2025-05-17. Neither supplies an all-in allocation bound.
 
@@ -152,6 +152,7 @@ sources\TerraFX.Assets\NativeAssetSchemaCatalogue.cs;
 sources\TerraFX.Runtime\Scenes\SceneSchemaCatalogue.cs;
 sources\TerraFX.Graphics\RenderingSchemaCatalogue.cs
 T: tests\TerraFX.Runtime.Tests\Scenes\BoundedStaticMeshAssetValidationTests.cs;
+tests\TerraFX.Assets.Tests\AssetPackageReaderTests.cs,
 tests\TerraFX.Assets.Tests\AssetStoreAllocationTests.cs
 D: docs\design\
 02-dotnet-api-memory-and-ownership.md, 04-capacity-and-workload-profiles.md,
@@ -165,10 +166,10 @@ m03b-assets-bounded-static-mesh-opening-lane.md
 C: .editorconfig, .github\workflows\ci.yml, Directory.Build.props,
 Directory.Build.targets, sources\Directory.Build.props, global.json
 V: .dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148\.version
-E: artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_07_39_net11.0.trx;
-artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_08_56_net11.0.trx;
-artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_10_02_net11.0.trx;
-artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_10_13_net11.0.trx
+E: artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_22_44_net11.0.trx;
+artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_23_49_net11.0.trx;
+artifacts\tst\Debug\tagoo_GOODING-ZEN4_2026-11-20_09_24_21_net11.0.trx;
+artifacts\tst\Release\tagoo_GOODING-ZEN4_2026-11-20_09_24_25_net11.0.trx
 P: tests\TerraFX.Runtime.Tests\Scenes\
 PreparedSceneAssetRetentionTests.cs, RenderSpriteCapacityTests.cs,
 RenderSpriteComponentTests.cs, RendererExtractionTests.cs,
@@ -177,15 +178,15 @@ SceneAssetStoreTests.EngineHost.cs
 
 | Set | Files | SHA-256 |
 |---|---:|---|
-| A | 19 | `d205c1e5fad4c05663d3cb6ae82350b4cb1b5a2b5f279c2c64c1dfb198035751` |
+| A | 19 | `1aa4f65e49893855ab43893b7858093209e540d21fba381977a9e8223fe4728b` |
 | R | 5 | `3e78dbeb89f9c6156e7ba361fcdaf3f21b4e6848b0b9722bd4b30a526c2d4064` |
 | S | 4 | `e29908e3df557008195f0f7b088bdfe6f241102590c2587bcc092d57da274e01` |
-| T | 2 | `a1d300214f7ec3658967de31b297915efcfe279977524a4513a29c39e7a1622e` |
-| D | 11 | `67f7d23d3510e816d75d88641abdd6d6785ad27d63dbca9d01e552436de62b61` |
+| T | 3 | `6d88152261f17e2765351b499e84c69486ed22060163bfa48a612617292cb027` |
+| D | 11 | `6320fad2da177942725d80eafbf4a5e91e169ea6f6a3c9e77bd930b327b14cce` |
 | C | 6 | `c79d188b6f611c5f6fdce6759b15be4d4fc0b8af61b2fcabbfe761d66ed0dc17` |
 | V | 1 | `aab4f62773986811741aea2bbe2f631c7fbaeeefd485eca380deba5622b1ba8e` |
-| E | 4 | `30f6b4028bc4adcd4319d963be65d8205c53bce210869b34ef3ebaaaa76f5234` |
-| ALL | 52 | `acdc1f9ab76231b0c9a558fbd116225bb3b4ac20a95a15ecd4ae870c81620c6c` |
+| E | 4 | `635d70f5cbdc24eb1ef16c8aeff6e15d15a2ee69121454ba32fc44449cea079c` |
+| ALL | 53 | `dcfd860a30ec2efb90fd979c4aeb06dcb886fdf91e849ccd38061b1f081c247e` |
 | P, preservation only | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
 
 Preserved schema hashes, in S order: Core `91cf1aa2ff4feaba898d83e587d4be403de6cfea97cfbb59fb15d5b67edf2853`; Assets `6b9537ea8cefebb48b5dc24261a8c03fb059e3314e7da089f29a639d9e55620a`; Scenes `cf0253cf1c207644f0b6c76b0392977e02b0939ff355ed825f38d42705f2b32a`; Rendering `de25a8c0e249ff9ab5b592fe848c85429c004fe629694c64ef1afef3ba731614`.

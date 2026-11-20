@@ -39,7 +39,7 @@ This is not the current source revision. Section 9 records the current decision-
 | [`PreparedScene.Preparation`](../../sources/TerraFX.Runtime/Scenes/PreparedScene.Preparation.cs) | Scalar producer claims and pending/phase installation elections exist. `_supplierProducersUnjoined` is set before planner invocation and is never cleared. Completion Actions and public `TrySet*` do not supply the missing transitive return. |
 | [`WorldGuidUseControl`](../../sources/TerraFX.Runtime/Entities/WorldGuidUseControl.cs), [`WorldAdmissionDomain`](../../sources/TerraFX.Runtime/Entities/WorldAdmissionDomain.cs), [preclaimed Scene workspace](../../sources/TerraFX.Runtime/Entities/WorldAdmissionDomain.ScenePreclaimedWorkspace.cs) | The real original use has exact generations, retained-owner/quarantine anchoring, checked workspace accounting and covered receiver construction/transfer. Its final release retains the exact parent's return part. Reuse these owners, not a second quota or a Scene imitation of their internals. |
 | [Registry terminal invocation](../../sources/TerraFX.Runtime/Entities/WorldGuidRegistry.TerminalAnchor.cs), [domain terminal anchor](../../sources/TerraFX.Runtime/Entities/WorldAdmissionDomain.TerminalAnchor.cs) | `InvokeTerminalWorldClose` observes `DisposeWithinTerminalInvocation` returning before accepting terminal caller return. This is a concrete enclosing-caller pattern, not a general certificate for Scene Tasks or permission for Scenes to call Entities' terminal methods. |
-| [`AssetStore.Bounded`](../../sources/TerraFX.Assets/AssetStore.Bounded.cs), [`AssetStoreBoundedProvision`](../../sources/TerraFX.Assets/AssetStoreBoundedProvision.cs), and the [compile-only port](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) | Batch A still preclaims an acquisition-free Static-Mesh opening/registration prefix. B1 now roots the 144-byte port shell, 80-byte per-generation native-file state, and 65,536-byte profile buffer before acquisition. The reservation has grown by 272 bytes from the pre-port prefix: 224 bytes for port/file state, 24 bytes for the profile-buffer allocation overhead, and 24 bytes for the three new owner references. The ordinary `FileStream`-backed `AssetPackageBacking` leaves its bounded-file field null and measures 168 bytes as a shell / 296 bytes as a constructor group. Current preclaim tests measure 936,728/1,197,255 cold and 76,680/148,679 warm bytes, but confirm no port initialization or package opening; no production caller initializes the port. The two-codec family and synchronous Batch B candidate do not provide the original-Store asynchronous Scene read, original-exception envelope, native-close proof or actual return. |
+| [`AssetStore.Bounded`](../../sources/TerraFX.Assets/AssetStore.Bounded.cs), [`AssetStoreBoundedProvision`](../../sources/TerraFX.Assets/AssetStoreBoundedProvision.cs), and the [compile-only port](../../sources/TerraFX.Assets/AssetBoundedNativePort.cs) | Batch A still preclaims an acquisition-free Static-Mesh opening/registration prefix. B1 now roots the 144-byte port shell, 80-byte per-generation native-file state, and 65,536-byte profile plus 128-byte directory buffers before acquisition. The reservation has grown by 304 bytes from the pre-port prefix: 224 bytes for port/file state, 48 bytes for the two array allocation overheads, and 32 bytes for four new owner references. The ordinary `FileStream`-backed `AssetPackageBacking` leaves its bounded-file field null and measures 168 bytes as a shell / 296 bytes as a constructor group. Current preclaim tests measure 936,888/1,197,287 cold and 76,840/148,711 warm bytes. The compile-only metadata reader/parser has no production caller; the preclaim regression confirms no port initialization or package opening. The two-codec family and synchronous Batch B candidate do not provide the original-Store asynchronous Scene read, original-exception envelope, native-close proof or actual return. |
 
 Two distinguishing schedules follow directly from these edges; neither is an executed failure observation:
 
@@ -283,7 +283,7 @@ Apply [Chapter 35](../design/35-implementation-roadmap.md#m04m05-capability-and-
 
 ## 9. Precise proposal input freeze
 
-UTC `2026-11-20T17:12:18.1605374Z`; HEAD `40e53b7ae29cb2e4f63ee8cb33415a40b8cb41fa`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
+UTC `2026-11-20T17:30:56.5236194Z`; HEAD `528e5525968e5afddc5c2dc98bbef71aeaa88cfc`. This is a bounded **decision-input** freeze, not a repository inventory, complete executable closure or runtime/native attestation. Existing proposals are frozen as current guidance/context, not accepted maintained contracts. The new artifact itself is excluded.
 
 For each group, hash raw file bytes with SHA-256. Its group digest is SHA-256 of UTF-8 without BOM/trailing newline over ordinal-sorted `relative-Windows-path<TAB>lowercase-raw-file-SHA256` lines joined with LF. ALL is the union. Prefixes below apply until the next group. Recheck HEAD, path membership, raw bytes and dirty state before disposition; changed inputs require reassessment.
 
@@ -412,6 +412,7 @@ WorldAdmissionDomain.TerminalAnchor.cs
 TerraFX.Assets.Tests\AssetStoreTests.cs
 TerraFX.Assets.Tests\AssetStoreRegistrationTests.cs
 TerraFX.Assets.Tests\AssetPackageLeaseTests.cs
+TerraFX.Assets.Tests\AssetPackageReaderTests.cs
 TerraFX.Assets.Tests\AssetStoreAllocationTests.cs
 TerraFX.Runtime.Tests\Rendering\RenderMeshAssetCodecTests.cs
 TerraFX.Runtime.Tests\Scenes\ScenePrefabPackageLeaseTests.cs
@@ -428,17 +429,17 @@ SceneAssetStoreTests.EngineHost.cs
 
 | Group | Files | SHA-256 |
 |---|---:|---|
-| C | 17 | `244dfcd1289224b48922f6e698dbead10196ddbe7316c919fd5db65e1b8a1d27` |
-| P | 10 | `d8108ef3b96c1d6e5ba0a7c6e31f75afbb94974ee89c3d34c30f26550f4e98f1` |
-| A | 31 | `266708795dbb98b174dda52ef986f76b427005239a88c33b6bc4436a0dc89dbe` |
+| C | 17 | `f3de7c20966cd0ab0ff00eeda60be44b54d157e170728ca5e27e33fb91577c93` |
+| P | 10 | `abc230c63acec60e0c699e29a756e0fbe12c91b087db726fa7570eab27b7ef81` |
+| A | 31 | `c2c69585e7081f89c364bc7931cbd841b2e8f4dc49f644e28b175f82f557ce09` |
 | F | 5 | `75f25ab2acf23335aae73cb491b954bea989211fe73e96aebb30ba69e8d0bc23` |
 | S | 6 | `9ce6a35219cab4410499867a67ca95cb346e24ed38f9ee2b990322a12e98e31a` |
 | R | 18 | `c2ded1985fa781db98bdff3e8179385b56d3899c8658b8e61204903959c83d45` |
 | G | 14 | `615efa2d285cf7012ddf011013b68ec90170274e97cf78429881307a5a6f6e5f` |
 | W | 11 | `207a520be0fafdf8081028e9259dbb123646db98004ef284a60c26566f191e27` |
-| T | 9 | `9db33c3fda33f07fe77684c450bfd5a14a13683b4c87401c0425e62d6297cc12` |
+| T | 10 | `b02169537d8129847219e1b22431c2dab81930cb31d0909eabf08844adf300fd` |
 | D | 5 | `0247a70f5dedcaac56865e99640c263109f72120dff8cf7a79b78257305b2162` |
-| ALL | 126 | `b38d19df3ecedd59ac104511917339e33a7ef67a7a170bd072c1f8b721a2f110` |
+| ALL | 127 | `8fb885bd0f941668f434350979e9a5cf0c541b9a68ae75f122484990010ddbd4` |
 
 Schema/registry-source raw hashes, beneath `sources`:
 
