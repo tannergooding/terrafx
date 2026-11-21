@@ -9,6 +9,7 @@ internal sealed class OriginalIoLifetime
 {
     internal const int NativeStateNotAcquired = 0;
     internal const int NativeStateReleased = 2;
+    internal const int TerminalServiceReturned = 2;
     internal const int TerminalStateLive = 0;
     internal const int TerminalStateReturned = 1;
 
@@ -51,6 +52,56 @@ internal sealed class OriginalIoLifetime
             ?? throw new InvalidOperationException("The terminal execution state has already been detached.");
         var (issuer, sourceBytes) = executionState.DetachTerminalExecutionState(lifetime);
         issuer.ReleaseSource(sourceBytes);
+    }
+
+    internal (AssetStore.OriginalIssuer Issuer, long SourceBytes) DetachServiceProvision()
+        => Volatile.Read(ref _lifecycle) switch {
+            TerminalStateLive => DetachUnstartedService(),
+            TerminalStateReturned => DetachTerminalService(),
+            _ => throw new InvalidOperationException("The original service provision has already been returned."),
+        };
+
+    internal (AssetStore.OriginalIssuer Issuer, long SourceBytes) DetachTerminalService()
+    {
+        var serviceReturn = _serviceReturn
+            ?? throw new InvalidOperationException("The terminal service has no return owner.");
+        var issuer = serviceReturn.Issuer;
+        var sourceClaim = OriginalPackageIoSourceCapacity.ServiceBytes
+            - AssetStore.OriginalStoreSourceBytes
+            - AssetStore.OriginalIssuerSourceBytes
+            - OriginalPackageIoSourceCapacity.ExecutionStateBytes;
+
+        if (!ReferenceEquals(serviceReturn.IoLifetime, this)
+            || (_executionState is not null)
+            || (_lifecycle is not TerminalStateReturned)
+            || (Interlocked.Read(ref _sourceClaim) != sourceClaim)
+            || (_generationHead is not null)
+            || (_nativeGenerationInterests is not 0)
+            || (_event != 0)
+            || (_overlapped != 0)
+            || (_scratch != 0)
+            || (_eventCloseError is not 0)
+            || (_blockReleaseState is not (NativeStateNotAcquired or NativeStateReleased))
+            || (_eventCloseState is not (NativeStateNotAcquired or NativeStateReleased)))
+        {
+            throw new InvalidOperationException("The terminal service still has a source, native resource, or generation interest.");
+        }
+
+        if (Interlocked.CompareExchange(
+            ref _lifecycle,
+            TerminalServiceReturned,
+            TerminalStateReturned) is not TerminalStateReturned)
+        {
+            throw new InvalidOperationException("The terminal service has already been returned.");
+        }
+
+        if (Interlocked.CompareExchange(ref _sourceClaim, 0, sourceClaim) != sourceClaim)
+        {
+            throw new InvalidOperationException("The terminal service source claim changed during handback.");
+        }
+
+        _serviceReturn = null;
+        return (issuer, sourceClaim);
     }
 
     internal (AssetStore.OriginalIssuer Issuer, long SourceBytes) DetachUnstartedService()

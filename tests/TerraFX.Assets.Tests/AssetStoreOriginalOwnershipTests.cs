@@ -354,6 +354,99 @@ internal sealed class AssetStoreOriginalOwnershipTests
     }
 
     [Test]
+    public async Task FundedStoreTerminalServiceReturnReleasesRemainingServiceClaim()
+    {
+        var path = AssetPackageReaderTests.CreatePackagePath();
+        var options = new AssetStoreOptions(path, new byte[32], AssetPackageReaderTests.CreateRegistration()) {
+            CpuAssetBudgetBytes = 20_000_000,
+        };
+        await WarmOriginalAnchorAsync(options).ConfigureAwait(false);
+        var store = AssetStore.PreclaimOriginalOpening(options, out var opening);
+        var issuer = opening.Issuer;
+        var serviceReturnField = typeof(AssetStore).GetField(
+            "_ioControl",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The original service control field is unavailable.");
+        var serviceReturn = serviceReturnField.GetValue(store) as AssetStore.OriginalOperation
+            ?? throw new InvalidOperationException("The original service control is unavailable.");
+        var lifetime = serviceReturn.IoLifetime
+            ?? throw new InvalidOperationException("The funded Store has no linked I/O lifetime.");
+        var executionState = lifetime._executionState
+            ?? throw new InvalidOperationException("The funded Store has no execution state.");
+        var thread = new Thread(static () => { }) {
+            IsBackground = true,
+        };
+        var sourceBefore = issuer.SourceCapacity;
+        var threadStarted = false;
+        var openingReleased = false;
+        var storeDisposed = false;
+        executionState._thread = thread;
+        executionState.PublishRetirement(lifetime);
+
+        try
+        {
+            thread.Start();
+            threadStarted = true;
+            OriginalPackageIo.RunTerminalReturnCallback(executionState);
+
+            var terminalSourceClaim = OriginalPackageIoSourceCapacity.ServiceBytes
+                - AssetStore.OriginalStoreSourceBytes
+                - AssetStore.OriginalIssuerSourceBytes
+                - OriginalPackageIoSourceCapacity.ExecutionStateBytes;
+            Assert.Multiple(() => {
+                Assert.That(
+                    issuer.SourceCapacity,
+                    Is.EqualTo(sourceBefore - OriginalPackageIoSourceCapacity.ExecutionStateBytes));
+                Assert.That(lifetime._sourceClaim, Is.EqualTo(terminalSourceClaim));
+                Assert.That(lifetime._serviceReturn, Is.SameAs(serviceReturn));
+                Assert.That(serviceReturn.IoLifetime, Is.SameAs(lifetime));
+                Assert.That(lifetime._executionState, Is.Null);
+            });
+
+            store.ReleaseUnstartedOriginalOpening(opening);
+            openingReleased = true;
+            await store.DisposeAsync().ConfigureAwait(false);
+            storeDisposed = true;
+
+            Assert.Multiple(() => {
+                Assert.That(issuer.SourceCapacity, Is.EqualTo(AssetStore.OriginalStoreSourceBytes + AssetStore.OriginalIssuerSourceBytes));
+                Assert.That(lifetime._sourceClaim, Is.Zero);
+                Assert.That(lifetime._serviceReturn, Is.Null);
+                Assert.That(serviceReturn.IoLifetime, Is.Null);
+                Assert.That(lifetime._lifecycle, Is.EqualTo(OriginalIoLifetime.TerminalServiceReturned));
+            });
+        }
+        finally
+        {
+            if (threadStarted && thread.IsAlive)
+            {
+                thread.Join();
+            }
+
+            if (!storeDisposed)
+            {
+                if (lifetime._lifecycle is OriginalIoLifetime.TerminalStateLive)
+                {
+                    executionState._thread = null;
+                    executionState._retiringOwner = null;
+                    executionState._stopRequest = 0;
+                    executionState._queueAttemptState = OriginalPackageIo.CallbackNotEntered;
+                    executionState._joinState = OriginalPackageIo.JoinNotStarted;
+                }
+
+                if (!openingReleased)
+                {
+                    store.ReleaseUnstartedOriginalOpening(opening);
+                }
+
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task IdenticalRetainedGenerationsCannotRefinanceOneByteShortCandidate()
     {
         var package = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, [0xA5]));

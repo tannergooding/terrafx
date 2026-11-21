@@ -193,7 +193,7 @@ public sealed partial class AssetStore
                 throw new InvalidOperationException("The original service issuer changed before handback.");
             }
 
-            var (returnIssuer, sourceBytes) = lifetime.DetachUnstartedService();
+            var (returnIssuer, sourceBytes) = lifetime.DetachServiceProvision();
 
             serviceReturn.ObserveSourceReturn(retainFailure: false);
             _ioControl = null;
