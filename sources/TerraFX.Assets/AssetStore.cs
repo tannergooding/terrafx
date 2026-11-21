@@ -49,10 +49,23 @@ public sealed partial class AssetStore : IAsyncDisposable
     /// <param name="cancellationToken">The token that cancels package admission.</param>
     /// <returns>The initialized asset store.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A selected budget is negative.</exception>
     /// <exception cref="InvalidDataException">The package fails digest, profile, or EPKG2 validation.</exception>
-    public static async Task<AssetStore> CreateAsync(
+    public static Task<AssetStore> CreateAsync(
         AssetStoreOptions options,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        return CreateAsyncCore(options, cancellationToken);
+    }
+
+    internal static Task<TResult> CreatePreCanceledTask<TResult>(CancellationToken cancellationToken)
+        => CreatePreCanceledTaskCore<TResult>(cancellationToken);
+
+    private static async Task<AssetStore> CreateAsyncCore(
+        AssetStoreOptions options,
+        CancellationToken cancellationToken)
     {
         var backing = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
 
@@ -80,6 +93,13 @@ public sealed partial class AssetStore : IAsyncDisposable
         var lease = new AssetLease<T>(assetId, value, lifetime);
         ownershipTransferred = true;
         return lease;
+    }
+
+    private static async Task<TResult> CreatePreCanceledTaskCore<TResult>(CancellationToken cancellationToken)
+    {
+        await Task.CompletedTask.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new InvalidOperationException("A pre-canceled Task requires a canceled token.");
     }
 
     /// <summary>Disposes the store's package ownership while active leases retain their backing.</summary>
@@ -193,34 +213,18 @@ public sealed partial class AssetStore : IAsyncDisposable
     /// <exception cref="InvalidOperationException">A live-lease or decode budget is exhausted.</exception>
     /// <exception cref="NotSupportedException">The CLR type or payload schema has no exact compiled codec.</exception>
     /// <exception cref="ObjectDisposedException">The store has been disposed.</exception>
-    public async Task<AssetLease<T>> LoadAsync<T>(
+    public Task<AssetLease<T>> LoadAsync<T>(
         AssetId assetId,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposedAtEntry();
+
         if (!assetId.IsValid)
         {
             throw new ArgumentOutOfRangeException(nameof(assetId));
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        AcquireLoad<T>(
-            assetId,
-            packageBacking: null,
-            backingReferenceAlreadyHeld: false,
-            expectedDescriptor: null,
-            out var backing,
-            out var entry,
-            out var codec,
-            out var requiredPackageCodec,
-            out var decodedBytes);
-        return await LoadAssetAsync(
-            assetId,
-            backing,
-            entry,
-            codec,
-            requiredPackageCodec,
-            decodedBytes,
-            cancellationToken).ConfigureAwait(false);
+        return LoadCurrentAsync<T>(assetId, cancellationToken);
     }
 
     /// <summary>Validates and atomically selects a replacement content-set package.</summary>
@@ -231,108 +235,14 @@ public sealed partial class AssetStore : IAsyncDisposable
     /// <exception cref="InvalidOperationException">Another package replacement is active, or a previous backing release remains unresolved.</exception>
     /// <exception cref="OperationCanceledException">The operation is canceled before candidate publication.</exception>
     /// <exception cref="ObjectDisposedException">The store has been disposed.</exception>
-    [SuppressMessage(
-        "Usage",
-        "CA1031:Do not catch general exception types",
-        Justification = "Candidate cleanup preserves the original operation failure and retains any lower release failure in the reserved Store owner slot.")]
-    public async Task ReplacePackageAsync(
+    public Task ReplacePackageAsync(
         AssetStoreOptions options,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposedAtEntry();
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
-        cancellationToken.ThrowIfCancellationRequested();
-        TaskCompletionSource replacementCompletion;
-
-        lock (_gate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-
-            if ((_replacementInProgress != 0) || (_pendingReleaseBacking is not null))
-            {
-                throw new InvalidOperationException("The store has no available package-replacement owner.");
-            }
-
-            replacementCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _replacementCompletion = replacementCompletion;
-            _replacementInProgress = 1;
-        }
-
-        AssetPackageBacking? replacement = null;
-
-        try
-        {
-            replacement = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            AssetPackageBacking previous;
-
-            lock (_gate)
-            {
-                ObjectDisposedException.ThrowIf(_disposed, this);
-                previous = _currentBacking
-                    ?? throw new InvalidOperationException("The asset store has no selected package.");
-                _currentBacking = replacement;
-                _pendingReleaseBacking = previous;
-                replacement = null;
-            }
-
-            try
-            {
-                previous.ReleaseOwner();
-            }
-            catch (Exception failure)
-            {
-                lock (_gate)
-                {
-                    _pendingReleaseFailure = failure;
-                }
-
-                throw;
-            }
-
-            lock (_gate)
-            {
-                if (ReferenceEquals(_pendingReleaseBacking, previous))
-                {
-                    _pendingReleaseBacking = null;
-                }
-            }
-        }
-        catch (Exception operationFailure)
-        {
-            if (replacement is not null)
-            {
-                try
-                {
-                    replacement.ReleaseOwner();
-                }
-                catch (Exception failure)
-                {
-                    lock (_gate)
-                    {
-                        _pendingReleaseBacking = replacement;
-                        _pendingReleaseFailure = failure;
-                    }
-                }
-            }
-
-            ExceptionDispatchInfo.Capture(operationFailure).Throw();
-            throw;
-        }
-        finally
-        {
-            lock (_gate)
-            {
-                Volatile.Write(ref _replacementInProgress, 0);
-
-                if (ReferenceEquals(_replacementCompletion, replacementCompletion))
-                {
-                    _replacementCompletion = null;
-                }
-            }
-
-            _ = replacementCompletion.TrySetResult();
-        }
+        return ReplacePackageCoreAsync(options, cancellationToken);
     }
 
     internal void ReleaseLeaseReference(long decodedBytes, bool releaseDecodedBytes)
@@ -462,6 +372,31 @@ public sealed partial class AssetStore : IAsyncDisposable
         }
     }
 
+    private async Task<AssetLease<T>> LoadCurrentAsync<T>(
+        AssetId assetId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        AcquireLoad<T>(
+            assetId,
+            packageBacking: null,
+            backingReferenceAlreadyHeld: false,
+            expectedDescriptor: null,
+            out var backing,
+            out var entry,
+            out var codec,
+            out var requiredPackageCodec,
+            out var decodedBytes);
+        return await LoadAssetAsync(
+            assetId,
+            backing,
+            entry,
+            codec,
+            requiredPackageCodec,
+            decodedBytes,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private void ReleaseDecodeBudget(long decodedBytes)
     {
         lock (_gate)
@@ -472,6 +407,108 @@ public sealed partial class AssetStore : IAsyncDisposable
             }
 
             _activeDecodeBytes -= decodedBytes;
+        }
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Candidate cleanup preserves the original operation failure and retains any lower release failure in the reserved Store owner slot.")]
+    private async Task ReplacePackageCoreAsync(
+        AssetStoreOptions options,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        TaskCompletionSource replacementCompletion;
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if ((_replacementInProgress != 0) || (_pendingReleaseBacking is not null))
+            {
+                throw new InvalidOperationException("The store has no available package-replacement owner.");
+            }
+
+            replacementCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _replacementCompletion = replacementCompletion;
+            _replacementInProgress = 1;
+        }
+
+        AssetPackageBacking? replacement = null;
+
+        try
+        {
+            replacement = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            AssetPackageBacking previous;
+
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                previous = _currentBacking
+                    ?? throw new InvalidOperationException("The asset store has no selected package.");
+                _currentBacking = replacement;
+                _pendingReleaseBacking = previous;
+                replacement = null;
+            }
+
+            try
+            {
+                previous.ReleaseOwner();
+            }
+            catch (Exception failure)
+            {
+                lock (_gate)
+                {
+                    _pendingReleaseFailure = failure;
+                }
+
+                throw;
+            }
+
+            lock (_gate)
+            {
+                if (ReferenceEquals(_pendingReleaseBacking, previous))
+                {
+                    _pendingReleaseBacking = null;
+                }
+            }
+        }
+        catch (Exception operationFailure)
+        {
+            if (replacement is not null)
+            {
+                try
+                {
+                    replacement.ReleaseOwner();
+                }
+                catch (Exception failure)
+                {
+                    lock (_gate)
+                    {
+                        _pendingReleaseBacking = replacement;
+                        _pendingReleaseFailure = failure;
+                    }
+                }
+            }
+
+            ExceptionDispatchInfo.Capture(operationFailure).Throw();
+            throw;
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                Volatile.Write(ref _replacementInProgress, 0);
+
+                if (ReferenceEquals(_replacementCompletion, replacementCompletion))
+                {
+                    _replacementCompletion = null;
+                }
+            }
+
+            _ = replacementCompletion.TrySetResult();
         }
     }
 
@@ -488,6 +525,14 @@ public sealed partial class AssetStore : IAsyncDisposable
             }
 
             _activeDecodeBytes += decodedBytes;
+        }
+    }
+
+    private void ThrowIfDisposedAtEntry()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
         }
     }
 

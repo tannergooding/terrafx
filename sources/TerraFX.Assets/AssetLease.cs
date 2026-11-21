@@ -106,6 +106,17 @@ public sealed class AssetLease<T> : IDisposable
     {
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
+
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return AssetStore.CreatePreCanceledTask<AssetLease<TAsset>>(cancellationToken);
+        }
+
         var (store, backing) = state.AcquirePackageBackingReference(this);
         return store.LoadFromPackageAsync<TAsset>(assetId, backing, cancellationToken);
     }
@@ -142,6 +153,17 @@ public sealed class AssetLease<T> : IDisposable
     {
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
+
+        if (!descriptor.AssetId.IsValid)
+        {
+            throw new ArgumentException("The read descriptor is uninitialized.", nameof(descriptor));
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return AssetStore.CreatePreCanceledTask<AssetLease<TAsset>>(cancellationToken);
+        }
+
         var (store, backing) = state.AcquirePackageBackingReference(this);
         return store.LoadDescribedFromPackageAsync<TAsset>(descriptor, backing, cancellationToken);
     }

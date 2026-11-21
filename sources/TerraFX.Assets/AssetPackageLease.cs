@@ -100,6 +100,17 @@ public sealed class AssetPackageLease : IDisposable
     {
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
+
+        if (!descriptor.AssetId.IsValid)
+        {
+            throw new ArgumentException("The read descriptor is uninitialized.", nameof(descriptor));
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return AssetStore.CreatePreCanceledTask<AssetLease<T>>(cancellationToken);
+        }
+
         var (store, backing) = state.AcquireBackingReference(this);
         return store.LoadDescribedFromPackageAsync<T>(descriptor, backing, cancellationToken);
     }
@@ -108,13 +119,19 @@ public sealed class AssetPackageLease : IDisposable
         AssetId assetId,
         CancellationToken cancellationToken)
     {
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+
         if (!assetId.IsValid)
         {
             throw new ArgumentOutOfRangeException(nameof(assetId));
         }
 
-        var state = Volatile.Read(ref _state);
-        ObjectDisposedException.ThrowIf(state is null, this);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return AssetStore.CreatePreCanceledTask<AssetLease<T>>(cancellationToken);
+        }
+
         var (store, backing) = state.AcquireBackingReference(this);
         return store.LoadFromPackageAsync<T>(assetId, backing, cancellationToken);
     }
@@ -122,15 +139,21 @@ public sealed class AssetPackageLease : IDisposable
     internal Task<bool> MatchesAssetReferenceAsync(
         AssetReference reference,
         CancellationToken cancellationToken)
-        => MatchesAssetReferenceCoreAsync(reference, requiredMinor: null, cancellationToken);
+    {
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        return MatchesAssetReferenceCoreAsync(state, reference, requiredMinor: null, cancellationToken);
+    }
 
     internal Task<bool> MatchesAssetReferenceAsync(
         AssetReference reference,
         int requiredMinor,
         CancellationToken cancellationToken)
     {
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
         ArgumentOutOfRangeException.ThrowIfNegative(requiredMinor);
-        return MatchesAssetReferenceCoreAsync(reference, requiredMinor, cancellationToken);
+        return MatchesAssetReferenceCoreAsync(state, reference, requiredMinor, cancellationToken);
     }
 
     internal bool TryDescribeOwnedRead<T>(
@@ -150,6 +173,7 @@ public sealed class AssetPackageLease : IDisposable
     }
 
     private async Task<bool> MatchesAssetReferenceCoreAsync(
+        LeaseState state,
         AssetReference reference,
         int? requiredMinor,
         CancellationToken cancellationToken)
@@ -161,9 +185,8 @@ public sealed class AssetPackageLease : IDisposable
 
         ArgumentOutOfRangeException.ThrowIfEqual(reference.SchemaId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(reference.SchemaMajor);
+
         cancellationToken.ThrowIfCancellationRequested();
-        var state = Volatile.Read(ref _state);
-        ObjectDisposedException.ThrowIf(state is null, this);
         var (store, backing) = state.AcquireBackingReference(this);
 
         try
