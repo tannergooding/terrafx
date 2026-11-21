@@ -399,13 +399,41 @@ internal static class ScenePersistenceRestorer
         return checked(64L + ((payloadBytes + 15L) & ~15L));
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Restore cleanup must attempt every untransferred owner and preserve the first failure.")]
     private static void DisposePlans(Span<SceneExpansionPlan?> plans)
     {
+        ExceptionDispatchInfo? firstFailure = null;
+
         for (var index = 0; index < plans.Length; index++)
         {
-            plans[index]?.Dispose();
-            plans[index] = null;
+            var plan = plans[index];
+
+            if (plan is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                plan.Dispose();
+
+                if (!plan.IsCleanupComplete)
+                {
+                    throw new InvalidOperationException("The prepared Scene plan cleanup has not completed.");
+                }
+
+                plans[index] = null;
+            }
+            catch (Exception exception)
+            {
+                firstFailure ??= plan.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+            }
         }
+
+        firstFailure?.Throw();
     }
 
     private static int FindExpandedEntityIndex(SceneExpansionPlan plan, Guid expandedEntityKey)
@@ -920,6 +948,7 @@ internal static class ScenePersistenceRestorer
         {
             if (_isDisposed)
             {
+                DisposePlans(_plans);
                 return;
             }
 

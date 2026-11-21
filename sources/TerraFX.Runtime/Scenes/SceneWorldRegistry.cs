@@ -60,6 +60,8 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
     public ExceptionDispatchInfo? CleanupFailure => Volatile.Read(ref _disposeFailure);
 
+    public bool HasActiveUnloadInvocation => HasActiveUnloadInvocationCore();
+
     public bool HasRetainedCleanup => (Volatile.Read(ref _cleanupPendingInstanceCount) != 0)
         || (CleanupFailure is not null);
 
@@ -180,6 +182,11 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             }
 
             _world.ValidateSceneCleanupThread();
+
+            if (HasActiveUnloadInvocationCore())
+            {
+                throw new InvalidOperationException("The Scene registry cannot dispose before its unload invocation returns.");
+            }
 
             lock (_requestGate)
             {
@@ -927,6 +934,22 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         }
 
         return low;
+    }
+
+    private bool HasActiveUnloadInvocationCore()
+    {
+        lock (_instanceGate)
+        {
+            for (var index = 0; index < _ownedInstances.Length; index++)
+            {
+                if (_ownedInstances[index]?.IsUnloadInvocationActive == true)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private void InsertActiveInstanceByOrdinal(SceneInstance instance, int index)

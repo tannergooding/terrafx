@@ -1465,6 +1465,7 @@ public sealed partial class World : IDisposable
         }
 
         ThrowIfSceneCleanupInvocationActive();
+        ThrowIfSceneUnloadInvocationActive();
 
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -1629,6 +1630,8 @@ public sealed partial class World : IDisposable
             diagnosticFundingControl.ReleaseUse();
             _diagnosticFundingControl = null;
 
+            sceneCleanupFailure?.Throw();
+
             if (attachmentCleanupException is not null)
             {
                 throw attachmentCleanupException;
@@ -1639,7 +1642,6 @@ public sealed partial class World : IDisposable
                 throw _systemCleanupPreparation.CreateCleanupException();
             }
 
-            sceneCleanupFailure?.Throw();
             closeSucceeded = !cleanupRequiresQuarantine;
         }
         finally
@@ -2619,6 +2621,14 @@ public sealed partial class World : IDisposable
         if (_sceneParticipant is { IsCleanupInvocationActive: true })
         {
             throw new InvalidOperationException("World access is unavailable during Scene cleanup.");
+        }
+    }
+
+    private void ThrowIfSceneUnloadInvocationActive()
+    {
+        if (_sceneParticipant is { HasActiveUnloadInvocation: true })
+        {
+            throw new InvalidOperationException("World disposal is unavailable until the Scene unload invocation returns.");
         }
     }
 

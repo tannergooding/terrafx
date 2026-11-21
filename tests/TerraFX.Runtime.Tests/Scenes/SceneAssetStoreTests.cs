@@ -1311,6 +1311,93 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "PreparedRestore retains the plan whose adopted resource deliberately fails cleanup.")]
+    public void PreparedRestoreDisposalAttemptsEveryUntransferredPlan()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var firstSceneId = new AssetId(3);
+        var secondSceneId = new AssetId(4);
+        var firstScene = SceneAssetReaderTests.Fixtures.CreateScene(firstSceneId);
+        var secondScene = SceneAssetReaderTests.Fixtures.CreateScene(secondSceneId);
+        var package = Package.CreatePackage(
+            new Package.Entry(3, Package.CreateEnvelope(3, firstScene)),
+            new Package.Entry(4, Package.CreateEnvelope(4, secondScene)));
+        var packagePath = Package.WritePackage(package);
+        var worldBuilder = new WorldRegistrationBuilder(schemas);
+        _ = worldBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        using var world = World.Create(new WorldOptions(worldBuilder.Build()));
+        var registry = (SceneWorldRegistry)(world.Registration.SceneSupport
+            ?? throw new InvalidOperationException("The test World has no Scene support.")).GetParticipant(world);
+
+        try
+        {
+            var store = AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).GetAwaiter().GetResult();
+
+            try
+            {
+                var firstPlan = ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    firstSceneId,
+                    SceneExpansionLimits.Default).GetAwaiter().GetResult();
+                var secondPlan = ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    secondSceneId,
+                    SceneExpansionLimits.Default).GetAwaiter().GetResult();
+                var failure = new InvalidOperationException("The first restore Scene resource could not be released.");
+                var cleanup = new ScenePlanCleanupProbe(failure);
+                firstPlan.AttachPreparedAssets(cleanup);
+                var options = new SceneLoadOptions().ValidateAndFreeze();
+                var firstInstanceId = new Guid("50000000-0000-4000-8000-000000000001");
+                var secondInstanceId = new Guid("50000000-0000-4000-8000-000000000002");
+                var prepared = new ScenePersistenceRestorer.PreparedRestore(
+                    world,
+                    registry,
+                    [
+                        new ScenePersistenceRestorer.SceneRestoreInstance(
+                            firstInstanceId,
+                            1,
+                            firstScene,
+                            firstSceneId,
+                            options),
+                        new ScenePersistenceRestorer.SceneRestoreInstance(
+                            secondInstanceId,
+                            2,
+                            secondScene,
+                            secondSceneId,
+                            options),
+                    ],
+                    [firstPlan, secondPlan],
+                    ReadOnlyMemory<byte>.Empty,
+                    hierarchyNodeCount: 0);
+
+                var firstFailure = Assert.Throws<InvalidOperationException>(prepared.Dispose);
+                var repeatedFailure = Assert.Throws<InvalidOperationException>(prepared.Dispose);
+
+                Assert.Multiple(() => {
+                    Assert.That(firstFailure, Is.SameAs(failure));
+                    Assert.That(repeatedFailure, Is.SameAs(firstFailure));
+                    Assert.That(cleanup.DisposeCalls, Is.EqualTo(1));
+                    Assert.That(firstPlan.IsCleanupComplete, Is.False);
+                    Assert.That(secondPlan.IsCleanupComplete, Is.True);
+                });
+            }
+            finally
+            {
+                store.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     public async Task RejectsExpandedEntityLimitBeforePublishingAPlan()
     {
         var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();

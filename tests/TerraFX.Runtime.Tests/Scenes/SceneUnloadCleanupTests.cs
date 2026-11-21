@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
@@ -498,6 +499,69 @@ internal sealed class SceneUnloadCleanupTests
         Assert.That(refusedWorld.GetWorldOwnedStateBytes(), Is.EqualTo(emptyBaseline));
     }
 
+    [Test]
+    public void UnloadContinuationCannotDisposeRegistryBeforeInvocationReturns()
+    {
+        using var fixture = new CleanupFixture();
+        var scheduler = new InlineContinuationScheduler();
+        var scene = fixture.Activate();
+        var unload = scene.Instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
+        var unloadInvocationWasActive = false;
+        InvalidOperationException? worldDisposeFailure = null;
+        InvalidOperationException? registryDisposeFailure = null;
+        var worldWasDisposed = false;
+        var continuationThreadId = 0;
+        var ownerThreadId = GetField<int>(fixture.World, "_ownerThreadId");
+        var continuation = unload.ContinueWith(
+            _ => {
+                continuationThreadId = Environment.CurrentManagedThreadId;
+                unloadInvocationWasActive = scene.Instance.IsUnloadInvocationActive;
+
+                try
+                {
+                    fixture.World.Dispose();
+                }
+                catch (InvalidOperationException exception)
+                {
+                    worldDisposeFailure = exception;
+                }
+
+                try
+                {
+                    fixture.Registry.Dispose();
+                }
+                catch (InvalidOperationException exception)
+                {
+                    registryDisposeFailure = exception;
+                }
+
+                worldWasDisposed = GetField<int>(fixture.World, "_disposed") != 0;
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            scheduler);
+
+        fixture.World.PumpControlBoundary();
+        continuation.GetAwaiter().GetResult();
+
+        Assert.Multiple(() => {
+            Assert.That(unloadInvocationWasActive, Is.True);
+            Assert.That(continuationThreadId, Is.EqualTo(ownerThreadId));
+            Assert.That(
+                worldDisposeFailure?.Message,
+                Is.EqualTo("World disposal is unavailable until the Scene unload invocation returns."));
+            Assert.That(
+                registryDisposeFailure?.Message,
+                Is.EqualTo("The Scene registry cannot dispose before its unload invocation returns."));
+            Assert.That(worldWasDisposed, Is.False);
+            Assert.That(scene.Instance.IsUnloadInvocationActive, Is.False);
+            Assert.That(scene.Instance.IsCleanupComplete, Is.True);
+            Assert.That(unload.GetAwaiter().GetResult().Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
+        });
+
+        fixture.World.Dispose();
+    }
+
     [TestCase(HierarchyDestroyMode.DetachChildrenKeepWorld)]
     [TestCase(HierarchyDestroyMode.DestroySubtree)]
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
@@ -594,6 +658,34 @@ internal sealed class SceneUnloadCleanupTests
         _ = Assert.Throws<InvalidOperationException>(() => candidate.Activate(Guid.NewGuid(), 1));
         Assert.That(Assert.Throws<InvalidOperationException>(fixture.World.Dispose), Is.SameAs(failure));
         Assert.That(cleanup.DisposeCalls, Is.EqualTo(1));
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The plan owner is retained by its Scene instance after the deliberate cleanup failure.")]
+    public void WorldDisposePreservesFirstSceneFailureWhileAttemptingLaterCleanup()
+    {
+        var systemCleanup = new CleanupProbe();
+        using var fixture = new CleanupFixture(systemCleanup: systemCleanup, attachments: true);
+        var sceneFailure = new InvalidOperationException("The first Scene cleanup failed.");
+        var attachmentCleanup = new CleanupProbe(new InvalidOperationException("The later attachment cleanup failed."));
+        var scene = fixture.Activate(new CleanupProbe(sceneFailure));
+        fixture.World.SetAttachment(
+            new CleanupAttachment(attachmentCleanup),
+            AttachmentOwnership.Transferred);
+
+        var observed = Assert.Throws<InvalidOperationException>(fixture.World.Dispose);
+
+        Assert.Multiple(() => {
+            Assert.That(observed, Is.SameAs(sceneFailure));
+            Assert.That(attachmentCleanup.DisposeCalls, Is.EqualTo(1));
+            Assert.That(systemCleanup.DisposeCalls, Is.EqualTo(1));
+            Assert.That(scene.Instance.CleanupFailure?.SourceException, Is.SameAs(sceneFailure));
+            Assert.That(fixture.Registry.HasRetainedCleanup, Is.True);
+            Assert.That(fixture.Domain.Retirement.IsCompleted, Is.False);
+        });
     }
 
     private readonly struct AttachmentReader : IComponentValueReader<CleanupAttachment, long>
@@ -837,6 +929,22 @@ internal sealed class SceneUnloadCleanupTests
     private readonly struct CleanupSystemRelease(CleanupProbe cleanup) : IWorldSystemRelease<CleanupSystem>
     {
         public void Invoke(CleanupSystem system) => cleanup.Dispose();
+    }
+
+    private sealed class InlineContinuationScheduler : TaskScheduler
+    {
+        protected override IEnumerable<Task>? GetScheduledTasks() => [];
+
+        protected override void QueueTask(Task task)
+        {
+            if (!TryExecuteTask(task))
+            {
+                throw new InvalidOperationException("The unload completion continuation could not be executed inline.");
+            }
+        }
+
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued)
+            => !taskWasPreviouslyQueued && TryExecuteTask(task);
     }
 
     private readonly record struct OwnedScene(

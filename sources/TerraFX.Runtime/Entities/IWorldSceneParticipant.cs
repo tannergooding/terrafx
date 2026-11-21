@@ -11,6 +11,8 @@ internal interface IWorldSceneParticipant
 {
     ExceptionDispatchInfo? CleanupFailure { get; }
 
+    bool HasActiveUnloadInvocation { get; }
+
     bool HasRetainedCleanup { get; }
 
     Type HierarchyLocalTransformComponentType { get; }
