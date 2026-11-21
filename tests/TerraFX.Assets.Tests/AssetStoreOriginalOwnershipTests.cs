@@ -25,11 +25,78 @@ internal sealed class AssetStoreOriginalOwnershipTests
         await warm.DisposeAsync().ConfigureAwait(false);
     }
 
+    private static (
+        string Path,
+        AssetStore Store,
+        AssetStore.OriginalOperation Opening,
+        AssetStore.OriginalIssuer Issuer,
+        OriginalIoLifetime Lifetime,
+        OriginalPackageIo ExecutionState,
+        Thread Thread,
+        long SourceBefore,
+        long SourceClaim) CreateTerminalCandidate()
+    {
+        var path = AssetPackageReaderTests.CreatePackagePath();
+        var options = new AssetStoreOptions(path, new byte[32], AssetPackageReaderTests.CreateRegistration()) {
+            CpuAssetBudgetBytes = 20_000_000,
+        };
+        var store = AssetStore.PreclaimOriginalOpening(options, out var opening);
+        var issuer = opening.Issuer;
+        var sourceBefore = issuer.SourceCapacity;
+        var sourceClaim = OriginalPackageIoSourceCapacity.ExecutionStateBytes
+            + OriginalPackageIoSourceCapacity.LifetimeBytes;
+        issuer.ClaimSource(sourceClaim, liveWireBytes: 0);
+
+        var lifetime = new OriginalIoLifetime {
+            _serviceReturn = opening,
+            _sourceClaim = sourceClaim,
+        };
+        var thread = new Thread(static () => { }) {
+            IsBackground = true,
+        };
+        var executionState = new OriginalPackageIo {
+            _issuer = issuer,
+            _thread = thread,
+        };
+        lifetime._executionState = executionState;
+        executionState.PublishRetirement(lifetime);
+        return (path, store, opening, issuer, lifetime, executionState, thread, sourceBefore, sourceClaim);
+    }
+
     private static long GetGenerationId(AssetPackageBacking backing)
         => (long)(typeof(AssetPackageBacking).GetField(
             "_originalGenerationId",
             BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(backing)
             ?? throw new InvalidOperationException("The original generation identity is missing."));
+
+    private static async Task ReleaseTerminalCandidateAsync(
+        string path,
+        AssetStore store,
+        AssetStore.OriginalOperation opening,
+        AssetStore.OriginalIssuer issuer,
+        OriginalIoLifetime lifetime,
+        OriginalPackageIo executionState,
+        Thread thread)
+    {
+        if (thread.IsAlive)
+        {
+            thread.Join();
+        }
+
+        lifetime._executionState = null;
+        lifetime._serviceReturn = null;
+        executionState._retiringOwner = null;
+        var remainingClaim = lifetime._sourceClaim;
+
+        if (remainingClaim is not 0)
+        {
+            issuer.ReleaseSource(remainingClaim);
+        }
+
+        store.ReleaseUnstartedOriginalOpening(opening);
+        await store.DisposeAsync().ConfigureAwait(false);
+        File.Delete(path);
+    }
 
     [SuppressMessage(
         "Usage",
@@ -224,6 +291,69 @@ internal sealed class AssetStoreOriginalOwnershipTests
     }
 
     [Test]
+    public async Task FailedTerminalPreconditionsPreserveExecutionStateUntilHandback()
+    {
+        var candidate = CreateTerminalCandidate();
+        var sourceFailure = new InvalidDataException("retained original service failure");
+        candidate.Opening.RecordFailure(sourceFailure, cleanup: false);
+        var primaryFailureField = typeof(AssetStore.OriginalOperation).GetField(
+            "_primary",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The original service failure field is unavailable.");
+
+        try
+        {
+            _ = Assert.Throws<InvalidOperationException>(
+                () => OriginalIoLifetime.CompleteTerminalReturn(candidate.Lifetime));
+            Assert.That(
+                candidate.Issuer.SourceCapacity,
+                Is.EqualTo(candidate.SourceBefore + candidate.SourceClaim));
+            Assert.That(candidate.Lifetime._executionState, Is.SameAs(candidate.ExecutionState));
+
+            candidate.Thread.Start();
+            OriginalPackageIo.RunTerminalReturnCallback(candidate.ExecutionState);
+
+            Assert.Multiple(() => {
+                Assert.That(
+                    candidate.Issuer.SourceCapacity,
+                    Is.EqualTo(candidate.SourceBefore + OriginalPackageIoSourceCapacity.LifetimeBytes));
+                Assert.That(
+                    candidate.Lifetime._sourceClaim,
+                    Is.EqualTo(OriginalPackageIoSourceCapacity.LifetimeBytes));
+                Assert.That(candidate.Lifetime._executionState, Is.Null);
+                Assert.That(candidate.Lifetime._serviceReturn, Is.SameAs(candidate.Opening));
+                Assert.That(primaryFailureField.GetValue(candidate.Opening), Is.SameAs(sourceFailure));
+                Assert.That(candidate.ExecutionState._activeRequest, Is.Null);
+                Assert.That(candidate.ExecutionState._issuer, Is.Null);
+                Assert.That(candidate.ExecutionState._queueGate, Is.Null);
+                Assert.That(candidate.ExecutionState._queueHead, Is.Null);
+                Assert.That(candidate.ExecutionState._queueTail, Is.Null);
+                Assert.That(candidate.ExecutionState._retirementCallback, Is.Null);
+                Assert.That(candidate.ExecutionState._retiringOwner, Is.Null);
+                Assert.That(candidate.ExecutionState._returningHead, Is.Null);
+                Assert.That(candidate.ExecutionState._thread, Is.Null);
+            });
+
+            _ = Assert.Throws<InvalidOperationException>(
+                () => OriginalIoLifetime.CompleteTerminalReturn(candidate.Lifetime));
+            Assert.That(
+                candidate.Issuer.SourceCapacity,
+                Is.EqualTo(candidate.SourceBefore + OriginalPackageIoSourceCapacity.LifetimeBytes));
+        }
+        finally
+        {
+            await ReleaseTerminalCandidateAsync(
+                candidate.Path,
+                candidate.Store,
+                candidate.Opening,
+                candidate.Issuer,
+                candidate.Lifetime,
+                candidate.ExecutionState,
+                candidate.Thread).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task IdenticalRetainedGenerationsCannotRefinanceOneByteShortCandidate()
     {
         var package = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, [0xA5]));
@@ -333,6 +463,41 @@ internal sealed class AssetStoreOriginalOwnershipTests
         Assert.That(task.IsCanceled, Is.True);
         Assert.That(failure!.CancellationToken, Is.EqualTo(cancellation.Token));
         Assert.That(File.Exists(path), Is.False);
+    }
+
+    [Test]
+    public async Task TerminalCallbackRefusesHandbackWhileNativeUseRemains()
+    {
+        var candidate = CreateTerminalCandidate();
+        candidate.ExecutionState._nativeUse = 1;
+
+        try
+        {
+            candidate.Thread.Start();
+            _ = Assert.Throws<InvalidOperationException>(
+                () => OriginalPackageIo.RunTerminalReturnCallback(candidate.ExecutionState));
+
+            Assert.Multiple(() => {
+                Assert.That(candidate.Thread.IsAlive, Is.False);
+                Assert.That(candidate.Issuer.SourceCapacity, Is.EqualTo(candidate.SourceBefore + candidate.SourceClaim));
+                Assert.That(candidate.Lifetime._sourceClaim, Is.EqualTo(candidate.SourceClaim));
+                Assert.That(candidate.Lifetime._executionState, Is.SameAs(candidate.ExecutionState));
+                Assert.That(candidate.Lifetime._lifecycle, Is.EqualTo(OriginalIoLifetime.TerminalStateLive));
+                Assert.That(candidate.ExecutionState._retiringOwner, Is.SameAs(candidate.Lifetime));
+                Assert.That(candidate.ExecutionState._thread, Is.SameAs(candidate.Thread));
+            });
+        }
+        finally
+        {
+            await ReleaseTerminalCandidateAsync(
+                candidate.Path,
+                candidate.Store,
+                candidate.Opening,
+                candidate.Issuer,
+                candidate.Lifetime,
+                candidate.ExecutionState,
+                candidate.Thread).ConfigureAwait(false);
+        }
     }
 
     [Test]

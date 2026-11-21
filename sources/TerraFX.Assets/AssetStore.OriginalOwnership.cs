@@ -549,6 +549,8 @@ public sealed partial class AssetStore
 
         internal bool FileAcquisitionAttempted => _fileInterest != 0;
 
+        internal OriginalIssuer Issuer => _issuer;
+
         internal OriginalOperation? Next
         {
             get
