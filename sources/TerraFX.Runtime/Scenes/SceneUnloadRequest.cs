@@ -2,6 +2,7 @@
 
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -33,6 +34,12 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
     internal override void CancelFromRegistryDisposal()
         => _ = _completion.TrySetException(new ObjectDisposedException(nameof(SceneWorldRegistry)));
 
+    internal void EndExecution(SceneWorldRegistry registry)
+    {
+        _instance.EndUnloadInvocation(this);
+        registry.FinalizeInstanceCleanup(_instance);
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -50,14 +57,153 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
 
         if (!registry.ContainsInstance(_instance))
         {
-            _ = _completion.TrySetResult(new SceneUnloadReceipt(
-                SceneUnloadStatus.AlreadyUnloaded,
-                _instance.SceneInstanceId,
-                world.CanonicalMutationRevision,
-                []));
+            if (_instance.CleanupFailure is { } failure)
+            {
+                _ = _completion.TrySetException(failure.SourceException);
+            }
+            else if (_instance.IsCleanupComplete)
+            {
+                _ = _completion.TrySetResult(new SceneUnloadReceipt(
+                    SceneUnloadStatus.AlreadyUnloaded,
+                    _instance.SceneInstanceId,
+                    world.CanonicalMutationRevision,
+                    []));
+            }
+            else
+            {
+                _ = _completion.TrySetException(
+                    new InvalidOperationException("The inactive Scene still owns an unfinished cleanup invocation."));
+            }
+
             return;
         }
 
+        World.WorldSceneControlAppend? controlAppend = null;
+        var commitFacts = default(World.WorldSceneStructuralCommitFacts);
+        ExceptionDispatchInfo? operationFailure = null;
+        SceneUnloadReceipt? receipt = null;
+        var canceled = false;
+
+        try
+        {
+            try
+            {
+                PrepareControl(world, out receipt, out controlAppend);
+
+                if ((controlAppend is not null) && (receipt is null))
+                {
+                    controlAppend.ValidateForCommit();
+                    _ = world.DestroySceneEntitiesAtomically(
+                        _instance.SceneInstanceId,
+                        _instance.FirstEntityIdentityOrdinal,
+                        _instance.EntityCount,
+                        _mode,
+                        _cancellationToken,
+                        out commitFacts);
+                }
+            }
+            catch (OperationCanceledException) when (!commitFacts.InstallationStarted && _cancellationToken.IsCancellationRequested)
+            {
+                canceled = true;
+            }
+            catch (Exception exception)
+            {
+                operationFailure = commitFacts.Failure ?? ExceptionDispatchInfo.Capture(exception);
+            }
+
+            if (commitFacts.InstallationStarted)
+            {
+                try
+                {
+                    registry.BeginUnloadCleanup(
+                        _instance,
+                        controlAppend ?? throw new InvalidOperationException("The committed Scene unload lost its prepared control."),
+                        this,
+                        operationFailure);
+                    controlAppend = null;
+
+                    if (commitFacts.Committed)
+                    {
+                        registry.CleanupInstance(_instance);
+                    }
+                    else
+                    {
+                        _instance.RetainUncommittedFailure(operationFailure
+                            ?? throw new InvalidOperationException("An incomplete Scene structural installation lost its failure."));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    operationFailure ??= _instance.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+
+                    if (controlAppend is not null)
+                    {
+                        _instance.RetainControlReturnFailure(controlAppend, this, operationFailure);
+                        controlAppend = null;
+                        _instance.RetainUncommittedFailure(operationFailure);
+                        world.FaultSceneCleanupInvariant(exception);
+                    }
+                }
+
+                if (operationFailure is null)
+                {
+                    receipt = new SceneUnloadReceipt(
+                        SceneUnloadStatus.Unloaded,
+                        _instance.SceneInstanceId,
+                        commitFacts.CommittedRevision,
+                        []);
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                controlAppend?.Dispose();
+            }
+            catch (Exception exception) when (controlAppend is not null)
+            {
+                operationFailure ??= controlAppend.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+                _instance.RetainControlReturnFailure(controlAppend, this, operationFailure);
+                world.FaultSceneCleanupInvariant(exception);
+            }
+        }
+
+        if (operationFailure is not null)
+        {
+            _ = _completion.TrySetException(operationFailure.SourceException);
+        }
+        else if (canceled)
+        {
+            _ = _completion.TrySetCanceled(_cancellationToken);
+        }
+        else
+        {
+            _ = _completion.TrySetResult(
+                receipt ?? throw new InvalidOperationException("The Scene unload produced no terminal receipt."));
+        }
+    }
+
+    internal void Reject(Diagnostic diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        _ = _completion.TrySetResult(CreateRejectedReceipt(diagnostic));
+    }
+
+    private SceneUnloadReceipt CreateRejectedReceipt(Diagnostic diagnostic)
+        => new(
+            SceneUnloadStatus.Rejected,
+            _instance.SceneInstanceId,
+            structuralRevision: null,
+            [diagnostic]);
+
+    private void PrepareControl(
+        World world,
+        out SceneUnloadReceipt? receipt,
+        out World.WorldSceneControlAppend? controlAppend)
+    {
+        receipt = null;
+        controlAppend = null;
         var limits = WorldPersistenceEbinLimits.Create(world.Options);
         var controlMeasureStatus = ScenePersistenceControlRecordWriter.MeasureUnload(
             world,
@@ -69,7 +215,7 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
 
         if (controlMeasureStatus is not EbinWriteStatus.Complete)
         {
-            Reject(world.CreateDiagnostic(
+            receipt = CreateRejectedReceipt(world.CreateDiagnostic(
                 "SceneUnload.ControlRecordInvalid",
                 DiagnosticSeverity.Error,
                 "SceneInstance.UnloadAsync",
@@ -78,13 +224,13 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
             return;
         }
 
-        using var controlAppend = world.TryPrepareSceneControlAppend(
+        controlAppend = world.TryPrepareSceneControlAppend(
             controlWorkspace.RecordBytes,
             controlWorkspace.WorkspaceBytes);
 
         if (controlAppend is null)
         {
-            Reject(world.CreateDiagnostic(
+            receipt = CreateRejectedReceipt(world.CreateDiagnostic(
                 "SceneUnload.ControlCapacityExceeded",
                 DiagnosticSeverity.Error,
                 "SceneInstance.UnloadAsync",
@@ -106,7 +252,7 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
         if ((controlWriteStatus is not EbinWriteStatus.Complete)
             || (controlBytesWritten != controlWorkspace.RecordBytes))
         {
-            Reject(world.CreateDiagnostic(
+            receipt = CreateRejectedReceipt(world.CreateDiagnostic(
                 "SceneUnload.ControlRecordInvalid",
                 DiagnosticSeverity.Error,
                 "SceneInstance.UnloadAsync",
@@ -114,41 +260,5 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
                 _instance.AssetId.Value));
             return;
         }
-
-        try
-        {
-            var revision = world.DestroySceneEntitiesAtomically(
-                _instance.SceneInstanceId,
-                _instance.FirstEntityIdentityOrdinal,
-                _instance.EntityCount,
-                _mode,
-                _cancellationToken);
-            registry.RemoveInstance(_instance);
-            _instance.RevokeFromWorld();
-            controlAppend.Commit();
-            _ = _completion.TrySetResult(new SceneUnloadReceipt(
-                SceneUnloadStatus.Unloaded,
-                _instance.SceneInstanceId,
-                revision,
-                []));
-        }
-        catch (OperationCanceledException) when (_cancellationToken.IsCancellationRequested)
-        {
-            _ = _completion.TrySetCanceled(_cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            _ = _completion.TrySetException(exception);
-        }
-    }
-
-    internal void Reject(Diagnostic diagnostic)
-    {
-        ArgumentNullException.ThrowIfNull(diagnostic);
-        _ = _completion.TrySetResult(new SceneUnloadReceipt(
-            SceneUnloadStatus.Rejected,
-            _instance.SceneInstanceId,
-            structuralRevision: null,
-            [diagnostic]));
     }
 }

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -14,9 +15,21 @@ namespace TerraFX.Scenes;
 /// <summary>Identifies one activated Scene within its exact World.</summary>
 public sealed class SceneInstance
 {
+    private const int LifecycleActivating = 1;
+    private const int LifecycleActive = 2;
+    private const int LifecycleCleaning = 4;
+    private const int LifecycleCleanupComplete = 5;
+    private const int LifecycleCleanupFailed = 6;
+    private const int LifecycleConstructed = 0;
+    private const int LifecycleInactivePending = 3;
+
+    private World.WorldSceneControlAppend? _cleanupControlAppend;
+    private ExceptionDispatchInfo? _cleanupFailure;
+    private SceneUnloadRequest? _cleanupRequest;
+    private readonly int _entityCount;
     private SceneExternalBindingCaptureRow[]? _externalBindings;
     private uint _firstEntityIdentityOrdinal;
-    private int _isActive;
+    private int _lifecycle;
     private readonly int _occurrenceCount;
     private SceneExpansionPlan? _plan;
     private readonly SceneWorldRegistry _registry;
@@ -37,6 +50,7 @@ public sealed class SceneInstance
         _registry = registry;
         _plan = plan;
         _externalBindings = externalBindings;
+        _entityCount = plan.Entities.Length;
         _occurrenceCount = plan.Occurrences.Length;
         AssetId = plan.SceneAssetId;
     }
@@ -47,9 +61,19 @@ public sealed class SceneInstance
     /// <summary>Gets the stable identity assigned to this Scene instance.</summary>
     public Guid SceneInstanceId => _sceneInstanceId;
 
-    internal int EntityCount => _plan?.Entities.Length ?? 0;
+    internal ExceptionDispatchInfo? CleanupFailure => Volatile.Read(ref _cleanupFailure);
+
+    internal int EntityCount => _entityCount;
 
     internal uint FirstEntityIdentityOrdinal => _firstEntityIdentityOrdinal;
+
+    internal bool IsActivating => Volatile.Read(ref _lifecycle) == LifecycleActivating;
+
+    internal bool IsActive => Volatile.Read(ref _lifecycle) == LifecycleActive;
+
+    internal bool IsCleanupComplete => Volatile.Read(ref _lifecycle) == LifecycleCleanupComplete;
+
+    internal bool IsUnloadInvocationActive => Volatile.Read(ref _cleanupRequest) is not null;
 
     internal int OccurrenceCount => _occurrenceCount;
 
@@ -87,7 +111,7 @@ public sealed class SceneInstance
     {
         var plan = Volatile.Read(ref _plan);
 
-        if ((Volatile.Read(ref _isActive) != 1) || (plan is null))
+        if (!IsActive || (plan is null))
         {
             throw new InvalidOperationException("A Scene transaction requires an active Scene instance.");
         }
@@ -118,7 +142,7 @@ public sealed class SceneInstance
     {
         ArgumentOutOfRangeException.ThrowIfEqual(stableEntityId, Guid.Empty);
 
-        if ((Volatile.Read(ref _isActive) != 1)
+        if (!IsActive
             || (_plan is not { } plan)
             || !plan.TryResolveRootEntity(stableEntityId, out var expandedEntityIndex))
         {
@@ -139,7 +163,7 @@ public sealed class SceneInstance
     {
         ArgumentNullException.ThrowIfNull(address);
 
-        if ((Volatile.Read(ref _isActive) != 1) || (_plan is not { } plan))
+        if (!IsActive || (_plan is not { } plan))
         {
             entity = default;
             return false;
@@ -169,7 +193,7 @@ public sealed class SceneInstance
     /// <exception cref="InvalidOperationException">The World is not idle on its owner thread.</exception>
     public bool TryGetProvenance(Entity entity, [NotNullWhen(true)] out SceneEntityProvenance? provenance)
     {
-        if ((Volatile.Read(ref _isActive) != 1)
+        if (!IsActive
             || (_plan is not { } plan)
             || !_world.TryGetLiveEntityIdentityOrdinal(entity, out var identityOrdinal)
             || (identityOrdinal < _firstEntityIdentityOrdinal))
@@ -244,19 +268,18 @@ public sealed class SceneInstance
             throw new InvalidOperationException("A Scene instance requires its prepared plan and root occurrence.");
         }
 
-        if ((_plan.Entities.Length != 0) && (firstEntityIdentityOrdinal == 0))
+        if ((_entityCount != 0) && (firstEntityIdentityOrdinal == 0))
         {
             throw new ArgumentOutOfRangeException(nameof(firstEntityIdentityOrdinal));
         }
 
-        if (Interlocked.CompareExchange(ref _isActive, -1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _lifecycle, LifecycleActivating, LifecycleConstructed) != LifecycleConstructed)
         {
             throw new InvalidOperationException("A Scene instance can be activated only once.");
         }
 
         _sceneInstanceId = sceneInstanceId;
         _firstEntityIdentityOrdinal = firstEntityIdentityOrdinal;
-        Volatile.Write(ref _isActive, 1);
     }
 
     internal void CopyPersistenceAssetIds(Span<uint> destination)
@@ -301,11 +324,31 @@ public sealed class SceneInstance
         }
     }
 
+    internal bool Deactivate()
+    {
+        var state = Volatile.Read(ref _lifecycle);
+
+        if (state is LifecycleConstructed or LifecycleActivating or LifecycleActive)
+        {
+            Volatile.Write(ref _lifecycle, LifecycleInactivePending);
+        }
+
+        return state == LifecycleActive;
+    }
+
+    internal void EndUnloadInvocation(SceneUnloadRequest request)
+    {
+        if (ReferenceEquals(Volatile.Read(ref _cleanupRequest), request))
+        {
+            Volatile.Write(ref _cleanupRequest, null);
+        }
+    }
+
     internal ReadOnlySpan<SceneExternalBindingCaptureRow> GetExternalBindingCaptureRows(WorldPersistenceCaptureLease lease)
     {
         ValidatePersistenceLease(lease);
 
-        if (Volatile.Read(ref _isActive) != 1)
+        if (!IsActive)
         {
             throw new InvalidOperationException("Scene external-binding capture requires an active Scene instance.");
         }
@@ -320,6 +363,7 @@ public sealed class SceneInstance
     internal uint GetPersistenceAssignmentOrdinal(WorldPersistenceCaptureLease lease)
     {
         ValidatePersistenceLease(lease);
+        _ = GetActivePlan();
 
         if (!_world.IdentityLedger.TryFind(_sceneInstanceId, out var assignmentOrdinal)
             || (assignmentOrdinal == 0))
@@ -356,8 +400,11 @@ public sealed class SceneInstance
         where TResource : class
     {
         var plan = Volatile.Read(ref _plan);
-        return (Volatile.Read(ref _isActive) == 1) ? plan?.GetPreparedAssets<TResource>() : null;
+        return IsActive ? plan?.GetPreparedAssets<TResource>() : null;
     }
+
+    internal bool IsBoundTo(World world, SceneWorldRegistry registry)
+        => ReferenceEquals(_world, world) && ReferenceEquals(_registry, registry);
 
     internal EbinWriteStatus MeasurePersistenceEntityBindingRecord(
         WorldPersistenceCaptureLease lease,
@@ -409,11 +456,155 @@ public sealed class SceneInstance
             out diagnostic);
     }
 
+    internal void PublishActivation()
+    {
+        if (!IsActivating)
+        {
+            throw new InvalidOperationException("The Scene instance is not prepared for activation.");
+        }
+
+        Volatile.Write(ref _lifecycle, LifecycleActive);
+    }
+
+    internal void RetainControlReturnFailure(
+        World.WorldSceneControlAppend controlAppend,
+        SceneUnloadRequest request,
+        ExceptionDispatchInfo failure)
+    {
+        _cleanupControlAppend = controlAppend;
+        _cleanupRequest = request;
+        _cleanupFailure ??= failure;
+    }
+
+    internal void RetainUncommittedFailure(ExceptionDispatchInfo failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        _cleanupFailure ??= failure;
+        Volatile.Write(ref _lifecycle, LifecycleCleanupFailed);
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The inactive instance retains each failed owner while attempting independent plan and control returns once.")]
     internal void RevokeFromWorld()
     {
-        _ = Interlocked.Exchange(ref _isActive, 0);
-        _ = Interlocked.Exchange(ref _externalBindings, null);
-        Interlocked.Exchange(ref _plan, null)?.Dispose();
+        var state = Interlocked.CompareExchange(
+            ref _lifecycle,
+            LifecycleCleaning,
+            LifecycleInactivePending);
+
+        if (state == LifecycleCleanupComplete)
+        {
+            return;
+        }
+
+        if (state == LifecycleCleanupFailed)
+        {
+            (CleanupFailure
+                ?? throw new InvalidOperationException("The failed Scene cleanup lost its original failure."))
+                .Throw();
+            return;
+        }
+
+        if (state != LifecycleInactivePending)
+        {
+            throw new InvalidOperationException("Scene cleanup requires its sole inactive owner.");
+        }
+
+        _externalBindings = null;
+        var controlAppend = _cleanupControlAppend;
+        Exception? invariantFailure = null;
+
+        if (controlAppend is { IsCommitted: false, CleanupFailure: null })
+        {
+            try
+            {
+                controlAppend.Install();
+            }
+            catch (Exception exception)
+            {
+                _cleanupFailure ??= ExceptionDispatchInfo.Capture(exception);
+                invariantFailure = exception;
+            }
+        }
+
+        var plan = _plan;
+
+        if (plan is not null)
+        {
+            try
+            {
+                if (plan.IsCleanupRunning)
+                {
+                    invariantFailure ??= new InvalidOperationException("The active Scene plan has a competing cleanup invoker.");
+                    throw invariantFailure;
+                }
+
+                plan.Dispose();
+
+                if (!plan.IsCleanupComplete)
+                {
+                    invariantFailure ??= new InvalidOperationException("The Scene plan cleanup has not completed.");
+                    throw invariantFailure;
+                }
+
+                _plan = null;
+            }
+            catch (Exception exception)
+            {
+                _cleanupFailure ??= plan.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+            }
+        }
+
+        if (controlAppend is not null)
+        {
+            try
+            {
+                controlAppend.Dispose();
+
+                if (!controlAppend.IsCleanupComplete)
+                {
+                    throw new InvalidOperationException("The Scene control preparation return has not completed.");
+                }
+
+                _cleanupControlAppend = null;
+            }
+            catch (Exception exception)
+            {
+                _cleanupFailure ??= controlAppend.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+                invariantFailure ??= exception;
+            }
+        }
+
+        if (CleanupFailure is { } failure)
+        {
+            Volatile.Write(ref _lifecycle, LifecycleCleanupFailed);
+
+            if (invariantFailure is not null)
+            {
+                _world.FaultSceneCleanupInvariant(invariantFailure);
+            }
+
+            failure.Throw();
+        }
+
+        Volatile.Write(ref _lifecycle, LifecycleCleanupComplete);
+    }
+
+    internal void TakeUnloadCleanupOwnership(
+        World.WorldSceneControlAppend controlAppend,
+        SceneUnloadRequest request,
+        ExceptionDispatchInfo? failure)
+    {
+        if ((_cleanupControlAppend is not null) || (_cleanupRequest is not null))
+        {
+            throw new InvalidOperationException("The Scene instance already owns an unload return tail.");
+        }
+
+        _cleanupControlAppend = controlAppend;
+        _cleanupRequest = request;
+        _cleanupFailure ??= failure;
     }
 
     internal bool TryGetPersistenceEntityId(
@@ -493,7 +684,7 @@ public sealed class SceneInstance
 
     private SceneExpansionPlan GetActivePlan()
     {
-        if (Volatile.Read(ref _isActive) != 1)
+        if (!IsActive)
         {
             throw new InvalidOperationException("Scene persistence capture requires an active Scene instance.");
         }

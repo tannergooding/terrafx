@@ -94,6 +94,17 @@ public sealed partial class PreparedScene : IDisposable
 
     internal AssetStore Assets => _assets;
 
+    internal Exception? CleanupFailure
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _firstCleanupFailure;
+            }
+        }
+    }
+
     internal WorldGuidUseControl PreparationControl => _use.Control;
 
     internal Task<PreparedScene> PreparationTask

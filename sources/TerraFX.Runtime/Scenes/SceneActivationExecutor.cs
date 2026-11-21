@@ -167,9 +167,10 @@ internal static class SceneActivationExecutor
                 throw new InvalidOperationException("The prepared Scene control identity did not match the committed SceneInstance identity.");
             }
 
+            admittedReservation.Adopt(instance);
+            request.TransferPlan();
             instance.Activate(commit.SceneInstanceId, commit.FirstEntityIdentityOrdinal);
             admittedReservation.Commit(instance);
-            request.TransferPlan();
             controlAppend.Commit();
             return new SceneActivationReceipt(
                 SceneActivationStatus.Activated,

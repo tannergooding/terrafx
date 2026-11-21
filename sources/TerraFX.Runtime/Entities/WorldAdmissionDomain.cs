@@ -542,8 +542,12 @@ public sealed partial class WorldAdmissionDomain : IDisposable
         }
     }
 
-    internal void ReleaseWorldReservationBytes(WorldDomainReservation reservation, long bytes)
+    internal void ReleaseWorldReservationBytes(
+        WorldDomainReservation reservation,
+        long bytes,
+        out bool creditReturned)
     {
+        creditReturned = false;
         ArgumentNullException.ThrowIfNull(reservation);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
 
@@ -573,8 +577,12 @@ public sealed partial class WorldAdmissionDomain : IDisposable
             interest.Bytes = checked(interest.Bytes - bytes);
             _worldBytes = checked(_worldBytes - bytes);
             reservation.RemoveBytes(bytes);
+            creditReturned = true;
         }
     }
+
+    internal void ReleaseWorldReservationBytes(WorldDomainReservation reservation, long bytes)
+        => ReleaseWorldReservationBytes(reservation, bytes, out _);
 
     internal bool RollbackUnissuedWorldGuidUse(WorldGuidUseControl control)
         => RollbackUnissuedWorldGuidUse(control, default);

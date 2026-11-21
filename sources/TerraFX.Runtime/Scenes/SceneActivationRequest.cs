@@ -2,6 +2,7 @@
 
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
@@ -59,6 +60,9 @@ internal sealed class SceneActivationRequest : SceneOwnerRequest
 
     internal SceneExpansionPlan Plan
         => _plan ?? throw new ObjectDisposedException(nameof(SceneActivationRequest));
+
+    internal override Exception? RetainedCleanupFailure
+        => _preparationOwner?.CleanupFailure ?? _plan?.CleanupFailure?.SourceException;
 
     internal Task<SceneActivationReceipt> Task => _completion.Task;
 
@@ -182,6 +186,11 @@ internal sealed class SceneActivationRequest : SceneOwnerRequest
             throw activationCleanupFailure;
         }
     }
+
+    internal override ExceptionDispatchInfo GetCleanupDispatch(Exception exception)
+        => (_plan?.CleanupFailure is { } failure && ReferenceEquals(failure.SourceException, exception))
+            ? failure
+            : ExceptionDispatchInfo.Capture(exception);
 
     [SuppressMessage(
         "Usage",

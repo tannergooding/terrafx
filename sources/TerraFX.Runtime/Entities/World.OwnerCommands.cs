@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using TerraFX;
 
@@ -262,12 +264,236 @@ public sealed partial class World
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Scene unload receives committed facts and the original lower failure even when the structural return tail throws.")]
     internal long DestroySceneEntitiesAtomically(
         Guid sceneInstanceId,
         uint firstEntityIdentityOrdinal,
         int entityCount,
         HierarchyDestroyMode mode,
+        CancellationToken cancellationToken,
+        out WorldSceneStructuralCommitFacts commitFacts)
+    {
+        commitFacts = default;
+
+        try
+        {
+            return DestroySceneEntitiesAtomicallyCore(
+                sceneInstanceId,
+                firstEntityIdentityOrdinal,
+                entityCount,
+                mode,
+                cancellationToken,
+                ref commitFacts);
+        }
+        catch (Exception exception)
+        {
+            var failure = commitFacts.Failure ?? ExceptionDispatchInfo.Capture(exception);
+            var kind = commitFacts.FailureKind;
+
+            if (commitFacts.InstallationStarted
+                || !ReferenceEquals(failure.SourceException, exception))
+            {
+                kind = (kind is WorldSceneStructuralFailureKind.CleanupTail
+                        && ReferenceEquals(failure.SourceException, exception))
+                    ? kind
+                    : WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant;
+            }
+
+            commitFacts.RecordFailure(failure, kind);
+
+            if (commitFacts.FailureKind == WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant)
+            {
+                FaultSceneCleanupInvariant(failure.SourceException);
+            }
+
+            failure.Throw();
+            throw;
+        }
+        finally
+        {
+            if ((commitFacts.FailureKind != WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant)
+                && (_activeCommandMembershipRoot is WorldCommandStaging { ReservedBytes: 0 }))
+            {
+                _activeCommandMembershipRoot = null;
+            }
+        }
+    }
+
+    internal Guid GetNextSceneInstanceIdentity(Guid? requestedSceneInstanceId)
+    {
+        ThrowIfDisposed();
+        ThrowIfFaulted();
+        EnsureOwnerThread();
+        return GetAssignedSceneInstanceIdentity(CreateSceneInstanceAssignment(requestedSceneInstanceId));
+    }
+
+    private WorldSceneEntityBatchCommit CreateEntitiesAtomicallyCore(
+        int entityCount,
+        Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
+        IdentityAssignment? sceneInstanceAssignment,
+        uint sceneInstanceLocator,
+        scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal,
+        ReadOnlyMemory<int> parentEntityIndices,
         CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (entityCount > _maximumDeferredCommands)
+        {
+            throw new InvalidOperationException("The owner-control Entity batch exceeds the deferred-command limit.");
+        }
+
+        if (entityCount > (_maximumLiveEntities - _entitySlots.LiveEntityCount))
+        {
+            throw new InvalidOperationException("The configured live Entity limit was reached during owner-command preflight.");
+        }
+
+        var assignmentMapWordCount = (entityIndicesByAssignmentOrdinal.IsEmpty || (entityCount == 0))
+            ? 0
+            : checked((entityCount + 63) / 64);
+        var hierarchyParentIndices = parentEntityIndices.Span;
+        var preparationBytes = (entityCount == 0)
+            ? 0
+            : checked(
+                ArrayBytes(entityCount, Unsafe.SizeOf<Entity>())
+                + ((assignmentMapWordCount == 0) ? 0 : ArrayBytes(assignmentMapWordCount, sizeof(ulong)))
+                + (hierarchyParentIndices.IsEmpty ? 0 : ArrayBytes(entityCount, sizeof(int))));
+        var oldOwnedBytes = GetWorldOwnedStateBytes();
+
+        if ((checked(oldOwnedBytes + preparationBytes) > _maximumOwnedStateBytes)
+            || (preparationBytes != 0 && !_domainReservation.TryReserveAdditional(preparationBytes)))
+        {
+            throw new InvalidOperationException("The World cannot reserve candidate Entity handles for owner-command preparation.");
+        }
+
+        _ownerCommandPreparationByteReservation = preparationBytes;
+
+        try
+        {
+            var hierarchyDepths = hierarchyParentIndices.IsEmpty ? [] : new int[entityCount];
+            ValidateHierarchyParentIndices(hierarchyParentIndices, hierarchyDepths);
+            var candidates = PreviewCandidateEntityHandles(entityCount, entityIndicesByAssignmentOrdinal, assignmentMapWordCount);
+            var descriptions = createDescriptions(candidates);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (descriptions.IsDefault || (descriptions.Length != entityCount))
+            {
+                throw new ArgumentException("The Entity description count must match the admitted candidate count.", nameof(createDescriptions));
+            }
+
+            using var staging = new WorldCommandStaging(
+                this,
+                _maximumDeferredCommands,
+                _maximumCommandStagingBytes,
+                ownerControl: true);
+            var tokens = ImmutableArray.CreateBuilder<EntityToken>(entityCount);
+
+            for (var assignmentIndex = 0; assignmentIndex < entityCount; assignmentIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var entityIndex = entityIndicesByAssignmentOrdinal.IsEmpty
+                    ? assignmentIndex
+                    : entityIndicesByAssignmentOrdinal[assignmentIndex];
+                tokens.Add(staging.AppendOwnerCreate(descriptions[entityIndex]));
+            }
+
+            var receipts = CommitCommandBatch(
+                staging,
+                sceneInstanceAssignment,
+                cancellationToken: cancellationToken);
+
+            if ((entityCount != 0) && (receipts.Length != 1))
+            {
+                throw new InvalidOperationException("An owner-control Entity batch did not produce exactly one receipt.");
+            }
+
+            for (var assignmentIndex = 0; assignmentIndex < entityCount; assignmentIndex++)
+            {
+                var receipt = receipts[0];
+                var entityIndex = entityIndicesByAssignmentOrdinal.IsEmpty
+                    ? assignmentIndex
+                    : entityIndicesByAssignmentOrdinal[assignmentIndex];
+
+                if (!receipt.TryResolve(tokens[assignmentIndex], out var entity)
+                    || (entity != candidates[entityIndex]))
+                {
+                    throw new InvalidOperationException("The owner-control batch resolved an unexpected Entity handle.");
+                }
+            }
+
+            for (var entityIndex = 0; entityIndex < hierarchyParentIndices.Length; entityIndex++)
+            {
+                var parentIndex = hierarchyParentIndices[entityIndex];
+
+                if (parentIndex < 0)
+                {
+                    continue;
+                }
+
+                var child = candidates[entityIndex];
+                var parent = candidates[parentIndex];
+                _entitySlots.SetParent(
+                    child.Index,
+                    child.Generation,
+                    parent.Index,
+                    parent.Generation);
+            }
+
+            return new WorldSceneEntityBatchCommit(
+                (sceneInstanceAssignment is null)
+                    ? Guid.Empty
+                    : _identityLedger.GetAssignedId(IdentityKind.SceneInstance, sceneInstanceLocator),
+                candidates,
+                _canonicalMutationRevision,
+                (sceneInstanceAssignment is null || entityCount == 0)
+                    ? 0
+                    : checked(sceneInstanceLocator + 1));
+        }
+        finally
+        {
+            _ownerCommandPreparationByteReservation = 0;
+
+            if (preparationBytes != 0)
+            {
+                _domainReservation.ReleaseAdditional(preparationBytes);
+            }
+        }
+    }
+
+    private IdentityAssignment CreateSceneInstanceAssignment(Guid? requestedSceneInstanceId)
+    {
+        if (requestedSceneInstanceId is Guid sceneInstanceId
+            && ((sceneInstanceId == Guid.Empty) || IsReservedUuidV8ForCommand(sceneInstanceId)))
+        {
+            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(requestedSceneInstanceId));
+        }
+
+        var locator = checked((uint)(_identityLedger.AssignmentCount + 1));
+        return requestedSceneInstanceId is Guid explicitId
+            ? new IdentityAssignment(
+                IdentityKind.SceneInstance,
+                IdentityOrigin.Explicit,
+                locator,
+                _currentIdentityBranchIndex,
+                explicitId)
+            : new IdentityAssignment(
+                IdentityKind.SceneInstance,
+                IdentityOrigin.Automatic,
+                locator,
+                _currentIdentityBranchIndex,
+                issuanceNamespace: _identityBranches[_currentIdentityBranchIndex].NamespaceId);
+    }
+
+    private long DestroySceneEntitiesAtomicallyCore(
+        Guid sceneInstanceId,
+        uint firstEntityIdentityOrdinal,
+        int entityCount,
+        HierarchyDestroyMode mode,
+        CancellationToken cancellationToken,
+        ref WorldSceneStructuralCommitFacts commitFacts)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
@@ -465,6 +691,8 @@ public sealed partial class World
 
             _ = CommitCommandBatch(
                 staging,
+                ref commitFacts,
+                preserveSceneFailure: true,
                 cancellationToken: cancellationToken,
                 sceneInstanceRetirementOrdinal: sceneInstanceOrdinal);
             return _canonicalMutationRevision;
@@ -473,171 +701,6 @@ public sealed partial class World
         {
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
         }
-    }
-
-    internal Guid GetNextSceneInstanceIdentity(Guid? requestedSceneInstanceId)
-    {
-        ThrowIfDisposed();
-        ThrowIfFaulted();
-        EnsureOwnerThread();
-        return GetAssignedSceneInstanceIdentity(CreateSceneInstanceAssignment(requestedSceneInstanceId));
-    }
-
-    private WorldSceneEntityBatchCommit CreateEntitiesAtomicallyCore(
-        int entityCount,
-        Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
-        IdentityAssignment? sceneInstanceAssignment,
-        uint sceneInstanceLocator,
-        scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal,
-        ReadOnlyMemory<int> parentEntityIndices,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (entityCount > _maximumDeferredCommands)
-        {
-            throw new InvalidOperationException("The owner-control Entity batch exceeds the deferred-command limit.");
-        }
-
-        if (entityCount > (_maximumLiveEntities - _entitySlots.LiveEntityCount))
-        {
-            throw new InvalidOperationException("The configured live Entity limit was reached during owner-command preflight.");
-        }
-
-        var assignmentMapWordCount = (entityIndicesByAssignmentOrdinal.IsEmpty || (entityCount == 0))
-            ? 0
-            : checked((entityCount + 63) / 64);
-        var hierarchyParentIndices = parentEntityIndices.Span;
-        var preparationBytes = (entityCount == 0)
-            ? 0
-            : checked(
-                ArrayBytes(entityCount, Unsafe.SizeOf<Entity>())
-                + ((assignmentMapWordCount == 0) ? 0 : ArrayBytes(assignmentMapWordCount, sizeof(ulong)))
-                + (hierarchyParentIndices.IsEmpty ? 0 : ArrayBytes(entityCount, sizeof(int))));
-        var oldOwnedBytes = GetWorldOwnedStateBytes();
-
-        if ((checked(oldOwnedBytes + preparationBytes) > _maximumOwnedStateBytes)
-            || (preparationBytes != 0 && !_domainReservation.TryReserveAdditional(preparationBytes)))
-        {
-            throw new InvalidOperationException("The World cannot reserve candidate Entity handles for owner-command preparation.");
-        }
-
-        _ownerCommandPreparationByteReservation = preparationBytes;
-
-        try
-        {
-            var hierarchyDepths = hierarchyParentIndices.IsEmpty ? [] : new int[entityCount];
-            ValidateHierarchyParentIndices(hierarchyParentIndices, hierarchyDepths);
-            var candidates = PreviewCandidateEntityHandles(entityCount, entityIndicesByAssignmentOrdinal, assignmentMapWordCount);
-            var descriptions = createDescriptions(candidates);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (descriptions.IsDefault || (descriptions.Length != entityCount))
-            {
-                throw new ArgumentException("The Entity description count must match the admitted candidate count.", nameof(createDescriptions));
-            }
-
-            using var staging = new WorldCommandStaging(
-                this,
-                _maximumDeferredCommands,
-                _maximumCommandStagingBytes,
-                ownerControl: true);
-            var tokens = ImmutableArray.CreateBuilder<EntityToken>(entityCount);
-
-            for (var assignmentIndex = 0; assignmentIndex < entityCount; assignmentIndex++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var entityIndex = entityIndicesByAssignmentOrdinal.IsEmpty
-                    ? assignmentIndex
-                    : entityIndicesByAssignmentOrdinal[assignmentIndex];
-                tokens.Add(staging.AppendOwnerCreate(descriptions[entityIndex]));
-            }
-
-            var receipts = CommitCommandBatch(
-                staging,
-                sceneInstanceAssignment,
-                cancellationToken: cancellationToken);
-
-            if ((entityCount != 0) && (receipts.Length != 1))
-            {
-                throw new InvalidOperationException("An owner-control Entity batch did not produce exactly one receipt.");
-            }
-
-            for (var assignmentIndex = 0; assignmentIndex < entityCount; assignmentIndex++)
-            {
-                var receipt = receipts[0];
-                var entityIndex = entityIndicesByAssignmentOrdinal.IsEmpty
-                    ? assignmentIndex
-                    : entityIndicesByAssignmentOrdinal[assignmentIndex];
-
-                if (!receipt.TryResolve(tokens[assignmentIndex], out var entity)
-                    || (entity != candidates[entityIndex]))
-                {
-                    throw new InvalidOperationException("The owner-control batch resolved an unexpected Entity handle.");
-                }
-            }
-
-            for (var entityIndex = 0; entityIndex < hierarchyParentIndices.Length; entityIndex++)
-            {
-                var parentIndex = hierarchyParentIndices[entityIndex];
-
-                if (parentIndex < 0)
-                {
-                    continue;
-                }
-
-                var child = candidates[entityIndex];
-                var parent = candidates[parentIndex];
-                _entitySlots.SetParent(
-                    child.Index,
-                    child.Generation,
-                    parent.Index,
-                    parent.Generation);
-            }
-
-            return new WorldSceneEntityBatchCommit(
-                (sceneInstanceAssignment is null)
-                    ? Guid.Empty
-                    : _identityLedger.GetAssignedId(IdentityKind.SceneInstance, sceneInstanceLocator),
-                candidates,
-                _canonicalMutationRevision,
-                (sceneInstanceAssignment is null || entityCount == 0)
-                    ? 0
-                    : checked(sceneInstanceLocator + 1));
-        }
-        finally
-        {
-            _ownerCommandPreparationByteReservation = 0;
-
-            if (preparationBytes != 0)
-            {
-                _domainReservation.ReleaseAdditional(preparationBytes);
-            }
-        }
-    }
-
-    private IdentityAssignment CreateSceneInstanceAssignment(Guid? requestedSceneInstanceId)
-    {
-        if (requestedSceneInstanceId is Guid sceneInstanceId
-            && ((sceneInstanceId == Guid.Empty) || IsReservedUuidV8ForCommand(sceneInstanceId)))
-        {
-            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(requestedSceneInstanceId));
-        }
-
-        var locator = checked((uint)(_identityLedger.AssignmentCount + 1));
-        return requestedSceneInstanceId is Guid explicitId
-            ? new IdentityAssignment(
-                IdentityKind.SceneInstance,
-                IdentityOrigin.Explicit,
-                locator,
-                _currentIdentityBranchIndex,
-                explicitId)
-            : new IdentityAssignment(
-                IdentityKind.SceneInstance,
-                IdentityOrigin.Automatic,
-                locator,
-                _currentIdentityBranchIndex,
-                issuanceNamespace: _identityBranches[_currentIdentityBranchIndex].NamespaceId);
     }
 
     private ImmutableArray<Entity> PreviewCandidateEntityHandles(
@@ -696,4 +759,49 @@ public sealed partial class World
         ImmutableArray<Entity> Entities,
         long StructuralRevision,
         uint FirstEntityIdentityOrdinal);
+
+    internal struct WorldSceneStructuralCommitFacts
+    {
+        private long _committedRevision;
+        private ExceptionDispatchInfo? _failure;
+        private WorldSceneStructuralFailureKind _failureKind;
+        private bool _installationStarted;
+        private bool _committed;
+
+        internal readonly bool Committed => _committed;
+
+        internal readonly long CommittedRevision => _committedRevision;
+
+        internal readonly ExceptionDispatchInfo? Failure => _failure;
+
+        internal readonly WorldSceneStructuralFailureKind FailureKind => _failureKind;
+
+        internal readonly bool InstallationStarted => _installationStarted;
+
+        internal void MarkCommitted(long revision)
+        {
+            _committedRevision = revision;
+            _committed = true;
+        }
+
+        internal void MarkInstallationStarted()
+            => _installationStarted = true;
+
+        internal void RecordFailure(ExceptionDispatchInfo failure, WorldSceneStructuralFailureKind kind)
+        {
+            _failure ??= failure;
+
+            if (_failureKind != WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant)
+            {
+                _failureKind = kind;
+            }
+        }
+    }
+
+    internal enum WorldSceneStructuralFailureKind
+    {
+        None,
+        CleanupTail,
+        CanonicalOrOwnershipInvariant,
+    }
 }

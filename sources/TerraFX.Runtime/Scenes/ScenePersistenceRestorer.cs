@@ -3,8 +3,10 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -305,6 +307,10 @@ internal static class ScenePersistenceRestorer
         return new PreparedRestore(world, registry, sceneSources, plans, hierarchyRecord, contents.HierarchyNodeCount);
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Unpublished candidate cleanup retains its owner without replacing the original restore failure.")]
     internal static void RestorePrepared(
         World world,
         PreparedRestore prepared,
@@ -319,10 +325,9 @@ internal static class ScenePersistenceRestorer
         {
             cancellationToken.ThrowIfCancellationRequested();
             var source = prepared.GetInstance(instanceIndex);
-            var plan = prepared.TakePlan(instanceIndex);
+            var plan = prepared.GetPlan(instanceIndex);
             SceneInstance? instance = null;
-            SceneInstanceReservation? reservation = null;
-            var planTransferred = false;
+            ExceptionDispatchInfo? operationFailure = null;
 
             try
             {
@@ -348,29 +353,35 @@ internal static class ScenePersistenceRestorer
                     throw new InvalidDataException(bindingDiagnostics[0].Message);
                 }
 
-                if (!registry.TryReserveInstance(plan.Occurrences.Length, out reservation)
+                if (!registry.TryReserveInstance(plan.Occurrences.Length, out var reservation)
                     || (reservation is null))
                 {
                     throw new InvalidOperationException("The candidate Scene registry cannot admit a saved SceneInstance.");
                 }
 
-                var captureRows = SceneInstance.CaptureExternalBindings(world, source.Options.ExternalBindings);
-                instance = new SceneInstance(world, registry, plan, captureRows);
-                planTransferred = true;
-                instance.Activate(source.SceneInstanceId, firstEntityIdentityOrdinal);
-                reservation.Commit(instance);
-                instance = null;
-            }
-            finally
-            {
-                reservation?.Dispose();
-                instance?.RevokeFromWorld();
+                using var admitted = reservation;
 
-                if (!planTransferred)
+                try
                 {
-                    plan.Dispose();
+                    var captureRows = SceneInstance.CaptureExternalBindings(world, source.Options.ExternalBindings);
+                    instance = new SceneInstance(world, registry, plan, captureRows);
+                    admitted.Adopt(instance);
+                    _ = prepared.TakePlan(instanceIndex);
+                    instance.Activate(source.SceneInstanceId, firstEntityIdentityOrdinal);
+                    admitted.Commit(instance);
+                    instance = null;
+                }
+                catch (Exception exception)
+                {
+                    operationFailure = ExceptionDispatchInfo.Capture(exception);
                 }
             }
+            catch (Exception exception)
+            {
+                operationFailure ??= instance?.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+            }
+
+            operationFailure?.Throw();
         }
 
         var hierarchy = new EbinRecordReadView(prepared.HierarchyRecord.Span);
@@ -934,13 +945,18 @@ internal static class ScenePersistenceRestorer
             return _instances[index];
         }
 
-        internal SceneExpansionPlan TakePlan(int index)
+        internal SceneExpansionPlan GetPlan(int index)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _plans.Length);
-            var plan = _plans[index]
+            return _plans[index]
                 ?? throw new InvalidOperationException("The prepared Scene restore already transferred this expansion plan.");
+        }
+
+        internal SceneExpansionPlan TakePlan(int index)
+        {
+            var plan = GetPlan(index);
             _plans[index] = null;
             return plan;
         }

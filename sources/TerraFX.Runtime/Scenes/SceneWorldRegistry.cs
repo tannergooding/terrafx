@@ -2,6 +2,8 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using TerraFX.Entities;
 using TerraFX.Numerics;
@@ -10,19 +12,29 @@ namespace TerraFX.Scenes;
 
 internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 {
+    private const int DisposeStateComplete = 2;
+    private const int DisposeStateDraining = 1;
+    private const int DisposeStateFailed = 3;
+    private const int DisposeStateOpen = 0;
+
     private const long ObjectStorageByteReservation = 512;
 
     private int _activeInstanceCount;
-    private readonly SceneInstance?[] _activeInstances;
     private readonly SceneInstance?[] _activeInstancesByFirstEntityOrdinal;
     private int _activeOccurrenceCount;
     private int _activeOrderedInstanceCount;
+    private int _additionalCleanupFailureCount;
+    private int _cleanupInvokerThreadId;
+    private int _cleanupPendingInstanceCount;
+    private int _cleanupPendingOccurrenceCount;
+    private ExceptionDispatchInfo? _disposeFailure;
+    private int _disposeState;
     private readonly Lock _instanceGate = new();
-    private int _isDisposed;
     private bool _isPersistenceCaptureActive;
     private readonly int _maximumActiveSceneInstances;
     private readonly int _maximumPendingOwnerRequests;
     private readonly int _maximumSceneOccurrences;
+    private readonly SceneInstance?[] _ownedInstances;
     private int _pendingRequestCount;
     private int _pendingRequestHead;
     private readonly SceneOwnerRequest?[] _pendingRequests;
@@ -41,18 +53,27 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         _maximumPendingOwnerRequests = options.MaximumPendingOwnerRequests;
         _maximumSceneOccurrences = options.MaximumSceneOccurrences;
         _pendingRequests = new SceneOwnerRequest[options.MaximumPendingOwnerRequests];
-        _activeInstances = new SceneInstance[options.MaximumActiveSceneInstances];
+        _ownedInstances = new SceneInstance[options.MaximumActiveSceneInstances];
         _activeInstancesByFirstEntityOrdinal = new SceneInstance[options.MaximumActiveSceneInstances];
         _reservedInstanceSlots = new bool[options.MaximumActiveSceneInstances];
     }
+
+    public ExceptionDispatchInfo? CleanupFailure => Volatile.Read(ref _disposeFailure);
+
+    public bool HasRetainedCleanup => (Volatile.Read(ref _cleanupPendingInstanceCount) != 0)
+        || (CleanupFailure is not null);
 
     public Type HierarchyLocalTransformComponentType => typeof(SceneComponentDefinitions.LocalTransformComponent);
 
     public Type HierarchyRootPositionComponentType => typeof(SceneComponentDefinitions.RootPositionComponent);
 
+    public bool IsCleanupInvocationActive => Volatile.Read(ref _cleanupInvokerThreadId) != 0;
+
     public long OwnedByteReservation => GetStorageByteReservation(
         _maximumActiveSceneInstances,
         _maximumPendingOwnerRequests);
+
+    internal int AdditionalCleanupFailureCount => _additionalCleanupFailureCount;
 
     internal static long GetWorldStorageByteReservation(WorldOptions options)
     {
@@ -94,9 +115,9 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         {
             var assetIdCount = 0;
 
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                if (_activeInstances[index] is { } instance)
+                if (!_reservedInstanceSlots[index] && (_ownedInstances[index] is { IsActive: true } instance))
                 {
                     assetIdCount = checked(assetIdCount + instance.GetPersistenceAssetIdCount());
                 }
@@ -109,9 +130,9 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
             var destinationOffset = 0;
 
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                if (_activeInstances[index] is { } instance)
+                if (!_reservedInstanceSlots[index] && (_ownedInstances[index] is { IsActive: true } instance))
                 {
                     var occurrenceCount = instance.GetPersistenceAssetIdCount();
                     instance.CopyPersistenceAssetIds(destination.Slice(destinationOffset, occurrenceCount));
@@ -121,46 +142,171 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The fixed request and instance slots retain failures while every independent selected sibling is attempted.")]
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
-        {
-            return;
-        }
+        var threadId = Environment.CurrentManagedThreadId;
+        var spinner = new SpinWait();
 
         while (true)
         {
-            SceneOwnerRequest? request;
+            if (Volatile.Read(ref _cleanupInvokerThreadId) == threadId)
+            {
+                throw new InvalidOperationException("Scene cleanup cannot recursively dispose its registry.");
+            }
+
+            var state = Volatile.Read(ref _disposeState);
+
+            if (state == DisposeStateComplete)
+            {
+                return;
+            }
+
+            if (state == DisposeStateFailed)
+            {
+                (CleanupFailure
+                    ?? throw new InvalidOperationException("The failed Scene registry cleanup lost its original failure."))
+                    .Throw();
+                return;
+            }
+
+            if (state == DisposeStateDraining)
+            {
+                spinner.SpinOnce();
+                continue;
+            }
+
+            _world.ValidateSceneCleanupThread();
 
             lock (_requestGate)
             {
-                if (_pendingRequestCount == 0)
+                if (_disposeState != DisposeStateOpen)
                 {
-                    break;
+                    continue;
                 }
 
-                request = DequeueRequest();
-            }
+                if (Interlocked.CompareExchange(ref _cleanupInvokerThreadId, threadId, 0) != 0)
+                {
+                    throw new InvalidOperationException("The Scene registry already has a cleanup invoker.");
+                }
 
-            request?.CancelFromRegistryDisposal();
+                Volatile.Write(ref _disposeState, DisposeStateDraining);
+                break;
+            }
         }
 
-        for (var index = 0; index < _activeInstances.Length; index++)
+        ExceptionDispatchInfo? firstFailure = null;
+        var additionalFailures = 0;
+
+        for (var index = 0; index < _ownedInstances.Length; index++)
+        {
+            try
+            {
+                lock (_instanceGate)
+                {
+                    DeactivateOwnedInstance(index);
+                }
+            }
+            catch (Exception exception)
+            {
+                RecordFailure(ExceptionDispatchInfo.Capture(exception));
+            }
+        }
+
+        int requestCount;
+        int requestHead;
+
+        lock (_requestGate)
+        {
+            requestCount = _pendingRequestCount;
+            requestHead = _pendingRequestHead;
+        }
+
+        var retainedRequestCount = 0;
+
+        for (var offset = 0; offset < requestCount; offset++)
+        {
+            var slot = (requestHead + offset) % _pendingRequests.Length;
+            var request = _pendingRequests[slot];
+            var returned = false;
+
+            try
+            {
+                request?.CancelFromRegistryDisposal();
+
+                if (request?.RetainedCleanupFailure is { } exception)
+                {
+                    RecordFailure(request.GetCleanupDispatch(exception));
+                }
+                else
+                {
+                    returned = true;
+                }
+            }
+            catch (Exception exception)
+            {
+                RecordFailure(request?.GetCleanupDispatch(exception) ?? ExceptionDispatchInfo.Capture(exception));
+            }
+
+            if (returned)
+            {
+                _pendingRequests[slot] = null;
+            }
+            else
+            {
+                retainedRequestCount++;
+            }
+        }
+
+        lock (_requestGate)
+        {
+            _pendingRequestHead = (requestHead + requestCount) % _pendingRequests.Length;
+            _pendingRequestCount = retainedRequestCount;
+        }
+
+        for (var index = 0; index < _ownedInstances.Length; index++)
         {
             SceneInstance? instance;
 
             lock (_instanceGate)
             {
-                instance = _activeInstances[index];
-                _activeInstances[index] = null;
-
-                if (instance is { EntityCount: > 0 })
-                {
-                    RemoveActiveInstanceByOrdinal(instance);
-                }
+                instance = _ownedInstances[index];
             }
 
-            instance?.RevokeFromWorld();
+            try
+            {
+                instance?.RevokeFromWorld();
+            }
+            catch (Exception exception)
+            {
+                RecordFailure(instance?.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception));
+            }
+
+            if (instance is not null)
+            {
+                FinalizeInstanceCleanup(instance);
+            }
+        }
+
+        _additionalCleanupFailureCount = additionalFailures;
+        Volatile.Write(ref _disposeFailure, firstFailure);
+        Volatile.Write(ref _cleanupInvokerThreadId, 0);
+        Volatile.Write(ref _disposeState, firstFailure is null ? DisposeStateComplete : DisposeStateFailed);
+        firstFailure?.Throw();
+
+        void RecordFailure(ExceptionDispatchInfo failure)
+        {
+            if (firstFailure is null)
+            {
+                firstFailure = failure;
+            }
+            else
+            {
+                additionalFailures = checked(additionalFailures + 1);
+            }
         }
     }
 
@@ -178,9 +324,9 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         {
             var count = 0;
 
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                if (_activeInstances[index] is { } instance)
+                if (!_reservedInstanceSlots[index] && (_ownedInstances[index] is { IsActive: true } instance))
                 {
                     count = checked(count + instance.GetPersistenceAssetIdCount());
                 }
@@ -201,6 +347,8 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
     public void PumpControlBoundary()
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
+
         while (true)
         {
             SceneOwnerRequest? request;
@@ -216,6 +364,11 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             }
 
             request?.Execute(_world, this);
+
+            if (request is SceneUnloadRequest unload)
+            {
+                unload.EndExecution(this);
+            }
         }
     }
 
@@ -239,13 +392,16 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
     public bool TryBeginPersistenceCapture()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
         lock (_requestGate)
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
-            if (_isPersistenceCaptureActive || (_pendingRequestCount != 0))
+            if (_isPersistenceCaptureActive
+                || (_pendingRequestCount != 0)
+                || IsCleanupInvocationActive
+                || HasRetainedCleanup)
             {
                 return false;
             }
@@ -293,6 +449,75 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         return false;
     }
 
+    internal void AdoptReservation(SceneInstanceReservation reservation, SceneInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentNullException.ThrowIfNull(instance);
+
+        lock (_instanceGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
+
+            if (!ReferenceEquals(reservation.Registry, this)
+                || !_reservedInstanceSlots[reservation.Slot]
+                || (_ownedInstances[reservation.Slot] is not null)
+                || !instance.IsBoundTo(_world, this)
+                || (instance.OccurrenceCount != reservation.OccurrenceCount))
+            {
+                throw new InvalidOperationException("The Scene reservation cannot adopt this exact candidate.");
+            }
+
+            _ownedInstances[reservation.Slot] = instance;
+        }
+    }
+
+    internal void BeginUnloadCleanup(
+        SceneInstance instance,
+        World.WorldSceneControlAppend controlAppend,
+        SceneUnloadRequest request,
+        ExceptionDispatchInfo? failure)
+    {
+        lock (_instanceGate)
+        {
+            for (var index = 0; index < _ownedInstances.Length; index++)
+            {
+                if (ReferenceEquals(_ownedInstances[index], instance)
+                    && !_reservedInstanceSlots[index]
+                    && instance.IsActive)
+                {
+                    instance.TakeUnloadCleanupOwnership(controlAppend, request, failure);
+                    DeactivateOwnedInstance(index);
+                    return;
+                }
+            }
+        }
+
+        throw new InvalidOperationException("The retired Scene lost its exact active registry owner.");
+    }
+
+    internal void CleanupInstance(SceneInstance instance)
+    {
+        _world.ValidateSceneCleanupThread();
+
+        if (Interlocked.CompareExchange(
+                ref _cleanupInvokerThreadId,
+                Environment.CurrentManagedThreadId,
+                0) != 0)
+        {
+            throw new InvalidOperationException("The Scene registry already has a cleanup invoker.");
+        }
+
+        try
+        {
+            instance.RevokeFromWorld();
+        }
+        finally
+        {
+            Volatile.Write(ref _cleanupInvokerThreadId, 0);
+            FinalizeInstanceCleanup(instance);
+        }
+    }
+
     internal void CommitReservation(SceneInstanceReservation reservation, SceneInstance instance)
     {
         ArgumentNullException.ThrowIfNull(reservation);
@@ -300,11 +525,14 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
         lock (_instanceGate)
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
+
             if (!ReferenceEquals(reservation.Registry, this)
                 || !_reservedInstanceSlots[reservation.Slot]
-                || (_activeInstances[reservation.Slot] is not null)
+                || !ReferenceEquals(_ownedInstances[reservation.Slot], instance)
                 || (instance.OccurrenceCount != reservation.OccurrenceCount)
-                || (instance.SceneInstanceId == Guid.Empty))
+                || (instance.SceneInstanceId == Guid.Empty)
+                || !instance.IsActivating)
             {
                 throw new InvalidOperationException("The Scene instance reservation no longer matches its prepared publication.");
             }
@@ -316,7 +544,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             _reservedInstanceSlots[reservation.Slot] = false;
             _reservedInstanceCount--;
             _reservedOccurrenceCount -= reservation.OccurrenceCount;
-            _activeInstances[reservation.Slot] = instance;
+            instance.PublishActivation();
             _activeInstanceCount++;
             _activeOccurrenceCount = checked(_activeOccurrenceCount + reservation.OccurrenceCount);
 
@@ -333,9 +561,11 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
         lock (_instanceGate)
         {
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                if (ReferenceEquals(_activeInstances[index], instance))
+                if (ReferenceEquals(_ownedInstances[index], instance)
+                    && !_reservedInstanceSlots[index]
+                    && instance.IsActive)
                 {
                     return true;
                 }
@@ -360,9 +590,9 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
             var destinationIndex = 0;
 
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                if (_activeInstances[index] is { } instance)
+                if (!_reservedInstanceSlots[index] && (_ownedInstances[index] is { IsActive: true } instance))
                 {
                     if (destinationIndex >= destination.Length)
                     {
@@ -386,7 +616,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
         lock (_requestGate)
         {
-            if (Volatile.Read(ref _isDisposed) != 0)
+            if (Volatile.Read(ref _disposeState) != DisposeStateOpen)
             {
                 return SceneActivationEnqueueStatus.RegistryDisposed;
             }
@@ -419,11 +649,34 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     internal void EnsureBoundTo(World world)
     {
         ArgumentNullException.ThrowIfNull(world);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
         if (!ReferenceEquals(world, _world))
         {
             throw new ArgumentException("The Scene registry belongs to another exact World binding.", nameof(world));
+        }
+    }
+
+    internal void FinalizeInstanceCleanup(SceneInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+
+        lock (_instanceGate)
+        {
+            for (var index = 0; index < _ownedInstances.Length; index++)
+            {
+                if (!ReferenceEquals(_ownedInstances[index], instance)
+                    || !instance.IsCleanupComplete
+                    || instance.IsUnloadInvocationActive)
+                {
+                    continue;
+                }
+
+                _ownedInstances[index] = null;
+                _cleanupPendingInstanceCount--;
+                _cleanupPendingOccurrenceCount -= instance.OccurrenceCount;
+                return;
+            }
         }
     }
 
@@ -441,6 +694,8 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     {
         ArgumentNullException.ThrowIfNull(reservation);
 
+        SceneInstance? instance;
+
         lock (_instanceGate)
         {
             if (!ReferenceEquals(reservation.Registry, this)
@@ -449,46 +704,34 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
                 return;
             }
 
-            _reservedInstanceSlots[reservation.Slot] = false;
-            _reservedInstanceCount--;
-            _reservedOccurrenceCount -= reservation.OccurrenceCount;
-        }
-    }
+            instance = _ownedInstances[reservation.Slot];
 
-    internal void RemoveInstance(SceneInstance instance)
-    {
-        ArgumentNullException.ThrowIfNull(instance);
-
-        lock (_instanceGate)
-        {
-            for (var index = 0; index < _activeInstances.Length; index++)
+            if (instance is null)
             {
-                if (!ReferenceEquals(_activeInstances[index], instance))
-                {
-                    continue;
-                }
-
-                if (instance.EntityCount != 0)
-                {
-                    RemoveActiveInstanceByOrdinal(instance);
-                }
-
-                _activeInstances[index] = null;
-                _activeInstanceCount--;
-                _activeOccurrenceCount -= instance.OccurrenceCount;
-                return;
+                _reservedInstanceSlots[reservation.Slot] = false;
+                _reservedInstanceCount--;
+                _reservedOccurrenceCount -= reservation.OccurrenceCount;
             }
+            else
+            {
+                DeactivateOwnedInstance(reservation.Slot);
+            }
+        }
+
+        if (instance is not null)
+        {
+            CleanupInstance(instance);
         }
     }
 
     internal bool TryEnqueue(SceneOwnerRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
         lock (_requestGate)
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
             if (_isPersistenceCaptureActive || (_pendingRequestCount == _pendingRequests.Length))
             {
@@ -509,11 +752,13 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
         lock (_instanceGate)
         {
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                var candidate = _activeInstances[index];
+                var candidate = _ownedInstances[index];
 
-                if (candidate?.SceneInstanceId == sceneInstanceId)
+                if (!_reservedInstanceSlots[index]
+                    && (candidate is { IsActive: true })
+                    && (candidate.SceneInstanceId == sceneInstanceId))
                 {
                     instance = candidate;
                     return true;
@@ -562,7 +807,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
                     ?? throw new InvalidOperationException("The ordered Scene instance index contains an empty entry.");
                 var entityOrdinalOffset = identityOrdinal - candidate.FirstEntityIdentityOrdinal;
 
-                if (entityOrdinalOffset < (uint)candidate.EntityCount)
+                if (candidate.IsActive && (entityOrdinalOffset < (uint)candidate.EntityCount))
                 {
                     instance = candidate;
                     return true;
@@ -577,22 +822,25 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     internal bool TryReserveInstance(int occurrenceCount, out SceneInstanceReservation? reservation)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(occurrenceCount);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
         lock (_instanceGate)
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != DisposeStateOpen, this);
 
-            if ((_activeInstanceCount + _reservedInstanceCount) >= _maximumActiveSceneInstances
-                || occurrenceCount > (_maximumSceneOccurrences - _activeOccurrenceCount - _reservedOccurrenceCount))
+            if ((_activeInstanceCount + _cleanupPendingInstanceCount + _reservedInstanceCount) >= _maximumActiveSceneInstances
+                || occurrenceCount > (_maximumSceneOccurrences
+                    - _activeOccurrenceCount
+                    - _cleanupPendingOccurrenceCount
+                    - _reservedOccurrenceCount))
             {
                 reservation = null;
                 return false;
             }
 
-            for (var index = 0; index < _activeInstances.Length; index++)
+            for (var index = 0; index < _ownedInstances.Length; index++)
             {
-                if ((_activeInstances[index] is not null) || _reservedInstanceSlots[index])
+                if ((_ownedInstances[index] is not null) || _reservedInstanceSlots[index])
                 {
                     continue;
                 }
@@ -606,6 +854,39 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         }
 
         throw new InvalidOperationException("The Scene registry has no free slot despite its active-instance capacity check.");
+    }
+
+    private void DeactivateOwnedInstance(int index)
+    {
+        if (_ownedInstances[index] is not { } instance)
+        {
+            return;
+        }
+
+        if (_reservedInstanceSlots[index])
+        {
+            _reservedInstanceSlots[index] = false;
+            _reservedInstanceCount--;
+            _reservedOccurrenceCount -= instance.OccurrenceCount;
+        }
+        else if (instance.IsActive)
+        {
+            if (instance.EntityCount != 0)
+            {
+                RemoveActiveInstanceByOrdinal(instance);
+            }
+
+            _activeInstanceCount--;
+            _activeOccurrenceCount -= instance.OccurrenceCount;
+        }
+        else
+        {
+            return;
+        }
+
+        _ = instance.Deactivate();
+        _cleanupPendingInstanceCount++;
+        _cleanupPendingOccurrenceCount = checked(_cleanupPendingOccurrenceCount + instance.OccurrenceCount);
     }
 
     private SceneOwnerRequest? DequeueRequest()

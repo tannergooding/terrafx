@@ -1464,6 +1464,8 @@ public sealed partial class World : IDisposable
             throw _systemCleanupStickyFailure;
         }
 
+        ThrowIfSceneCleanupInvocationActive();
+
         if (Volatile.Read(ref _disposed) != 0)
         {
             return;
@@ -1486,6 +1488,7 @@ public sealed partial class World : IDisposable
 
         WorldAttachmentQuarantineReservation? attachmentQuarantineReservation = null;
         Exception? attachmentCleanupException = null;
+        ExceptionDispatchInfo? sceneCleanupFailure = null;
         var admissionDomain = _admissionDomain;
         var domainReservation = _domainReservation;
         var closeStarted = false;
@@ -1546,8 +1549,17 @@ public sealed partial class World : IDisposable
 
             _cpuExtractionParticipant?.Dispose();
             _cpuExtractionParticipant = null;
-            _sceneParticipant?.Dispose();
-            _sceneParticipant = null;
+
+            try
+            {
+                _sceneParticipant?.Dispose();
+                _sceneParticipant = null;
+            }
+            catch (Exception exception)
+            {
+                sceneCleanupFailure = _sceneParticipant?.CleanupFailure ?? ExceptionDispatchInfo.Capture(exception);
+            }
+
             ClearSubscriptionsForDisposal();
             _attachments.ClearEntries();
 
@@ -1575,7 +1587,9 @@ public sealed partial class World : IDisposable
             var cleanupRequiresQuarantine = (systemCleanupReport.FailureCount != 0)
                 || (attachmentCleanupException is not null)
                 || _systemQuarantineReservation.RetainsDomainReservation
-                || attachmentQuarantineRetainsReservation;
+                || attachmentQuarantineRetainsReservation
+                || (sceneCleanupFailure is not null)
+                || (_sceneParticipant is { HasRetainedCleanup: true });
             var diagnosticsServiceOwner = _diagnosticsServiceOwner
                 ?? throw new InvalidOperationException("The disposed World lost its diagnostic service owner.");
             diagnosticsServiceOwner.CloseCapability(_diagnosticsCapability);
@@ -1625,6 +1639,7 @@ public sealed partial class World : IDisposable
                 throw _systemCleanupPreparation.CreateCleanupException();
             }
 
+            sceneCleanupFailure?.Throw();
             closeSucceeded = !cleanupRequiresQuarantine;
         }
         finally
@@ -1966,6 +1981,18 @@ public sealed partial class World : IDisposable
         }
     }
 
+    internal void FaultSceneCleanupInvariant(Exception exception)
+    {
+        try
+        {
+            FaultWorld(null, exception);
+        }
+        finally
+        {
+            Volatile.Write(ref _faulted, 1);
+        }
+    }
+
     internal SpatialFrame3 GetCurrentSceneHierarchyFrame(IWorldSceneParticipant participant)
     {
         ArgumentNullException.ThrowIfNull(participant);
@@ -2188,6 +2215,9 @@ public sealed partial class World : IDisposable
 
         throw new ArgumentException(message, parameterName);
     }
+
+    internal void ValidateSceneCleanupThread()
+        => EnsureOwnerThread();
 
     private ImmutableArray<IComponentRegistration> BuildComponentRegistrations(EntityDescription description)
     {
@@ -2569,6 +2599,7 @@ public sealed partial class World : IDisposable
     {
         ThrowIfAttachmentCallbackActive();
         ThrowIfSystemInvocationActive();
+        ThrowIfSceneCleanupInvocationActive();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
     }
 
@@ -2580,6 +2611,14 @@ public sealed partial class World : IDisposable
                 _lastFault is { } fault
                     ? $"The World is faulted: {fault.Code}."
                     : "The World is faulted and cannot be used.");
+        }
+    }
+
+    private void ThrowIfSceneCleanupInvocationActive()
+    {
+        if (_sceneParticipant is { IsCleanupInvocationActive: true })
+        {
+            throw new InvalidOperationException("World access is unavailable during Scene cleanup.");
         }
     }
 

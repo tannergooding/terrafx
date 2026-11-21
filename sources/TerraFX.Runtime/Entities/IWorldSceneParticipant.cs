@@ -2,15 +2,22 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Runtime.ExceptionServices;
 using TerraFX.Numerics;
 
 namespace TerraFX.Entities;
 
 internal interface IWorldSceneParticipant
 {
+    ExceptionDispatchInfo? CleanupFailure { get; }
+
+    bool HasRetainedCleanup { get; }
+
     Type HierarchyLocalTransformComponentType { get; }
 
     Type HierarchyRootPositionComponentType { get; }
+
+    bool IsCleanupInvocationActive { get; }
 
     long OwnedByteReservation { get; }
 

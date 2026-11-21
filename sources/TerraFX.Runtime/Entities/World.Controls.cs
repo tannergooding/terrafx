@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -572,10 +573,20 @@ public sealed partial class World
 
     internal sealed class WorldSceneControlAppend : IDisposable
     {
-        private readonly byte[] _candidateStorage;
+        internal const long ReturnTailByteReservation = 24;
+
+        private const int ReturnStateComplete = 2;
+        private const int ReturnStateFailed = 3;
+        private const int ReturnStatePending = 0;
+        private const int ReturnStateRunning = 1;
+
+        private byte[] _candidateStorage;
         private bool _isCommitted;
-        private readonly byte[] _payloadRecord;
+        private byte[] _payloadRecord;
         private readonly PreparedControlAppend _preparedAppend;
+        private long _returnDebtBytes;
+        private ExceptionDispatchInfo? _returnFailure;
+        private int _returnState;
         private readonly World _world;
 
         private WorldSceneControlAppend(
@@ -587,6 +598,7 @@ public sealed partial class World
         {
             _world = world;
             _preparedAppend = preparedAppend;
+            _returnDebtBytes = preparedAppend.ReservedBytes;
             Sequence = sequence;
             AppliedAtNextTick = appliedAtNextTick;
             _payloadRecord = new byte[payloadRecordBytes];
@@ -597,7 +609,15 @@ public sealed partial class World
 
         internal byte[] CandidateStorage => _candidateStorage;
 
+        internal ExceptionDispatchInfo? CleanupFailure => Volatile.Read(ref _returnFailure);
+
+        internal bool IsCleanupComplete => Volatile.Read(ref _returnState) == ReturnStateComplete;
+
+        internal bool IsCommitted => _isCommitted;
+
         internal byte[] PayloadRecord => _payloadRecord;
+
+        internal long ReturnDebtBytes => _returnDebtBytes;
 
         internal long Sequence { get; }
 
@@ -621,7 +641,7 @@ public sealed partial class World
             var retainedPayloadBytes = ArrayBytes(payloadRecordBytes, sizeof(byte));
             var preparedAppend = world.TryPrepareControlAppend(
                 appendBranch: false,
-                checked(extraPreparationBytes + payloadRecordBytes),
+                checked(extraPreparationBytes + payloadRecordBytes + ReturnTailByteReservation),
                 retainedControlPayloadBytes: retainedPayloadBytes);
 
             if (preparedAppend is null)
@@ -645,10 +665,76 @@ public sealed partial class World
             }
         }
 
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "The concrete Scene control retains uncertain return debt and its original failure without retry.")]
         public void Dispose()
-            => _preparedAppend.Dispose();
+        {
+            var state = Interlocked.CompareExchange(
+                ref _returnState,
+                ReturnStateRunning,
+                ReturnStatePending);
+
+            if (state == ReturnStateComplete)
+            {
+                return;
+            }
+
+            if (state == ReturnStateFailed)
+            {
+                (CleanupFailure
+                    ?? throw new InvalidOperationException("The failed Scene control return lost its original failure."))
+                    .Throw();
+                return;
+            }
+
+            if (state != ReturnStatePending)
+            {
+                throw new InvalidOperationException("The Scene control return is already running.");
+            }
+
+            _candidateStorage = [];
+            _payloadRecord = [];
+            _preparedAppend.DetachPreparation();
+            var creditReturned = false;
+
+            try
+            {
+                if (_returnDebtBytes != 0)
+                {
+                    _world._domainReservation.ReleaseAdditional(_returnDebtBytes, out creditReturned);
+
+                    if (!creditReturned)
+                    {
+                        throw new InvalidOperationException("The closing World still retains the Scene control preparation credit.");
+                    }
+                }
+
+                _returnDebtBytes = 0;
+                Volatile.Write(ref _returnState, ReturnStateComplete);
+            }
+            catch (Exception exception)
+            {
+                if (creditReturned)
+                {
+                    _returnDebtBytes = 0;
+                }
+
+                var failure = ExceptionDispatchInfo.Capture(exception);
+                Volatile.Write(ref _returnFailure, failure);
+                Volatile.Write(ref _returnState, ReturnStateFailed);
+                failure.Throw();
+            }
+        }
 
         internal void Commit()
+        {
+            Install();
+            Dispose();
+        }
+
+        internal void Install()
         {
             if (_isCommitted)
             {
@@ -660,8 +746,25 @@ public sealed partial class World
                 AppliedAtNextTick,
                 WorldControlKind.Scene,
                 scenePayloadRecord: _payloadRecord);
-            _preparedAppend.Commit(record, branch: null);
+            _returnDebtBytes = _preparedAppend.Install(record, branch: null);
             _isCommitted = true;
+        }
+
+        internal void ValidateForCommit()
+        {
+            if (_isCommitted
+                || (Volatile.Read(ref _returnState) != ReturnStatePending)
+                || (Sequence != _world.GetNextControlSequence())
+                || (AppliedAtNextTick != _world._nextTickIndex))
+            {
+                throw new InvalidOperationException("The prepared Scene control no longer matches its exact append boundary.");
+            }
+
+            _preparedAppend.ValidateForCommit(new WorldControlRecord(
+                Sequence,
+                AppliedAtNextTick,
+                WorldControlKind.Scene,
+                scenePayloadRecord: _payloadRecord), branch: null);
         }
     }
 
@@ -669,8 +772,8 @@ public sealed partial class World
     {
         private bool _committed;
         private readonly long _preparationBytes;
-        private readonly WorldIdentityBranchRecord[]? _preparedBranches;
-        private readonly WorldControlRecord[]? _preparedControls;
+        private WorldIdentityBranchRecord[]? _preparedBranches;
+        private WorldControlRecord[]? _preparedControls;
         private readonly long _reservedBytes;
         private readonly long _retainedControlPayloadBytes;
         private readonly World _world;
@@ -691,6 +794,8 @@ public sealed partial class World
             _retainedControlPayloadBytes = retainedControlPayloadBytes;
         }
 
+        internal long ReservedBytes => _reservedBytes;
+
         public void Dispose()
         {
             if (!_committed && (_reservedBytes != 0))
@@ -704,10 +809,26 @@ public sealed partial class World
             WorldIdentityBranchRecord? branch,
             long? nextControlSequence = null)
         {
-            if (_committed)
+            var releaseBytes = Install(record, branch, nextControlSequence);
+
+            if (releaseBytes != 0)
             {
-                throw new InvalidOperationException("The prepared World control append was already committed.");
+                _world._domainReservation.ReleaseAdditional(releaseBytes);
             }
+        }
+
+        internal void DetachPreparation()
+        {
+            _preparedControls = null;
+            _preparedBranches = null;
+        }
+
+        internal long Install(
+            WorldControlRecord record,
+            WorldIdentityBranchRecord? branch,
+            long? nextControlSequence = null)
+        {
+            ValidateForCommit(record, branch, nextControlSequence);
 
             var retainedPayloadBytes = (record.ScenePayloadRecord is null)
                 ? 0
@@ -727,6 +848,16 @@ public sealed partial class World
                 : ArrayBytes(_world._identityBranches.Length, Unsafe.SizeOf<WorldIdentityBranchRecord>());
             var oldControlBytes = (_preparedControls is null) ? 0 : existingControlBytes;
             var oldBranchBytes = (_preparedBranches is null) ? 0 : existingBranchBytes;
+            var newControlBytes = (_preparedControls is null)
+                ? existingControlBytes
+                : ArrayBytes(_preparedControls.Length, Unsafe.SizeOf<WorldControlRecord>());
+            var newBranchBytes = (_preparedBranches is null)
+                ? existingBranchBytes
+                : ArrayBytes(_preparedBranches.Length, Unsafe.SizeOf<WorldIdentityBranchRecord>());
+            var controlStorageBytes = checked(newControlBytes + newBranchBytes);
+            var scenePayloadBytes = checked(_world._sceneControlPayloadByteReservation + retainedPayloadBytes);
+            var sequence = nextControlSequence ?? checked(record.Sequence + 1);
+            var releaseBytes = checked(oldControlBytes + oldBranchBytes + _preparationBytes);
 
             if (_preparedControls is not null)
             {
@@ -738,47 +869,67 @@ public sealed partial class World
                 _world._identityBranches = _preparedBranches;
             }
 
-            if (_world._controlRecordCount >= _world._controlRecords.Length)
-            {
-                throw new InvalidOperationException("The prepared World control buffer has no append capacity.");
-            }
-
             _world._controlRecords[_world._controlRecordCount++] = record;
 
             if (branch is { } branchRecord)
             {
-                if (_world._identityBranchCount >= _world._identityBranches.Length)
-                {
-                    throw new InvalidOperationException("The prepared identity-branch buffer has no append capacity.");
-                }
-
                 _world._identityBranches[_world._identityBranchCount++] = branchRecord;
             }
 
+            _world._controlStorageByteReservation = controlStorageBytes;
+            _world._sceneControlPayloadByteReservation = scenePayloadBytes;
+            _world._nextControlSequence = sequence;
+            _committed = true;
+            DetachPreparation();
+            return releaseBytes;
+        }
+
+        internal void ValidateForCommit(
+            WorldControlRecord record,
+            WorldIdentityBranchRecord? branch,
+            long? nextControlSequence = null)
+        {
+            if (_committed)
+            {
+                throw new InvalidOperationException("The prepared World control append was already committed.");
+            }
+
+            var retainedPayloadBytes = (record.ScenePayloadRecord is null)
+                ? 0
+                : ArrayBytes(record.ScenePayloadRecord.Length, sizeof(byte));
+
+            if ((record.Kind is WorldControlKind.Scene) != (record.ScenePayloadRecord is not null)
+                || (retainedPayloadBytes != _retainedControlPayloadBytes))
+            {
+                throw new InvalidOperationException("The prepared World control payload does not match its reserved kind and extent.");
+            }
+
+            if (_world._controlRecordCount >= (_preparedControls ?? _world._controlRecords).Length
+                || ((branch is not null)
+                    && (_world._identityBranchCount >= (_preparedBranches ?? _world._identityBranches).Length)))
+            {
+                throw new InvalidOperationException("The prepared World control buffers have no append capacity.");
+            }
+
+            var existingControlBytes = (_world._controlRecords.Length == 0)
+                ? 0
+                : ArrayBytes(_world._controlRecords.Length, Unsafe.SizeOf<WorldControlRecord>());
+            var existingBranchBytes = (_world._identityBranchCount <= 1)
+                ? 0
+                : ArrayBytes(_world._identityBranches.Length, Unsafe.SizeOf<WorldIdentityBranchRecord>());
             var newControlBytes = (_preparedControls is null)
                 ? existingControlBytes
-                : ArrayBytes(_world._controlRecords.Length, Unsafe.SizeOf<WorldControlRecord>());
+                : ArrayBytes(_preparedControls.Length, Unsafe.SizeOf<WorldControlRecord>());
             var newBranchBytes = (_preparedBranches is null)
                 ? existingBranchBytes
-                : ArrayBytes(_world._identityBranches.Length, Unsafe.SizeOf<WorldIdentityBranchRecord>());
-            _world._controlStorageByteReservation = checked(newControlBytes + newBranchBytes);
-
-            if (retainedPayloadBytes != 0)
-            {
-                _world._sceneControlPayloadByteReservation = checked(
-                    _world._sceneControlPayloadByteReservation + retainedPayloadBytes);
-            }
-
-            _world._nextControlSequence = nextControlSequence
-                ?? checked(record.Sequence + 1);
-            _committed = true;
-
-            var releaseBytes = checked(oldControlBytes + oldBranchBytes + _preparationBytes);
-
-            if (releaseBytes != 0)
-            {
-                _world._domainReservation.ReleaseAdditional(releaseBytes);
-            }
+                : ArrayBytes(_preparedBranches.Length, Unsafe.SizeOf<WorldIdentityBranchRecord>());
+            _ = checked(newControlBytes + newBranchBytes);
+            _ = checked(
+                ((_preparedControls is null) ? 0 : existingControlBytes)
+                + ((_preparedBranches is null) ? 0 : existingBranchBytes)
+                + _preparationBytes);
+            _ = nextControlSequence ?? checked(record.Sequence + 1);
+            _ = checked(_world._sceneControlPayloadByteReservation + retainedPayloadBytes);
         }
     }
 

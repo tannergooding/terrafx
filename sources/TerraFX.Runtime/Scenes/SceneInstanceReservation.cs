@@ -28,7 +28,22 @@ internal sealed class SceneInstanceReservation : IDisposable
     internal int Slot => _slot;
 
     public void Dispose()
-        => Interlocked.Exchange(ref _registry, null)?.ReleaseReservation(this);
+    {
+        var registry = _registry;
+
+        try
+        {
+            registry?.ReleaseReservation(this);
+        }
+        finally
+        {
+            _ = Interlocked.Exchange(ref _registry, null);
+        }
+    }
+
+    internal void Adopt(SceneInstance instance)
+        => (_registry ?? throw new ObjectDisposedException(nameof(SceneInstanceReservation)))
+            .AdoptReservation(this, instance);
 
     internal void Commit(SceneInstance instance)
     {

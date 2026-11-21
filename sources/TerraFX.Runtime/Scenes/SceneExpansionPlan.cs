@@ -20,21 +20,21 @@ internal sealed class SceneExpansionPlan : IDisposable
     private const int DisposeStateFailed = 3;
     private const int DisposeStateRunning = 1;
 
-    private readonly ImmutableArray<int> _childOccurrenceIndicesByPlacement;
+    private ImmutableArray<int> _childOccurrenceIndicesByPlacement;
     private ExceptionDispatchInfo? _disposeFailure;
     private int _disposed;
-    private readonly ImmutableArray<SceneExpandedEntity> _entities;
-    private readonly Guid[] _entityAssignmentKeys;
-    private readonly int[] _entityIndicesByAssignmentOrdinal;
-    private readonly ImmutableArray<int> _entityIndicesByOccurrence;
-    private readonly int[] _entityParentIndices;
-    private readonly ImmutableArray<SceneExpandedExternalSlotBinding> _externalSlotBindings;
-    private readonly Guid[] _occurrenceIds;
-    private readonly ImmutableArray<SceneExpandedOccurrence> _occurrences;
+    private ImmutableArray<SceneExpandedEntity> _entities;
+    private Guid[] _entityAssignmentKeys;
+    private int[] _entityIndicesByAssignmentOrdinal;
+    private ImmutableArray<int> _entityIndicesByOccurrence;
+    private int[] _entityParentIndices;
+    private ImmutableArray<SceneExpandedExternalSlotBinding> _externalSlotBindings;
+    private Guid[] _occurrenceIds;
+    private ImmutableArray<SceneExpandedOccurrence> _occurrences;
     private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases;
     private PreparedAssetsLifetime? _preparedAssets;
-    private readonly ImmutableArray<SceneExpandedReferenceBinding> _referenceBindings;
-    private readonly ImmutableArray<int> _rootEntityIndicesByOccurrence;
+    private ImmutableArray<SceneExpandedReferenceBinding> _referenceBindings;
+    private ImmutableArray<int> _rootEntityIndicesByOccurrence;
     private readonly AssetId _sceneAssetId;
     private AssetLease<SceneAsset>? _sceneLease;
     private WorldSceneStorageReservation? _storageReservation;
@@ -134,6 +134,8 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
     }
 
+    internal ExceptionDispatchInfo? CleanupFailure => Volatile.Read(ref _disposeFailure);
+
     internal ImmutableArray<SceneExpandedEntity> Entities
     {
         get
@@ -178,6 +180,10 @@ internal sealed class SceneExpansionPlan : IDisposable
             return _externalSlotBindings;
         }
     }
+
+    internal bool IsCleanupComplete => Volatile.Read(ref _disposed) == DisposeStateComplete;
+
+    internal bool IsCleanupRunning => Volatile.Read(ref _disposed) == DisposeStateRunning;
 
     internal ReadOnlySpan<Guid> OccurrenceIds
     {
@@ -367,6 +373,19 @@ internal sealed class SceneExpansionPlan : IDisposable
 
         if (firstFailure is null)
         {
+            // No payload reader remains after disposal closes access and all subordinate
+            // returns succeed. Detach it before the receiver can refund its storage.
+            _childOccurrenceIndicesByPlacement = [];
+            _entities = [];
+            _entityAssignmentKeys = [];
+            _entityIndicesByAssignmentOrdinal = [];
+            _entityIndicesByOccurrence = [];
+            _entityParentIndices = [];
+            _externalSlotBindings = [];
+            _occurrenceIds = [];
+            _occurrences = [];
+            _referenceBindings = [];
+            _rootEntityIndicesByOccurrence = [];
             var storageReservation = Volatile.Read(ref _storageReservation);
 
             try
@@ -375,11 +394,21 @@ internal sealed class SceneExpansionPlan : IDisposable
 
                 if (storageReservation is not null)
                 {
+                    if (!storageReservation.IsDisposed)
+                    {
+                        throw new InvalidOperationException("The Scene receiver return has not completed.");
+                    }
+
                     _ = Interlocked.CompareExchange(ref _storageReservation, null, storageReservation);
                 }
             }
             catch (Exception failure)
             {
+                if (storageReservation is { IsDisposed: true })
+                {
+                    _ = Interlocked.CompareExchange(ref _storageReservation, null, storageReservation);
+                }
+
                 firstFailure = failure;
             }
         }

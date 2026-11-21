@@ -69,10 +69,14 @@ internal sealed class WorldDomainReservation : IDisposable
     }
 
     internal void ReleaseAdditional(long bytes)
+        => ReleaseAdditional(bytes, out _);
+
+    internal void ReleaseAdditional(long bytes, out bool creditReturned)
     {
+        creditReturned = false;
         var domain = Volatile.Read(ref _domain)
             ?? throw new ObjectDisposedException(nameof(WorldDomainReservation));
-        domain.ReleaseWorldReservationBytes(this, bytes);
+        domain.ReleaseWorldReservationBytes(this, bytes, out creditReturned);
     }
 
     internal void ReleaseSceneReservation(WorldSceneStorageReservation reservation)

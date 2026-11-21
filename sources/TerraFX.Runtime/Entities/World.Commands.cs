@@ -380,6 +380,30 @@ public sealed partial class World
         ImmutableArray<WorldHierarchyParentMutation> hierarchyParentMutations = default,
         CancellationToken cancellationToken = default)
     {
+        var commitFacts = default(WorldSceneStructuralCommitFacts);
+        return CommitCommandBatch(
+            staging,
+            ref commitFacts,
+            preserveSceneFailure: false,
+            sceneInstanceAssignment,
+            sceneInstanceRetirementOrdinal,
+            hierarchyParentMutations,
+            cancellationToken);
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Command playback releases its preparation and carries the original failure through the Scene commit facts.")]
+    private ImmutableArray<CommandReceipt> CommitCommandBatch(
+        WorldCommandStaging staging,
+        ref WorldSceneStructuralCommitFacts commitFacts,
+        bool preserveSceneFailure,
+        IdentityAssignment? sceneInstanceAssignment = null,
+        uint? sceneInstanceRetirementOrdinal = null,
+        ImmutableArray<WorldHierarchyParentMutation> hierarchyParentMutations = default,
+        CancellationToken cancellationToken = default)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         var commands = staging.Seal();
 
@@ -409,6 +433,7 @@ public sealed partial class World
         WorldAttachmentMembershipSource? membershipSource = null;
         var result = ImmutableArray<CommandReceipt>.Empty;
         ExceptionDispatchInfo? operationFailure = null;
+        var failureKind = WorldSceneStructuralFailureKind.None;
 
         if (_activeCommandMembershipRoot is not null)
         {
@@ -1850,6 +1875,8 @@ public sealed partial class World
             identityChange?.ValidateForCommit();
             membershipSource?.Dispose();
             membershipSource = null;
+            commitFacts.MarkInstallationStarted();
+            failureKind = WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant;
 
             foreach (var mutation in parentMutations)
             {
@@ -1981,6 +2008,7 @@ public sealed partial class World
             }
 
             _canonicalMutationRevision = nextMutationRevision;
+            commitFacts.MarkCommitted(nextMutationRevision);
 
             if ((createdProjections.Count != 0)
                 || (destroyedProjections.Count != 0)
@@ -1997,6 +2025,7 @@ public sealed partial class World
 
             if (detachedAttachments.Length != 0)
             {
+                failureKind = WorldSceneStructuralFailureKind.CleanupTail;
                 var preparedRelease = releasePreparation
                     ?? throw new InvalidOperationException("The transferred attachment release report was not prepared.");
                 ReleaseAttachmentEntries(
@@ -2017,6 +2046,11 @@ public sealed partial class World
         catch (Exception exception)
         {
             operationFailure = ExceptionDispatchInfo.Capture(exception);
+            commitFacts.RecordFailure(
+                operationFailure,
+                Volatile.Read(ref _faulted) != 0
+                    ? WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant
+                    : failureKind);
         }
 
         try
@@ -2025,6 +2059,15 @@ public sealed partial class World
         }
         catch (Exception cleanupException)
         {
+            if (preserveSceneFailure)
+            {
+                commitFacts.RecordFailure(
+                    operationFailure ?? ExceptionDispatchInfo.Capture(cleanupException),
+                    WorldSceneStructuralFailureKind.CanonicalOrOwnershipInvariant);
+                commitFacts.Failure?.Throw();
+                throw;
+            }
+
             if (operationFailure is null)
             {
                 throw;
@@ -2076,7 +2119,11 @@ public sealed partial class World
             finally
             {
                 quarantineReservation?.Release();
-                _activeCommandMembershipRoot = null;
+
+                if (!preserveSceneFailure)
+                {
+                    _activeCommandMembershipRoot = null;
+                }
             }
         }
 
