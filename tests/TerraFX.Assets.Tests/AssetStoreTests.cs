@@ -1666,6 +1666,59 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStorePreservesOriginalCpuAssetBudgetAcrossReplacement()
+    {
+        var registration = CreateRegistration();
+        var originalAsset = CreateAssetEnvelope(1, 42);
+        var replacementAsset = CreateAssetEnvelope(2, 84);
+        var originalPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, originalAsset));
+        var replacementPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(2, replacementAsset));
+        var originalPath = AssetPackageReaderTests.WritePackage(originalPackage);
+        var replacementPath = AssetPackageReaderTests.WritePackage(replacementPackage);
+        var originalBudget = (long)originalAsset.Length;
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(
+                originalPath,
+                originalPackage,
+                registration,
+                cpuAssetBudgetBytes: originalBudget),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            using var originalLease = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(originalLease.Value.Marker, Is.EqualTo(42));
+
+            await store.ReplacePackageAsync(
+                CreateOptions(
+                    replacementPath,
+                    replacementPackage,
+                    registration,
+                    cpuAssetBudgetBytes: originalBudget * 2),
+                CancellationToken.None).ConfigureAwait(false);
+
+            var replacementLoad = store.LoadAsync<TestAssetValue>(new AssetId(2), CancellationToken.None);
+            var refusal = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await replacementLoad.ConfigureAwait(false));
+
+            Assert.Multiple(() => {
+                Assert.That(refusal, Is.Not.Null);
+                Assert.That(originalLease.Value.Marker, Is.EqualTo(42));
+            });
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(originalPath);
+            File.Delete(replacementPath);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreReferenceValidationAccountsForTargetLargerThanParent()
     {
         var registration = CreateRegistration();

@@ -22,6 +22,7 @@ public sealed partial class AssetStore : IAsyncDisposable
     private bool _disposed;
     private long _liveAssetBytes;
     private int _liveAssetLeases;
+    private readonly long _originalCpuAssetBudgetBytes;
     private AssetPackageBacking? _pendingReleaseBacking;
     private Exception? _pendingReleaseFailure;
     private TaskCompletionSource? _replacementCompletion;
@@ -30,6 +31,7 @@ public sealed partial class AssetStore : IAsyncDisposable
     private AssetStore(AssetPackageBacking backing)
     {
         _currentBacking = backing;
+        _originalCpuAssetBudgetBytes = backing.CpuAssetBudgetBytes;
         _disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
@@ -41,6 +43,7 @@ public sealed partial class AssetStore : IAsyncDisposable
         }
 
         _currentBacking = backing;
+        _originalCpuAssetBudgetBytes = backing.CpuAssetBudgetBytes;
         _disposeCompletion = null;
     }
 
@@ -331,8 +334,10 @@ public sealed partial class AssetStore : IAsyncDisposable
 
             decodedBytes = checked((long)entry.DecodedLength);
 
-            if ((decodedBytes > backing.CpuAssetBudgetBytes)
-                || (_liveAssetBytes > backing.CpuAssetBudgetBytes - decodedBytes)
+            var maximumLiveAssetBytes = Math.Min(backing.CpuAssetBudgetBytes, _originalCpuAssetBudgetBytes);
+
+            if ((decodedBytes > maximumLiveAssetBytes)
+                || (_liveAssetBytes > maximumLiveAssetBytes - decodedBytes)
                 || (_liveAssetLeases >= backing.MaximumLiveAssetLeases))
             {
                 throw new InvalidOperationException("The live asset lease budget is exhausted.");

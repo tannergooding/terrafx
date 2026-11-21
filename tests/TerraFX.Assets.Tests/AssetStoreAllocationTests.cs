@@ -129,7 +129,7 @@ internal sealed class AssetStoreAllocationTests
             ("AssetPackageLease.LeaseState", packageLeaseStateType, 56),
             (nameof(Lock), typeof(Lock), 40),
             ("ObjectGate", typeof(object), 24),
-            (nameof(AssetStore), typeof(AssetStore), 96),
+            (nameof(AssetStore), typeof(AssetStore), 104),
             (nameof(AssetStoreRegistration), typeof(AssetStoreRegistration), 48),
             (nameof(AssetBoundedNativeFile), typeof(AssetBoundedNativeFile), 80),
             (nameof(AssetBoundedNativePort), typeof(AssetBoundedNativePort), 144),
