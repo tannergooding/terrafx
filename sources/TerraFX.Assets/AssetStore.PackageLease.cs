@@ -194,16 +194,21 @@ public sealed partial class AssetStore
         }
         finally
         {
-            if (decodeBudgetReserved)
+            try
             {
-                ReleaseDecodeBudget(decodedBytes);
+                if (decodeBudgetReserved)
+                {
+                    ReleaseDecodeBudget(decodedBytes);
+                }
+
+                CompleteLoad(decodedBytes, leaseCreated);
             }
-
-            CompleteLoad(decodedBytes, leaseCreated);
-
-            if (!leaseCreated)
+            finally
             {
-                ReleaseOriginalBackingReference(backing);
+                if (!leaseCreated)
+                {
+                    ReleaseOriginalBackingReference(backing);
+                }
             }
         }
     }
