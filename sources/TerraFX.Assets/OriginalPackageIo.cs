@@ -111,6 +111,7 @@ internal sealed class OriginalPackageIo
         if (!ReferenceEquals(lifetime._executionState, this)
             || !ReferenceEquals(RetiringOwner, lifetime)
             || !ReferenceEquals(_issuer, issuer)
+            || (Volatile.Read(ref lifetime._lifecycle) is not OriginalIoLifetime.TerminalStatePublished)
             || (Volatile.Read(ref _stopRequest) is 0)
             || (Volatile.Read(ref _queueAttemptState) is not CallbackEntered)
             || (Volatile.Read(ref _joinState) is not JoinReturned)
@@ -144,8 +145,8 @@ internal sealed class OriginalPackageIo
 
         if (Interlocked.CompareExchange(
             ref lifetime._lifecycle,
-            OriginalIoLifetime.TerminalStateReturned,
-            OriginalIoLifetime.TerminalStateLive) is not OriginalIoLifetime.TerminalStateLive)
+            OriginalIoLifetime.TerminalExecutionReturned,
+            OriginalIoLifetime.TerminalStatePublished) is not OriginalIoLifetime.TerminalStatePublished)
         {
             throw new InvalidOperationException("The terminal execution state has already been returned.");
         }
@@ -178,7 +179,11 @@ internal sealed class OriginalPackageIo
 
     internal void ObserveTerminalCallbackEntered()
     {
-        if ((RetiringOwner is null) || (Volatile.Read(ref _stopRequest) is 0))
+        var lifetime = RetiringOwner;
+
+        if ((lifetime is null)
+            || (Volatile.Read(ref _stopRequest) is 0)
+            || (Volatile.Read(ref lifetime._lifecycle) is not OriginalIoLifetime.TerminalStatePublished))
         {
             throw new InvalidOperationException("The terminal callback has no published retirement owner.");
         }
@@ -201,11 +206,20 @@ internal sealed class OriginalPackageIo
 
     internal void PublishRetirement(OriginalIoLifetime lifetime)
     {
+        if (Interlocked.CompareExchange(
+            ref lifetime._lifecycle,
+            OriginalIoLifetime.TerminalStatePublishing,
+            OriginalIoLifetime.TerminalStateLive) is not OriginalIoLifetime.TerminalStateLive)
+        {
+            return;
+        }
+
         var current = Interlocked.CompareExchange(ref _retiringOwner, lifetime, null);
 
         if ((current is null) || ReferenceEquals(current, lifetime))
         {
             Volatile.Write(ref _stopRequest, 1);
+            Volatile.Write(ref lifetime._lifecycle, OriginalIoLifetime.TerminalStatePublished);
         }
     }
 }

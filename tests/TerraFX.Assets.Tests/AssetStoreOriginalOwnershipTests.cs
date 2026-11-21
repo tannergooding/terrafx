@@ -334,6 +334,8 @@ internal sealed class AssetStoreOriginalOwnershipTests
                 Assert.That(candidate.ExecutionState._thread, Is.Null);
             });
 
+            candidate.ExecutionState.PublishRetirement(candidate.Lifetime);
+            Assert.That(candidate.ExecutionState.RetiringOwner, Is.Null);
             _ = Assert.Throws<InvalidOperationException>(
                 () => OriginalIoLifetime.CompleteTerminalReturn(candidate.Lifetime));
             Assert.That(
@@ -425,13 +427,15 @@ internal sealed class AssetStoreOriginalOwnershipTests
 
             if (!storeDisposed)
             {
-                if (lifetime._lifecycle is OriginalIoLifetime.TerminalStateLive)
+                if (lifetime._lifecycle is
+                    OriginalIoLifetime.TerminalStatePublishing or OriginalIoLifetime.TerminalStatePublished)
                 {
                     executionState._thread = null;
                     executionState._retiringOwner = null;
                     executionState._stopRequest = 0;
                     executionState._queueAttemptState = OriginalPackageIo.CallbackNotEntered;
                     executionState._joinState = OriginalPackageIo.JoinNotStarted;
+                    lifetime._lifecycle = OriginalIoLifetime.TerminalStateLive;
                 }
 
                 if (!openingReleased)
@@ -575,7 +579,7 @@ internal sealed class AssetStoreOriginalOwnershipTests
                 Assert.That(candidate.Issuer.SourceCapacity, Is.EqualTo(candidate.SourceBefore + candidate.SourceClaim));
                 Assert.That(candidate.Lifetime._sourceClaim, Is.EqualTo(candidate.SourceClaim));
                 Assert.That(candidate.Lifetime._executionState, Is.SameAs(candidate.ExecutionState));
-                Assert.That(candidate.Lifetime._lifecycle, Is.EqualTo(OriginalIoLifetime.TerminalStateLive));
+                Assert.That(candidate.Lifetime._lifecycle, Is.EqualTo(OriginalIoLifetime.TerminalStatePublished));
                 Assert.That(candidate.ExecutionState._retiringOwner, Is.SameAs(candidate.Lifetime));
                 Assert.That(candidate.ExecutionState._thread, Is.SameAs(candidate.Thread));
             });

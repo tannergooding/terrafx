@@ -9,9 +9,11 @@ internal sealed class OriginalIoLifetime
 {
     internal const int NativeStateNotAcquired = 0;
     internal const int NativeStateReleased = 2;
-    internal const int TerminalServiceReturned = 2;
+    internal const int TerminalExecutionReturned = 3;
+    internal const int TerminalServiceReturned = 4;
     internal const int TerminalStateLive = 0;
-    internal const int TerminalStateReturned = 1;
+    internal const int TerminalStatePublished = 2;
+    internal const int TerminalStatePublishing = 1;
 
     internal int _blockReleaseState;
 
@@ -57,7 +59,7 @@ internal sealed class OriginalIoLifetime
     internal (AssetStore.OriginalIssuer Issuer, long SourceBytes) DetachServiceProvision()
         => Volatile.Read(ref _lifecycle) switch {
             TerminalStateLive => DetachUnstartedService(),
-            TerminalStateReturned => DetachTerminalService(),
+            TerminalExecutionReturned => DetachTerminalService(),
             _ => throw new InvalidOperationException("The original service provision has already been returned."),
         };
 
@@ -73,7 +75,7 @@ internal sealed class OriginalIoLifetime
 
         if (!ReferenceEquals(serviceReturn.IoLifetime, this)
             || (_executionState is not null)
-            || (_lifecycle is not TerminalStateReturned)
+            || (_lifecycle is not TerminalExecutionReturned)
             || (Interlocked.Read(ref _sourceClaim) != sourceClaim)
             || (_generationHead is not null)
             || (_nativeGenerationInterests is not 0)
@@ -90,7 +92,7 @@ internal sealed class OriginalIoLifetime
         if (Interlocked.CompareExchange(
             ref _lifecycle,
             TerminalServiceReturned,
-            TerminalStateReturned) is not TerminalStateReturned)
+            TerminalExecutionReturned) is not TerminalExecutionReturned)
         {
             throw new InvalidOperationException("The terminal service has already been returned.");
         }
@@ -145,7 +147,7 @@ internal sealed class OriginalIoLifetime
             throw new InvalidOperationException("The original service has started or still has an engine-owned use or resource.");
         }
 
-        if (Interlocked.CompareExchange(ref _lifecycle, TerminalStateReturned, TerminalStateLive)
+        if (Interlocked.CompareExchange(ref _lifecycle, TerminalServiceReturned, TerminalStateLive)
             is not TerminalStateLive)
         {
             throw new InvalidOperationException("The unstarted original service has already been returned.");
