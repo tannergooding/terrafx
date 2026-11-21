@@ -28,13 +28,6 @@ public sealed partial class AssetStore : IAsyncDisposable
     private TaskCompletionSource? _replacementCompletion;
     private int _replacementInProgress;
 
-    private AssetStore(AssetPackageBacking backing)
-    {
-        _currentBacking = backing;
-        _originalCpuAssetBudgetBytes = backing.CpuAssetBudgetBytes;
-        _disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
-
     private AssetStore(AssetPackageBacking backing, bool isBoundedOpening)
     {
         if (!isBoundedOpening || !backing.IsBoundedOpening)
@@ -45,6 +38,14 @@ public sealed partial class AssetStore : IAsyncDisposable
         _currentBacking = backing;
         _originalCpuAssetBudgetBytes = backing.CpuAssetBudgetBytes;
         _disposeCompletion = null;
+    }
+
+    private AssetStore(OriginalIssuer issuer)
+    {
+        _originalIssuer = issuer;
+        _originalCpuAssetBudgetBytes = issuer.Budget;
+        _ioControl = new OriginalOperation(issuer, issuer.IssueOperationId(), OriginalOperationSourceBytes);
+        _disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>Opens and validates one immutable EPKG2 content-set package.</summary>
@@ -70,15 +71,36 @@ public sealed partial class AssetStore : IAsyncDisposable
         AssetStoreOptions options,
         CancellationToken cancellationToken)
     {
-        var backing = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var store = PreclaimOriginalOpening(options, out var opening);
 
         try
         {
-            return new AssetStore(backing);
+            var response = AssetPackageReader.OpenAsync(opening, cancellationToken);
+            opening.InstallResponse(response);
+            var backing = await response.ConfigureAwait(false);
+
+            lock (store._gate)
+            {
+                store.CompleteOriginalOpeningSource(ref opening, succeeded: true, retainFailure: false);
+                backing.SelectOriginalGeneration();
+                store._currentBacking = backing;
+            }
+
+            return store;
         }
-        catch
+        catch (Exception failure)
         {
-            backing.ReleaseOwner();
+            if (opening is not null)
+            {
+                lock (store._gate)
+                {
+                    opening.RecordFailure(failure, cleanup: false);
+                    store.CompleteOriginalOpeningSource(ref opening, succeeded: false, retainFailure: true);
+                    store.AbandonOriginalStoreSource();
+                }
+            }
+
             throw;
         }
     }
@@ -128,6 +150,7 @@ public sealed partial class AssetStore : IAsyncDisposable
             {
                 _disposeState = 1;
                 _disposed = true;
+                _originalIssuer?.CloseAdmission();
                 replacementTask = _replacementCompletion?.Task ?? Task.CompletedTask;
             }
             else
@@ -162,7 +185,11 @@ public sealed partial class AssetStore : IAsyncDisposable
 
             try
             {
-                backing?.ReleaseOwner();
+                if (backing is not null)
+                {
+                    ReleaseOriginalBackingOwner(backing);
+                }
+
                 currentBackingReleased = true;
             }
             catch (Exception failure)
@@ -188,6 +215,7 @@ public sealed partial class AssetStore : IAsyncDisposable
 
             lock (_gate)
             {
+                EndOriginalServiceProvision();
                 _disposeState = 2;
             }
 
@@ -197,6 +225,7 @@ public sealed partial class AssetStore : IAsyncDisposable
         {
             lock (_gate)
             {
+                _ioControl?.RecordFailure(failure, cleanup: true);
                 _disposeState = 3;
             }
 
@@ -338,6 +367,9 @@ public sealed partial class AssetStore : IAsyncDisposable
 
             if ((decodedBytes > maximumLiveAssetBytes)
                 || (_liveAssetBytes > maximumLiveAssetBytes - decodedBytes)
+                || ((_originalIssuer is { } issuer)
+                    && ((decodedBytes > _originalCpuAssetBudgetBytes - issuer.SourceCapacity)
+                        || (_liveAssetBytes > _originalCpuAssetBudgetBytes - issuer.SourceCapacity - decodedBytes)))
                 || (_liveAssetLeases >= backing.MaximumLiveAssetLeases))
             {
                 throw new InvalidOperationException("The live asset lease budget is exhausted.");
@@ -425,6 +457,7 @@ public sealed partial class AssetStore : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         TaskCompletionSource replacementCompletion;
+        OriginalOperation? opening;
 
         lock (_gate)
         {
@@ -435,6 +468,7 @@ public sealed partial class AssetStore : IAsyncDisposable
                 throw new InvalidOperationException("The store has no available package-replacement owner.");
             }
 
+            opening = PreclaimOriginalCandidate(options);
             replacementCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _replacementCompletion = replacementCompletion;
             _replacementInProgress = 1;
@@ -444,7 +478,9 @@ public sealed partial class AssetStore : IAsyncDisposable
 
         try
         {
-            replacement = await AssetPackageReader.OpenAsync(options, cancellationToken).ConfigureAwait(false);
+            var response = AssetPackageReader.OpenAsync(opening, cancellationToken);
+            opening.InstallResponse(response);
+            replacement = await response.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             AssetPackageBacking previous;
 
@@ -453,6 +489,9 @@ public sealed partial class AssetStore : IAsyncDisposable
                 ObjectDisposedException.ThrowIf(_disposed, this);
                 previous = _currentBacking
                     ?? throw new InvalidOperationException("The asset store has no selected package.");
+                CompleteOriginalOpeningSource(ref opening, succeeded: true, retainFailure: false);
+                replacement.SelectOriginalGeneration();
+                previous.DisplaceOriginalGeneration();
                 _currentBacking = replacement;
                 _pendingReleaseBacking = previous;
                 replacement = null;
@@ -460,7 +499,7 @@ public sealed partial class AssetStore : IAsyncDisposable
 
             try
             {
-                previous.ReleaseOwner();
+                ReleaseOriginalBackingOwner(previous);
             }
             catch (Exception failure)
             {
@@ -495,6 +534,23 @@ public sealed partial class AssetStore : IAsyncDisposable
                         _pendingReleaseBacking = replacement;
                         _pendingReleaseFailure = failure;
                     }
+                }
+            }
+
+            if (opening is not null)
+            {
+                lock (_gate)
+                {
+                    var failedBacking = opening.Backing;
+
+                    if (failedBacking.OriginalUnreturnedReleaseFailure is { } releaseFailure)
+                    {
+                        _pendingReleaseBacking = failedBacking;
+                        _pendingReleaseFailure = releaseFailure;
+                    }
+
+                    opening.RecordFailure(operationFailure, cleanup: false);
+                    CompleteOriginalOpeningSource(ref opening, succeeded: false, retainFailure: true);
                 }
             }
 

@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Assets;
 
@@ -15,6 +16,84 @@ namespace TerraFX.Assets.Tests;
 [TestFixture]
 internal sealed class AssetStoreAllocationTests
 {
+    private static int GetManagedFieldWidth(Type type)
+    {
+        if (!type.IsValueType)
+        {
+            return IntPtr.Size;
+        }
+
+        if (type.IsEnum)
+        {
+            type = Enum.GetUnderlyingType(type);
+        }
+
+        if ((type == typeof(bool)) || (type == typeof(byte)))
+        {
+            return 1;
+        }
+
+        if (type == typeof(ushort))
+        {
+            return 2;
+        }
+
+        if ((type == typeof(int)) || (type == typeof(uint)))
+        {
+            return 4;
+        }
+
+        if ((type == typeof(long)) || (type == typeof(ulong)))
+        {
+            return 8;
+        }
+
+        if (type == typeof(SpatialProfileId))
+        {
+            return Unsafe.SizeOf<SpatialProfileId>();
+        }
+
+        if (type == typeof(Guid))
+        {
+            return Unsafe.SizeOf<Guid>();
+        }
+
+        if (type == typeof(SpatialSettings))
+        {
+            return Unsafe.SizeOf<SpatialSettings>();
+        }
+
+        if (type == typeof(CancellationToken))
+        {
+            return Unsafe.SizeOf<CancellationToken>();
+        }
+
+        if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(System.Collections.Immutable.ImmutableArray<>)))
+        {
+            return Unsafe.SizeOf<System.Collections.Immutable.ImmutableArray<byte>>();
+        }
+
+        throw new InvalidOperationException($"The source declaration contains an unpriced managed field: {type}.");
+    }
+
+    private static (long Raw, long Capacity) GetSourceFieldCapacity(Type type)
+    {
+        var raw = 0L;
+        var slots = 0L;
+
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            foreach (var field in current.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+            {
+                var width = GetManagedFieldWidth(field.FieldType);
+                raw = checked(raw + width);
+                slots = checked(slots + ((width + 7L) & ~7L));
+            }
+        }
+
+        return (raw, Math.Max(24, checked((16 + slots + 7) & ~7L)));
+    }
+
     private static long MeasureByteArrayBytes(int byteCount, int sampleCount)
     {
         var warmInstances = new byte[sampleCount][];
@@ -129,13 +208,16 @@ internal sealed class AssetStoreAllocationTests
             ("AssetPackageLease.LeaseState", packageLeaseStateType, 56),
             (nameof(Lock), typeof(Lock), 40),
             ("ObjectGate", typeof(object), 24),
-            (nameof(AssetStore), typeof(AssetStore), 104),
+            (nameof(AssetStore), typeof(AssetStore), 136),
             (nameof(AssetStoreRegistration), typeof(AssetStoreRegistration), 48),
             (nameof(AssetBoundedNativeFile), typeof(AssetBoundedNativeFile), 80),
             (nameof(AssetBoundedNativePort), typeof(AssetBoundedNativePort), 144),
             (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 192),
-            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 168),
+            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 224),
             (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
+            ("OriginalIssuer", typeof(AssetStore.OriginalIssuer), 64),
+            ("OriginalOperation", typeof(AssetStore.OriginalOperation), 128),
+            ("OriginalOpeningStorage", typeof(AssetStore.OriginalOpeningStorage), 88),
         ];
 
         foreach (var (name, type, expectedBytes) in carrierTypes)
@@ -150,66 +232,110 @@ internal sealed class AssetStoreAllocationTests
     }
 
     [Test]
-    public void PackageBackingConstructionMatchesMeasuredCarrierShells()
+    public async Task OriginalPreclaimConstructionMatchesSourceAndExcludedFrameworkShellsWithoutFileAcquisition()
     {
         const int SampleCount = 64;
-        var packagePath = Path.Combine(Path.GetTempPath(), $"terrafx-allocation-{Guid.NewGuid():N}.epkg");
-        File.WriteAllBytes(packagePath, []);
-        var streams = new FileStream?[SampleCount + 1];
-        var backings = new AssetPackageBacking?[SampleCount];
+        var packagePath = AssetPackageReaderTests.CreatePackagePath();
+        var registration = AssetPackageReaderTests.CreateRegistration();
+        var options = new AssetStoreOptions(packagePath, new byte[32], registration);
+        await AssetStoreOriginalOwnershipTests.WarmOriginalAnchorAsync(options).ConfigureAwait(false);
+        var stores = new AssetStore[SampleCount];
+        var openings = new AssetStore.OriginalOperation[SampleCount];
+        var constructedCount = 0;
+        var excludedCompletionShellBytes =
+            MeasureCarrierBytes(typeof(TaskCompletionSource), SampleCount) + MeasureCarrierBytes(typeof(Task), SampleCount);
 
         try
         {
-            for (var index = 0; index < streams.Length; index++)
-            {
-                streams[index] = File.OpenRead(packagePath);
-            }
-
-            var registration = AssetPackageReaderTests.CreateRegistration();
-            var options = new AssetStoreOptions(packagePath, new byte[32], registration);
-            var warmStream = streams[0]
-                ?? throw new InvalidOperationException("The package stream was not initialized.");
-            var warmBacking = new AssetPackageBacking(warmStream, [], default, default, options, packageByteLength: 0);
-            warmBacking.ReleaseOwner();
-
             var allocationStart = GC.GetAllocatedBytesForCurrentThread();
 
-            for (var index = 0; index < backings.Length; index++)
+            for (var index = 0; index < stores.Length; index++)
             {
-                var stream = streams[index + 1]
-                    ?? throw new InvalidOperationException("The package stream was not initialized.");
-                backings[index] = new AssetPackageBacking(
-                    stream,
-                    [],
-                    default,
-                    default,
-                    options,
-                    packageByteLength: 0);
+                stores[index] = AssetStore.PreclaimOriginalOpening(options, out var opening);
+                openings[index] = opening;
+                constructedCount++;
             }
 
             var measuredBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
-            GC.KeepAlive(backings);
-            GC.KeepAlive(streams);
+            GC.KeepAlive(stores);
+            GC.KeepAlive(openings);
 
-            Assert.That(measuredBytes, Is.EqualTo(296));
-            TestContext.WriteLine($"AssetPackageBacking constructor including token, Lock and read limits={measuredBytes};");
+            // Source shells: Store, issuer, three controls, backing, token,
+            // read limits and holder. Three Lock objects and TCS/Task are distinct.
+            Assert.That(measuredBytes, Is.EqualTo(984 + (3 * 40) + excludedCompletionShellBytes));
+
+            for (var index = 0; index < stores.Length; index++)
+            {
+                Assert.That(stores[index].OriginalSourceCapacity, Is.EqualTo(8_595_872));
+                Assert.That(openings[index].FileAcquisitionAttempted, Is.False);
+                Assert.That(openings[index].Storage.Stream, Is.Null);
+            }
+
+            Assert.That(File.Exists(packagePath), Is.False);
+            TestContext.WriteLine($"Unstarted source preclaim=8595872; measured managed constructor allocations={measuredBytes};");
+            TestContext.WriteLine("The native scratch/OVERLAPPED capacities are unspent; no worker, hash, file, native close or caller-return qualification.");
             TestContext.WriteLine(
                 $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
         }
         finally
         {
-            foreach (var backing in backings)
+            for (var index = 0; index < constructedCount; index++)
             {
-                backing?.ReleaseOwner();
+                stores[index].ReleaseUnstartedOriginalOpening(openings[index]);
+                await stores[index].DisposeAsync().ConfigureAwait(false);
             }
-
-            foreach (var stream in streams)
-            {
-                stream?.Dispose();
-            }
-
-            File.Delete(packagePath);
         }
+    }
+
+    [Test]
+    public void OriginalSourceExpressionsCoverFinalFieldMembershipAndEntryStride()
+    {
+        (Type Type, long Raw, long Capacity)[] carriers = [
+            (typeof(AssetStore), 117, 152),
+            (typeof(AssetStore.OriginalIssuer), 44, 64),
+            (typeof(AssetPackageBacking), 206, 264),
+            (typeof(EbinReadLimits), 44, 80),
+            (typeof(AssetPackageBackingToken), 0, 24),
+            (typeof(AssetStore.OriginalOperation), 112, 144),
+            (typeof(AssetStore.OriginalOpeningStorage), 72, 88),
+        ];
+
+        foreach (var (type, raw, capacity) in carriers)
+        {
+            Assert.That(GetSourceFieldCapacity(type), Is.EqualTo((raw, capacity)), type.Name);
+        }
+
+        var core = typeof(EbinReadLimits).Assembly;
+        (string Name, long Capacity)[] profileCarriers = [
+            ("FoundationProfileBinding", 88),
+            ("FoundationCodecContext", 48),
+            ("EbinField", 56),
+            ("EbinRecord", 56),
+        ];
+
+        foreach (var (name, capacity) in profileCarriers)
+        {
+            var type = core.GetType($"TerraFX.{name}", throwOnError: true)
+                ?? throw new InvalidOperationException("The profile source declaration is missing.");
+            Assert.That(GetSourceFieldCapacity(type).Capacity, Is.EqualTo(capacity), name);
+        }
+
+        var anchorSlots = 0L;
+
+        foreach (var field in typeof(AssetPackageBacking).GetFields(BindingFlags.Static | BindingFlags.NonPublic))
+        {
+            anchorSlots = checked(anchorSlots + ((GetManagedFieldWidth(field.FieldType) + 7L) & ~7L));
+        }
+
+        Assert.Multiple(() => {
+            Assert.That(Unsafe.SizeOf<AssetPackageEntry>(), Is.EqualTo(32));
+            Assert.That(anchorSlots, Is.EqualTo(32));
+            Assert.That(AssetStore.OriginalProfileSourceBytes, Is.EqualTo(73_104));
+            Assert.That(AssetStore.OriginalServiceSourceBytes, Is.EqualTo(66_472));
+            Assert.That(AssetStore.GetOriginalKeepSourceBytes(131_072), Is.EqualTo(4_195_384));
+            Assert.That(AssetStore.OriginalOpeningSourceBytes, Is.EqualTo(4_334_016));
+        });
+        TestContext.WriteLine("Declared source capacity includes field slots and selected data, not excluded framework/native allocation graphs.");
     }
 
     [Test]

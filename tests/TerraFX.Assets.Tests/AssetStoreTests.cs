@@ -130,16 +130,14 @@ internal sealed class AssetStoreTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference<AssetPackageBacking> CreateBackingWithFailedClose(string path)
     {
+        var store = AssetStore.PreclaimOriginalOpening(CreateOptions(path, [], CreateRegistration()), out var opening);
+        opening.BeginAcquisition(CancellationToken.None);
         using var stream = new ThrowingFileStream(path);
-        var backing = new AssetPackageBacking(
-            stream,
-            [],
-            default,
-            default,
-            CreateOptions(path, [], CreateRegistration()),
-            packageByteLength: 0);
+        var backing = opening.Backing;
+        backing.InstallOriginalStream(stream);
         var weakBacking = new WeakReference<AssetPackageBacking>(backing);
         _ = Assert.Throws<IOException>(backing.ReleaseOwner);
+        GC.KeepAlive(store);
         return weakBacking;
     }
 
@@ -278,6 +276,7 @@ internal sealed class AssetStoreTests
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static async Task<(
+        AssetStore Store,
         AssetPackageBacking Backing,
         WeakReference<AssetStoreOptions> Options,
         AssetStoreRegistration Registration,
@@ -288,14 +287,15 @@ internal sealed class AssetStoreTests
         var registration = CreateRegistration();
         var packageSha256 = SHA256.HashData(package);
         var options = new AssetStoreOptions(path, packageSha256, registration) {
-            CpuAssetBudgetBytes = 345,
+            CpuAssetBudgetBytes = 8_595_904,
             MaximumDecodedAssetBytes = 123,
             MaximumConcurrentDecodeBytes = 234,
             MaximumLiveAssetLeases = 12,
         };
         var weakOptions = new WeakReference<AssetStoreOptions>(options);
-        var backing = await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false);
-        return (backing, weakOptions, registration, packageSha256);
+        var store = await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false);
+        var backing = AssetPackageReaderTests.GetSelectedBacking(store);
+        return (store, backing, weakOptions, registration, packageSha256);
     }
 
     private static void WriteFieldHeader(
@@ -636,7 +636,7 @@ internal sealed class AssetStoreTests
     [Test]
     public void AssetPackageBackingFailedFinalStreamReleaseRootsBackingForProcessLifetime()
     {
-        var path = Path.GetTempFileName();
+        var path = AssetPackageReaderTests.WritePackage([]);
 
         try
         {
@@ -1670,14 +1670,14 @@ internal sealed class AssetStoreTests
     {
         var registration = CreateRegistration();
         var originalAsset = CreateAssetEnvelope(1, 42);
-        var replacementAsset = CreateAssetEnvelope(2, 84);
+        var originalBudget = 8_595_904L + 1_112 + originalAsset.Length;
+        var replacementAsset = new byte[checked((int)originalBudget)];
         var originalPackage = AssetPackageReaderTests.CreatePackage(
             new AssetPackageReaderTests.TestEntry(1, originalAsset));
         var replacementPackage = AssetPackageReaderTests.CreatePackage(
             new AssetPackageReaderTests.TestEntry(2, replacementAsset));
         var originalPath = AssetPackageReaderTests.WritePackage(originalPackage);
         var replacementPath = AssetPackageReaderTests.WritePackage(replacementPackage);
-        var originalBudget = (long)originalAsset.Length;
         var store = await AssetStore.CreateAsync(
             CreateOptions(
                 originalPath,
@@ -1846,13 +1846,39 @@ internal sealed class AssetStoreTests
         try
         {
             var cpuLimitedStore = await AssetStore.CreateAsync(
-                CreateOptions(path, package, registration, cpuAssetBudgetBytes: payload.Length - 1),
+                CreateOptions(
+                    path,
+                    package,
+                    registration,
+                    cpuAssetBudgetBytes: 8_595_904,
+                    maximumLiveAssetLeases: 65_536),
                 CancellationToken.None).ConfigureAwait(false);
 
             try
             {
-                _ = Assert.ThrowsAsync<InvalidOperationException>(
-                    async () => await cpuLimitedStore.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false));
+                var held = new List<AssetLease<TestAssetValue>>();
+
+                try
+                {
+                    const long WireHeadroom = 8_595_904 - (66_472 + 1_112);
+                    var leaseCount = checked((int)(WireHeadroom / payload.Length));
+
+                    for (var index = 0; index < leaseCount; index++)
+                    {
+                        held.Add(await cpuLimitedStore.LoadAsync<TestAssetValue>(new AssetId(1)).ConfigureAwait(false));
+                    }
+
+                    Assert.That(held, Has.Count.EqualTo(leaseCount));
+                    _ = Assert.ThrowsAsync<InvalidOperationException>(
+                        async () => await cpuLimitedStore.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false));
+                }
+                finally
+                {
+                    foreach (var lease in held)
+                    {
+                        lease.Dispose();
+                    }
+                }
             }
             finally
             {
@@ -2145,6 +2171,91 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task CandidateAdmissionIncludesCurrentWireDebitAndRefusesOneByteBeforeFileAcquisition()
+    {
+        var registration = CreateRegistration();
+        var payload = CreateAssetEnvelope(1, 52);
+        var package = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, payload));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var candidatePath = AssetPackageReaderTests.CreatePackagePath();
+        await AssetStoreOriginalOwnershipTests.WarmOriginalAnchorAsync(CreateOptions(path, package, registration)).ConfigureAwait(false);
+        var originalBudget = 66_472L + 1_112 + 8_529_400 + payload.Length - 1;
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration, cpuAssetBudgetBytes: originalBudget)).ConfigureAwait(false);
+        AssetLease<TestAssetValue>? lease = null;
+
+        try
+        {
+            lease = await store.LoadAsync<TestAssetValue>(new AssetId(1)).ConfigureAwait(false);
+            var candidateOptions = CreateOptions(candidatePath, package, registration, cpuAssetBudgetBytes: long.MaxValue);
+            var failure = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await store.ReplacePackageAsync(candidateOptions).ConfigureAwait(false));
+
+            Assert.Multiple(() => {
+                Assert.That(failure!.Message, Does.Contain("original CPU asset source-capacity"));
+                Assert.That(File.Exists(candidatePath), Is.False);
+                Assert.That(lease.Value.Marker, Is.EqualTo(52));
+                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_112));
+            });
+
+            lease.Dispose();
+            lease = null;
+            await File.WriteAllBytesAsync(candidatePath, package).ConfigureAwait(false);
+            await store.ReplacePackageAsync(candidateOptions).ConfigureAwait(false);
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_112 + 1_032));
+        }
+        finally
+        {
+            lease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+            File.Delete(candidatePath);
+        }
+    }
+
+    [Test]
+    public async Task DescribedMetadataKeepsItsSourceSubsetAfterFinalPackageReleaseReturns()
+    {
+        var profileOrigin = typeof(ProfiledTestAssetOrigin);
+        var registration = new AssetStoreRegistrationBuilder(s_schemas)
+            .RegisterProfiledCodec(new ContextualTestAssetCodec(), profileOrigin, AssetPackagePayloadCodec.None)
+            .Build();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 17)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 23)),
+            new AssetPackageReaderTests.TestEntry(3, CreateAssetEnvelope(3, 29)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var options = CreateOptions(path, package, registration);
+        await AssetStoreOriginalOwnershipTests.WarmOriginalAnchorAsync(options).ConfigureAwait(false);
+        var store = await AssetStore.CreateAsync(options).ConfigureAwait(false);
+        AssetPackageLease? packageLease = null;
+
+        try
+        {
+            packageLease = store.AcquirePackageLease();
+            var descriptor = packageLease.DescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin);
+            var oldBacking = AssetPackageReaderTests.GetSelectedBacking(store);
+            await store.ReplacePackageAsync(options).ConfigureAwait(false);
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_176)));
+
+            packageLease.Dispose();
+            packageLease = null;
+            Assert.Multiple(() => {
+                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_176 + 1_056));
+                Assert.That(oldBacking.Entries, Is.Empty);
+                Assert.That(oldBacking.ReadLimits, Is.SameAs(descriptor.ReadLimits));
+                Assert.That(oldBacking.BackingToken, Is.SameAs(descriptor.BackingToken));
+            });
+        }
+        finally
+        {
+            packageLease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task PackageBackingDoesNotRetainOpenedOptions()
     {
         var package = AssetPackageReaderTests.CreatePackage();
@@ -2152,7 +2263,7 @@ internal sealed class AssetStoreTests
 
         try
         {
-            var (backing, weakOptions, registration, packageSha256) = await OpenBackingWithoutRetainingOptions(path, package).ConfigureAwait(false);
+            var (store, backing, weakOptions, registration, packageSha256) = await OpenBackingWithoutRetainingOptions(path, package).ConfigureAwait(false);
 
             try
             {
@@ -2161,7 +2272,7 @@ internal sealed class AssetStoreTests
                 GC.Collect();
 
                 Assert.That(weakOptions.TryGetTarget(out _), Is.False);
-                Assert.That(backing.CpuAssetBudgetBytes, Is.EqualTo(345));
+                Assert.That(backing.CpuAssetBudgetBytes, Is.EqualTo(8_595_904));
                 Assert.That(backing.ExpectedPackageSha256.AsSpan().SequenceEqual(packageSha256), Is.True);
                 Assert.That(backing.MaximumConcurrentDecodeBytes, Is.EqualTo(234));
                 Assert.That(backing.MaximumDecodedAssetBytes, Is.EqualTo(123));
@@ -2170,7 +2281,7 @@ internal sealed class AssetStoreTests
             }
             finally
             {
-                backing.ReleaseOwner();
+                await store.DisposeAsync().ConfigureAwait(false);
             }
         }
         finally

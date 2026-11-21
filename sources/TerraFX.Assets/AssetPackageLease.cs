@@ -63,9 +63,14 @@ public sealed class AssetPackageLease : IDisposable
             return;
         }
 
-        if (state.Release())
+        if (state.Release(out var sourceReturn))
         {
             _ = Interlocked.CompareExchange(ref _state, null, state);
+
+            if (sourceReturn)
+            {
+                state.ReturnOriginalSource();
+            }
         }
     }
 
@@ -276,8 +281,10 @@ public sealed class AssetPackageLease : IDisposable
             }
         }
 
-        internal bool Release()
+        internal bool Release(out bool sourceReturn)
         {
+            sourceReturn = false;
+
             lock (_gate)
             {
                 while (_releaseState is 1)
@@ -300,7 +307,7 @@ public sealed class AssetPackageLease : IDisposable
 
             try
             {
-                _backing.ReleaseReference();
+                _backing.ReleaseReference(out sourceReturn);
 
                 lock (_gate)
                 {
@@ -328,6 +335,9 @@ public sealed class AssetPackageLease : IDisposable
                 return true;
             }
         }
+
+        internal void ReturnOriginalSource()
+            => _store.ReturnOriginalBackingSource(_backing);
 
         internal bool TryDescribeOwnedRead<T>(
             AssetId assetId,

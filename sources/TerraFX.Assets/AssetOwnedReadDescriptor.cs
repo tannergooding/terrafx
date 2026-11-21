@@ -21,6 +21,7 @@ internal readonly struct AssetOwnedReadDescriptor
         MaximumLiveAssetLeases = backing.MaximumLiveAssetLeases;
         PackageByteLength = backing.PackageByteLength;
         ProfileId = backing.ProfileId;
+        backing.RetainOriginalReadLimits();
         ReadLimits = backing.ReadLimits;
         Registration = backing.Registration;
         RequiredPackageCodec = codecReceipt.RequiredPackageCodec;

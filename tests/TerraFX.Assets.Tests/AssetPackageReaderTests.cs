@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.IO;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -80,6 +81,13 @@ internal sealed class AssetPackageReaderTests
         return package;
     }
 
+    internal static string CreatePackagePath()
+    {
+        var directory = Path.GetFullPath(Path.Combine("artifacts", "assets-tests"));
+        _ = Directory.CreateDirectory(directory);
+        return Path.Combine(directory, $"terrafx-{Guid.NewGuid():N}.epkg");
+    }
+
     internal static AssetStoreRegistration CreateRegistration()
     {
         var assignment = new ContentSchemaIdentityAssignment("test/package-root");
@@ -95,9 +103,14 @@ internal sealed class AssetPackageReaderTests
         return new AssetStoreRegistrationBuilder(schemas).Build();
     }
 
+    internal static AssetPackageBacking GetSelectedBacking(AssetStore store)
+        => typeof(AssetStore).GetField("_currentBacking", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(store)
+            as AssetPackageBacking
+            ?? throw new InvalidOperationException("The selected package backing is missing.");
+
     internal static string WritePackage(byte[] package)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.epkg");
+        var path = CreatePackagePath();
         File.WriteAllBytes(path, package);
         return path;
     }
@@ -297,7 +310,7 @@ internal sealed class AssetPackageReaderTests
         {
             var options = CreateOptions(path, changedPackage, SHA256.HashData(expectedPackage));
             var exception = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
+                async () => await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false));
 
             Assert.That(exception!.Message, Does.Contain("SHA-256"));
         }
@@ -319,7 +332,7 @@ internal sealed class AssetPackageReaderTests
         {
             var options = CreateOptions(path, package);
             var exception = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
+                async () => await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false));
 
             Assert.That(exception!.Message, Does.Contain("EIDX1"));
         }
@@ -340,7 +353,7 @@ internal sealed class AssetPackageReaderTests
         {
             var options = CreateOptions(path, package);
             var exception = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
+                async () => await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false));
 
             Assert.That(exception!.Message, Does.Contain("nonzero alignment padding"));
         }
@@ -360,7 +373,7 @@ internal sealed class AssetPackageReaderTests
         {
             var options = CreateOptions(path, package);
             _ = Assert.ThrowsAsync<InvalidDataException>(
-                async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
+                async () => await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false));
         }
         finally
         {
@@ -379,10 +392,10 @@ internal sealed class AssetPackageReaderTests
         await cancellationSource.CancelAsync().ConfigureAwait(false);
 
         _ = Assert.ThrowsAsync<OperationCanceledException>(
-            async () => await AssetPackageReader.OpenAsync(options, cancellationSource.Token).ConfigureAwait(false));
+            async () => await AssetStore.CreateAsync(options, cancellationSource.Token).ConfigureAwait(false));
 
         var exception = Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false));
+            async () => await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false));
 
         Assert.That(exception!.Message, Is.EqualTo("The CPU asset budget cannot fund package opening."));
         Assert.That(File.Exists(path), Is.False);
@@ -401,7 +414,8 @@ internal sealed class AssetPackageReaderTests
         try
         {
             var options = CreateOptions(path, package);
-            var backing = await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false);
+            var store = await AssetStore.CreateAsync(options, CancellationToken.None).ConfigureAwait(false);
+            var backing = GetSelectedBacking(store);
 
             try
             {
@@ -413,7 +427,7 @@ internal sealed class AssetPackageReaderTests
             }
             finally
             {
-                backing.ReleaseOwner();
+                await store.DisposeAsync().ConfigureAwait(false);
             }
         }
         finally

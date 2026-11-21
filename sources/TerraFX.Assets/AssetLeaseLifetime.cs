@@ -27,7 +27,7 @@ internal sealed class AssetLeaseLifetime
     {
         get
         {
-            var (_, backing) = AcquirePackageBackingReference();
+            var (store, backing) = AcquirePackageBackingReference();
 
             try
             {
@@ -35,7 +35,7 @@ internal sealed class AssetLeaseLifetime
             }
             finally
             {
-                backing.ReleaseReference();
+                store.ReleaseOriginalBackingReference(backing);
             }
         }
     }
@@ -44,7 +44,7 @@ internal sealed class AssetLeaseLifetime
     {
         get
         {
-            var (_, backing) = AcquirePackageBackingReference();
+            var (store, backing) = AcquirePackageBackingReference();
 
             try
             {
@@ -52,7 +52,7 @@ internal sealed class AssetLeaseLifetime
             }
             finally
             {
-                backing.ReleaseReference();
+                store.ReleaseOriginalBackingReference(backing);
             }
         }
     }
@@ -61,7 +61,7 @@ internal sealed class AssetLeaseLifetime
     {
         get
         {
-            var (_, backing) = AcquirePackageBackingReference();
+            var (store, backing) = AcquirePackageBackingReference();
 
             try
             {
@@ -69,7 +69,7 @@ internal sealed class AssetLeaseLifetime
             }
             finally
             {
-                backing.ReleaseReference();
+                store.ReleaseOriginalBackingReference(backing);
             }
         }
     }
@@ -196,9 +196,11 @@ internal sealed class AssetLeaseLifetime
             _releaseState = 1;
         }
 
+        bool sourceReturn;
+
         try
         {
-            backing.ReleaseReference();
+            backing.ReleaseReference(out sourceReturn);
             lock (_gate)
             {
                 _backingReferenceReleased = true;
@@ -231,6 +233,11 @@ internal sealed class AssetLeaseLifetime
             _backing = null;
             _referenceCount = 0;
             _releaseState = 2;
+        }
+
+        if (sourceReturn)
+        {
+            store.ReturnOriginalBackingSource(backing);
         }
     }
 

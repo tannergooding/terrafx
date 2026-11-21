@@ -143,6 +143,7 @@ public sealed partial class AssetStore
         {
             var encodedEnvelope = await AssetPayloadReader.ReadAsync(backing, entry, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            backing.RetainOriginalReadLimits();
             var context = new AssetCodecContext(
                 assetId,
                 backing.Registration.Schemas,

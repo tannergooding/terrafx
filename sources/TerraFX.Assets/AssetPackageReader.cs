@@ -3,8 +3,10 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
-using System.IO.Compression;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.IO.Compression;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,29 +23,34 @@ internal static class AssetPackageReader
     private const long MaximumPackageBytes = 8L * 1024 * 1024 * 1024;
     private const int PackageHeaderSize = 64;
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The installed original opening retains both operation and lower cleanup failures without replacing the primary fault.")]
     internal static async Task<AssetPackageBacking> OpenAsync(
-        AssetStoreOptions options,
+        AssetStore.OriginalOperation? opening,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (options.CpuAssetBudgetBytes == 0)
-        {
-            throw new InvalidOperationException("The CPU asset budget cannot fund package opening.");
-        }
-
-        var stream = new FileStream(
-            options.AbsolutePackagePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 1,
-            FileOptions.Asynchronous | FileOptions.RandomAccess);
+        ArgumentNullException.ThrowIfNull(opening);
+        var storage = opening.Storage;
+        var options = storage.Options;
+        var backing = opening.Backing;
+        FileStream? stream = null;
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            opening.BeginAcquisition(cancellationToken);
+            stream = new FileStream(
+                options.AbsolutePackagePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1,
+                FileOptions.Asynchronous | FileOptions.RandomAccess);
+            storage.Stream = stream;
+            backing.InstallOriginalStream(stream);
+            opening.ObserveStreamAcquired();
             var packageByteLength = stream.Length;
 
             if (packageByteLength is < PackageHeaderSize or > MaximumPackageBytes)
@@ -51,31 +58,31 @@ internal static class AssetPackageReader
                 throw new InvalidDataException("The EPKG2 package length is outside its admitted range.");
             }
 
-            var actualDigest = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+            storage.ActualDigest = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
 
-            if (CryptographicOperations.FixedTimeEquals(actualDigest, options.ExpectedPackageSha256.AsSpan()) is false)
+            if (CryptographicOperations.FixedTimeEquals(storage.ActualDigest, options.ExpectedPackageSha256.AsSpan()) is false)
             {
                 throw new InvalidDataException("The EPKG2 whole-package SHA-256 does not match the expected digest.");
             }
 
-            var header = new byte[PackageHeaderSize];
-            await ReadExactlyAtAsync(stream, 0, header, cancellationToken).ConfigureAwait(false);
+            storage.Header = new byte[PackageHeaderSize];
+            await ReadExactlyAtAsync(stream, 0, storage.Header, cancellationToken).ConfigureAwait(false);
 
-            if (!header.AsSpan(0, 4).SequenceEqual("EPKG"u8)
-                || (BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(4)) != 2)
-                || (BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(6)) != 0)
-                || (BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(8)) != checked((ulong)packageByteLength))
-                || (BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(52)) != 0)
-                || !IsZero(header.AsSpan(56, 8)))
+            if (!storage.Header.AsSpan(0, 4).SequenceEqual("EPKG"u8)
+                || (BinaryPrimitives.ReadUInt16LittleEndian(storage.Header.AsSpan(4)) != 2)
+                || (BinaryPrimitives.ReadUInt16LittleEndian(storage.Header.AsSpan(6)) != 0)
+                || (BinaryPrimitives.ReadUInt64LittleEndian(storage.Header.AsSpan(8)) != checked((ulong)packageByteLength))
+                || (BinaryPrimitives.ReadUInt32LittleEndian(storage.Header.AsSpan(52)) != 0)
+                || !IsZero(storage.Header.AsSpan(56, 8)))
             {
                 throw new InvalidDataException("The EPKG2 package header is invalid.");
             }
 
-            var profileOffset = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(16));
-            var profileLength = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(24));
-            var directoryOffset = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(32));
-            var directoryLength = BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(40));
-            var entryCount = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(48));
+            var profileOffset = BinaryPrimitives.ReadUInt64LittleEndian(storage.Header.AsSpan(16));
+            var profileLength = BinaryPrimitives.ReadUInt64LittleEndian(storage.Header.AsSpan(24));
+            var directoryOffset = BinaryPrimitives.ReadUInt64LittleEndian(storage.Header.AsSpan(32));
+            var directoryLength = BinaryPrimitives.ReadUInt64LittleEndian(storage.Header.AsSpan(40));
+            var entryCount = BinaryPrimitives.ReadUInt32LittleEndian(storage.Header.AsSpan(48));
 
             if ((profileOffset != PackageHeaderSize)
                 || (profileLength < PackageHeaderSize)
@@ -100,26 +107,26 @@ internal static class AssetPackageReader
             }
 
             var directoryEnd = directoryOffset + directoryLength;
-            var profileBytes = new byte[checked((int)profileLength)];
-            await ReadExactlyAtAsync(stream, profileOffset, profileBytes, cancellationToken).ConfigureAwait(false);
+            storage.Profile = new byte[checked((int)profileLength)];
+            await ReadExactlyAtAsync(stream, profileOffset, storage.Profile, cancellationToken).ConfigureAwait(false);
             var profileStatus = FoundationCodec.ReadPackageProfile(
-                profileBytes,
+                storage.Profile,
                 out var profileId,
                 out var spatialSettings,
                 out var profileConsumed,
                 out var profileDiagnostic);
 
-            if ((profileStatus != EbinStatus.Complete) || (profileConsumed != profileBytes.Length))
+            if ((profileStatus != EbinStatus.Complete) || (profileConsumed != storage.Profile.Length))
             {
                 throw new InvalidDataException(
                     $"The EPKG2 foundation profile is not admitted: {profileStatus} {profileDiagnostic.Category}.");
             }
 
-            var directory = new byte[checked((int)directoryLength)];
-            await ReadExactlyAtAsync(stream, directoryOffset, directory, cancellationToken).ConfigureAwait(false);
-            ValidateDirectoryHeader(directory, entryCount, directoryLength);
+            storage.Directory = new byte[checked((int)directoryLength)];
+            await ReadExactlyAtAsync(stream, directoryOffset, storage.Directory, cancellationToken).ConfigureAwait(false);
+            ValidateDirectoryHeader(storage.Directory, entryCount, directoryLength);
 
-            var entries = ImmutableArray.CreateBuilder<AssetPackageEntry>(checked((int)entryCount));
+            storage.EntryBuilder = ImmutableArray.CreateBuilder<AssetPackageEntry>(checked((int)entryCount));
             var firstPayloadOffset = Align16(directoryEnd);
 
             if (firstPayloadOffset > packageByteLengthValue)
@@ -131,6 +138,7 @@ internal static class AssetPackageReader
                 stream,
                 directoryEnd,
                 firstPayloadOffset - directoryEnd,
+                storage.Padding,
                 cancellationToken).ConfigureAwait(false);
 
             var previousAssetId = 0U;
@@ -140,7 +148,7 @@ internal static class AssetPackageReader
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var entryOffset = checked(DirectoryHeaderSize + (checked((int)index) * DirectoryEntrySize));
-                var encodedEntry = directory.AsSpan(entryOffset, DirectoryEntrySize);
+                var encodedEntry = storage.Directory.AsSpan(entryOffset, DirectoryEntrySize);
                 var assetIdValue = BinaryPrimitives.ReadUInt32LittleEndian(encodedEntry);
                 var codec = encodedEntry[4];
                 var payloadOffset = BinaryPrimitives.ReadUInt64LittleEndian(encodedEntry[8..]);
@@ -179,11 +187,12 @@ internal static class AssetPackageReader
                     stream,
                     previousPayloadEnd,
                     payloadOffset - previousPayloadEnd,
+                    storage.Padding,
                     cancellationToken).ConfigureAwait(false);
 
                 var payloadEnd = payloadOffset + storedLength;
 
-                entries.Add(new AssetPackageEntry(
+                storage.EntryBuilder.Add(new AssetPackageEntry(
                     new AssetId(checked((int)assetIdValue)),
                     codec,
                     payloadOffset,
@@ -204,21 +213,44 @@ internal static class AssetPackageReader
                 stream,
                 previousPayloadEnd,
                 expectedPackageLength - previousPayloadEnd,
+                storage.Padding,
                 cancellationToken).ConfigureAwait(false);
 
-            var backing = new AssetPackageBacking(
-                stream,
-                entries.MoveToImmutable(),
+            backing.InstallOriginalMetadata(
+                storage.AdoptEntries(),
                 profileId,
                 spatialSettings,
-                options,
                 packageByteLength);
             return backing;
         }
-        catch
+        catch (Exception failure)
         {
-            await stream.DisposeAsync().ConfigureAwait(false);
+            opening.RecordFailure(failure, cleanup: false);
+            var releaseReturned = !opening.FileAcquisitionAttempted;
+            Exception? releaseFailure = null;
+
+            if (stream is not null)
+            {
+                try
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    releaseReturned = true;
+                    opening.ObserveFileReleaseReturn();
+                }
+                catch (Exception cleanupFailure)
+                {
+                    opening.RecordFailure(cleanupFailure, cleanup: true);
+                    releaseFailure = cleanupFailure;
+                }
+            }
+
+            backing.RecordOriginalOpeningFailure(releaseFailure ?? failure, releaseReturned);
+            ExceptionDispatchInfo.Capture(failure).Throw();
             throw;
+        }
+        finally
+        {
+            ClearOpeningBorrows(ref opening, ref storage, ref options, ref stream);
         }
     }
 
@@ -586,23 +618,30 @@ internal static class AssetPackageReader
         Memory<byte> destination,
         CancellationToken cancellationToken)
     {
-        var position = checked((long)offset);
-        var read = 0;
-
-        while (read < destination.Length)
+        try
         {
-            var count = await RandomAccess.ReadAsync(
-                stream.SafeFileHandle,
-                destination[read..],
-                checked(position + read),
-                cancellationToken).ConfigureAwait(false);
+            var position = checked((long)offset);
+            var read = 0;
 
-            if (count == 0)
+            while (read < destination.Length)
             {
-                throw new EndOfStreamException("The EPKG2 package ended before the declared extent.");
-            }
+                var count = await RandomAccess.ReadAsync(
+                    stream.SafeFileHandle,
+                    destination[read..],
+                    checked(position + read),
+                    cancellationToken).ConfigureAwait(false);
 
-            read += count;
+                if (count == 0)
+                {
+                    throw new EndOfStreamException("The EPKG2 package ended before the declared extent.");
+                }
+
+                read += count;
+            }
+        }
+        finally
+        {
+            ClearReadDestination(ref destination);
         }
     }
 
@@ -661,6 +700,23 @@ internal static class AssetPackageReader
 
     private static ulong Align16(ulong value) => checked((value + 15) & ~15UL);
 
+    private static void ClearOpeningBorrows(
+        ref AssetStore.OriginalOperation? opening,
+        ref AssetStore.OriginalOpeningStorage? storage,
+        ref AssetStoreOptions? options,
+        ref FileStream? stream)
+    {
+        opening = null;
+        storage = null;
+        options = null;
+        stream = null;
+    }
+
+    private static void ClearReadDestination(ref Memory<byte> destination)
+    {
+        destination = default;
+    }
+
     private static AssetBoundedFailureFact CreateBoundedFailure(
         AssetBoundedFailureStage stage,
         AssetBoundedFailureKind kind,
@@ -678,24 +734,32 @@ internal static class AssetPackageReader
         FileStream stream,
         ulong offset,
         ulong length,
+        Memory<byte> padding,
         CancellationToken cancellationToken)
     {
-        if (length == 0)
+        try
         {
-            return;
+            if (length == 0)
+            {
+                return;
+            }
+
+            if (length > 15)
+            {
+                throw new InvalidDataException("The EPKG2 layout contains an unaligned gap.");
+            }
+
+            padding = padding[..checked((int)length)];
+            await ReadExactlyAtAsync(stream, offset, padding, cancellationToken).ConfigureAwait(false);
+
+            if (!IsZero(padding.Span))
+            {
+                throw new InvalidDataException("The EPKG2 layout contains nonzero alignment padding.");
+            }
         }
-
-        if (length > 15)
+        finally
         {
-            throw new InvalidDataException("The EPKG2 layout contains an unaligned gap.");
-        }
-
-        var padding = new byte[checked((int)length)];
-        await ReadExactlyAtAsync(stream, offset, padding, cancellationToken).ConfigureAwait(false);
-
-        if (!IsZero(padding))
-        {
-            throw new InvalidDataException("The EPKG2 layout contains nonzero alignment padding.");
+            ClearReadDestination(ref padding);
         }
     }
 
