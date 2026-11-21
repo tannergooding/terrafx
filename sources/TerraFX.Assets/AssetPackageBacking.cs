@@ -16,6 +16,14 @@ internal sealed class AssetPackageBacking
     private static Lock? s_failedReleaseRootGate;
     private static AssetStore.OriginalIssuer? s_originalAnchorIssuer;
     private static int s_originalAnchorState;
+    internal int _linuxFileDescriptor = -1;
+    internal int _nativeAcquisitionState;
+    internal int _nativeApi;
+    internal int _nativeCloseError;
+    internal int _nativeCloseState;
+    internal int _nativeFileDisposition;
+    internal string? _originalReportedPath;
+    internal nint _windowsHandle = -1;
     private AssetPackageBackingToken? _backingToken = new();
     private readonly AssetBoundedNativeFile? _boundedNativeFile;
     private AssetStoreBoundedProvision? _boundedProvision;

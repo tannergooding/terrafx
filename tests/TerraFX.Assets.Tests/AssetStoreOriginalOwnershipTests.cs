@@ -13,10 +13,10 @@ namespace TerraFX.Assets.Tests;
 [TestFixture]
 internal sealed class AssetStoreOriginalOwnershipTests
 {
-    private const long CandidateBytes = 8_529_400;
-    private const long KeepOneEntryBytes = 1_112;
+    private const long CandidateBytes = 8_529_464;
+    private const long KeepOneEntryBytes = 1_176;
     private const long ServiceBytes = 66_472;
-    private const long WarmCreateBytes = 8_595_872;
+    private const long WarmCreateBytes = 8_595_936;
 
     internal static async Task WarmOriginalAnchorAsync(AssetStoreOptions options)
     {
@@ -111,7 +111,7 @@ internal sealed class AssetStoreOriginalOwnershipTests
 
     [TestCase(0L)]
     [TestCase(1L)]
-    [TestCase(8_595_871L)]
+    [TestCase(8_595_935L)]
     public async Task CreateRefusesInsufficientSourceCapacityBeforeMissingFileAcquisition(long budget)
     {
         var registration = AssetPackageReaderTests.CreateRegistration();
@@ -179,7 +179,7 @@ internal sealed class AssetStoreOriginalOwnershipTests
 
         try
         {
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + 1_080 + (32L * entryCount)));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + 1_144 + (32L * entryCount)));
             Assert.That(AssetPackageReaderTests.GetSelectedBacking(store).Entries, Has.Length.EqualTo(entryCount));
             Assert.That(GetGenerationId(AssetPackageReaderTests.GetSelectedBacking(store)), Is.EqualTo(1));
 
@@ -210,11 +210,11 @@ internal sealed class AssetStoreOriginalOwnershipTests
             _ = Assert.ThrowsAsync<InvalidDataException>(
                 async () => await store.ReplacePackageAsync(badDigest).ConfigureAwait(false));
 
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + 1_080 + 1_080 + 688));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + 1_144 + 1_144 + 688));
             using var current = store.AcquirePackageLease();
             Assert.That(current.PackageSha256, Is.EqualTo(System.Security.Cryptography.SHA256.HashData(package)));
             await store.ReplacePackageAsync(AssetPackageReaderTests.CreateOptions(path, package, registration)).ConfigureAwait(false);
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + (3 * 1_080) + 688));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + (3 * 1_144) + 688));
         }
         finally
         {
@@ -310,7 +310,7 @@ internal sealed class AssetStoreOriginalOwnershipTests
 
         Assert.Multiple(() => {
             Assert.That(issuer.Budget, Is.EqualTo(WarmCreateBytes));
-            Assert.That(issuer.SourceCapacity, Is.EqualTo(64 + 1_080 + 688));
+            Assert.That(issuer.SourceCapacity, Is.EqualTo(64 + 1_144 + 688));
             Assert.That(opening.FileAcquisitionAttempted, Is.True);
             Assert.That(failedBacking.OriginalUnreturnedReleaseFailure, Is.TypeOf<FileNotFoundException>());
             Assert.That(File.Exists(path), Is.False);
@@ -353,11 +353,11 @@ internal sealed class AssetStoreOriginalOwnershipTests
             var firstFailure = Assert.ThrowsAsync<FileNotFoundException>(
                 async () => await store.ReplacePackageAsync(candidate).ConfigureAwait(false));
 
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + (2 * 1_080) + 688));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + (2 * 1_144) + 688));
             var refusal = Assert.ThrowsAsync<InvalidOperationException>(
                 async () => await store.ReplacePackageAsync(options).ConfigureAwait(false));
             Assert.That(refusal!.Message, Does.Contain("package-replacement owner"));
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + (2 * 1_080) + 688));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(ServiceBytes + (2 * 1_144) + 688));
             Assert.That(File.Exists(missingPath), Is.False);
             var closeFailure = Assert.ThrowsAsync<FileNotFoundException>(
                 async () => await store.DisposeAsync().ConfigureAwait(false));

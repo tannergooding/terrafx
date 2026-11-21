@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using NUnit.Framework;
 using TerraFX.Assets;
 
@@ -48,6 +49,11 @@ internal sealed class AssetStoreAllocationTests
             return 8;
         }
 
+        if ((type == typeof(IntPtr)) || (type == typeof(UIntPtr)))
+        {
+            return IntPtr.Size;
+        }
+
         if (type == typeof(SpatialProfileId))
         {
             return Unsafe.SizeOf<SpatialProfileId>();
@@ -66,6 +72,11 @@ internal sealed class AssetStoreAllocationTests
         if (type == typeof(CancellationToken))
         {
             return Unsafe.SizeOf<CancellationToken>();
+        }
+
+        if (type == typeof(ManualResetValueTaskSourceCore<int>))
+        {
+            return Unsafe.SizeOf<ManualResetValueTaskSourceCore<int>>();
         }
 
         if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(System.Collections.Immutable.ImmutableArray<>)))
@@ -213,7 +224,7 @@ internal sealed class AssetStoreAllocationTests
             (nameof(AssetBoundedNativeFile), typeof(AssetBoundedNativeFile), 80),
             (nameof(AssetBoundedNativePort), typeof(AssetBoundedNativePort), 144),
             (nameof(AssetStoreBoundedProvision), typeof(AssetStoreBoundedProvision), 192),
-            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 224),
+            (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 264),
             (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
             ("OriginalIssuer", typeof(AssetStore.OriginalIssuer), 64),
             ("OriginalOperation", typeof(AssetStore.OriginalOperation), 128),
@@ -229,6 +240,47 @@ internal sealed class AssetStoreAllocationTests
 
         TestContext.WriteLine(
             $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
+    }
+
+    [Test]
+    public void OriginalPackageIoCandidateCapacitiesMatchFieldDeclarations()
+    {
+        if (!OperatingSystem.IsWindows()
+            || (RuntimeInformation.ProcessArchitecture is not Architecture.X64)
+            || !StringComparer.Ordinal.Equals(
+                RuntimeInformation.FrameworkDescription,
+                ".NET 11.0.0-rc.3.26522.148"))
+        {
+            Assert.Ignore("The original package-I/O source layout is qualified only for Windows x64 CoreCLR .NET 11 RC3.");
+        }
+
+        (Type Type, long Raw, long Capacity)[] carriers = [
+            (typeof(OriginalIoLifetime), 80, 112),
+            (typeof(OriginalIoRequest), 188, 256),
+            (typeof(OriginalPackageIo), 112, 160),
+        ];
+
+        foreach (var (type, raw, capacity) in carriers)
+        {
+            Assert.That(GetSourceFieldCapacity(type), Is.EqualTo((raw, capacity)), type.Name);
+        }
+
+        Assert.Multiple(() => {
+            Assert.That(Unsafe.SizeOf<ManualResetValueTaskSourceCore<int>>(), Is.EqualTo(40));
+            Assert.That(OriginalPackageIoSourceCapacity.ServiceBytes, Is.EqualTo(66_752));
+            Assert.That(OriginalPackageIoSourceCapacity.MaximumOpeningRequestCount, Is.EqualTo(131_077));
+            Assert.That(OriginalPackageIoSourceCapacity.OpeningRequestBytes, Is.EqualTo(33_555_712));
+            Assert.That(
+                OriginalPackageIoSourceCapacity.GetKeepSourceBytes(131_072, 1_048),
+                Is.EqualTo(4_196_760));
+            Assert.That(OriginalPackageIoSourceCapacity.OpeningBaseBytes, Is.EqualTo(4_334_040));
+            Assert.That(OriginalPackageIoSourceCapacity.GetPathBufferSourceBytes(512), Is.EqualTo(1_048));
+            Assert.That(OriginalPackageIoSourceCapacity.GetReportedPathSourceBytes(511), Is.EqualTo(1_048));
+            Assert.That(
+                OriginalPackageIoSourceCapacity.GetColdCreateSourceBytes(2_096, 1_048, ownsAnchor: true),
+                Is.EqualTo(42_155_392));
+        });
+        TestContext.WriteLine("Declared source capacity only; no worker, Thread, path buffer, native block or file is materialized.");
     }
 
     [Test]
@@ -262,17 +314,17 @@ internal sealed class AssetStoreAllocationTests
 
             // Source shells: Store, issuer, three controls, backing, token,
             // read limits and holder. Three Lock objects and TCS/Task are distinct.
-            Assert.That(measuredBytes, Is.EqualTo(984 + (3 * 40) + excludedCompletionShellBytes));
+            Assert.That(measuredBytes, Is.EqualTo(1_024 + (3 * 40) + excludedCompletionShellBytes));
 
             for (var index = 0; index < stores.Length; index++)
             {
-                Assert.That(stores[index].OriginalSourceCapacity, Is.EqualTo(8_595_872));
+                Assert.That(stores[index].OriginalSourceCapacity, Is.EqualTo(8_595_936));
                 Assert.That(openings[index].FileAcquisitionAttempted, Is.False);
                 Assert.That(openings[index].Storage.Stream, Is.Null);
             }
 
             Assert.That(File.Exists(packagePath), Is.False);
-            TestContext.WriteLine($"Unstarted source preclaim=8595872; measured managed constructor allocations={measuredBytes};");
+            TestContext.WriteLine($"Unstarted source preclaim=8595936; measured managed constructor allocations={measuredBytes};");
             TestContext.WriteLine("The native scratch/OVERLAPPED capacities are unspent; no worker, hash, file, native close or caller-return qualification.");
             TestContext.WriteLine(
                 $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
@@ -293,7 +345,7 @@ internal sealed class AssetStoreAllocationTests
         (Type Type, long Raw, long Capacity)[] carriers = [
             (typeof(AssetStore), 117, 152),
             (typeof(AssetStore.OriginalIssuer), 44, 64),
-            (typeof(AssetPackageBacking), 206, 264),
+            (typeof(AssetPackageBacking), 246, 328),
             (typeof(EbinReadLimits), 44, 80),
             (typeof(AssetPackageBackingToken), 0, 24),
             (typeof(AssetStore.OriginalOperation), 112, 144),
@@ -332,7 +384,7 @@ internal sealed class AssetStoreAllocationTests
             Assert.That(anchorSlots, Is.EqualTo(32));
             Assert.That(AssetStore.OriginalProfileSourceBytes, Is.EqualTo(73_104));
             Assert.That(AssetStore.OriginalServiceSourceBytes, Is.EqualTo(66_472));
-            Assert.That(AssetStore.GetOriginalKeepSourceBytes(131_072), Is.EqualTo(4_195_384));
+            Assert.That(AssetStore.GetOriginalKeepSourceBytes(131_072), Is.EqualTo(4_195_448));
             Assert.That(AssetStore.OriginalOpeningSourceBytes, Is.EqualTo(4_334_016));
         });
         TestContext.WriteLine("Declared source capacity includes field slots and selected data, not excluded framework/native allocation graphs.");

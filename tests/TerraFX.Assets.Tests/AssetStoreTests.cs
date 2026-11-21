@@ -287,7 +287,7 @@ internal sealed class AssetStoreTests
         var registration = CreateRegistration();
         var packageSha256 = SHA256.HashData(package);
         var options = new AssetStoreOptions(path, packageSha256, registration) {
-            CpuAssetBudgetBytes = 8_595_904,
+            CpuAssetBudgetBytes = 8_595_968,
             MaximumDecodedAssetBytes = 123,
             MaximumConcurrentDecodeBytes = 234,
             MaximumLiveAssetLeases = 12,
@@ -1670,7 +1670,7 @@ internal sealed class AssetStoreTests
     {
         var registration = CreateRegistration();
         var originalAsset = CreateAssetEnvelope(1, 42);
-        var originalBudget = 8_595_904L + 1_112 + originalAsset.Length;
+        var originalBudget = 8_595_968L + 1_176 + originalAsset.Length;
         var replacementAsset = new byte[checked((int)originalBudget)];
         var originalPackage = AssetPackageReaderTests.CreatePackage(
             new AssetPackageReaderTests.TestEntry(1, originalAsset));
@@ -1850,7 +1850,7 @@ internal sealed class AssetStoreTests
                     path,
                     package,
                     registration,
-                    cpuAssetBudgetBytes: 8_595_904,
+                    cpuAssetBudgetBytes: 8_595_968,
                     maximumLiveAssetLeases: 65_536),
                 CancellationToken.None).ConfigureAwait(false);
 
@@ -1860,8 +1860,9 @@ internal sealed class AssetStoreTests
 
                 try
                 {
-                    const long WireHeadroom = 8_595_904 - (66_472 + 1_112);
-                    var leaseCount = checked((int)(WireHeadroom / payload.Length));
+                    const long OriginalBudget = 8_595_968;
+                    var wireHeadroom = OriginalBudget - cpuLimitedStore.OriginalSourceCapacity;
+                    var leaseCount = checked((int)(wireHeadroom / payload.Length));
 
                     for (var index = 0; index < leaseCount; index++)
                     {
@@ -2179,7 +2180,7 @@ internal sealed class AssetStoreTests
         var path = AssetPackageReaderTests.WritePackage(package);
         var candidatePath = AssetPackageReaderTests.CreatePackagePath();
         await AssetStoreOriginalOwnershipTests.WarmOriginalAnchorAsync(CreateOptions(path, package, registration)).ConfigureAwait(false);
-        var originalBudget = 66_472L + 1_112 + 8_529_400 + payload.Length - 1;
+        var originalBudget = 66_472L + 1_176 + 8_529_464 + payload.Length - 1;
         var store = await AssetStore.CreateAsync(
             CreateOptions(path, package, registration, cpuAssetBudgetBytes: originalBudget)).ConfigureAwait(false);
         AssetLease<TestAssetValue>? lease = null;
@@ -2195,14 +2196,14 @@ internal sealed class AssetStoreTests
                 Assert.That(failure!.Message, Does.Contain("original CPU asset source-capacity"));
                 Assert.That(File.Exists(candidatePath), Is.False);
                 Assert.That(lease.Value.Marker, Is.EqualTo(52));
-                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_112));
+                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_176));
             });
 
             lease.Dispose();
             lease = null;
             await File.WriteAllBytesAsync(candidatePath, package).ConfigureAwait(false);
             await store.ReplacePackageAsync(candidateOptions).ConfigureAwait(false);
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_112 + 1_032));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_176 + 1_096));
         }
         finally
         {
@@ -2236,12 +2237,12 @@ internal sealed class AssetStoreTests
             var descriptor = packageLease.DescribeOwnedRead<TestAssetValue>(new AssetId(1), profileOrigin);
             var oldBacking = AssetPackageReaderTests.GetSelectedBacking(store);
             await store.ReplacePackageAsync(options).ConfigureAwait(false);
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_176)));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_240)));
 
             packageLease.Dispose();
             packageLease = null;
             Assert.Multiple(() => {
-                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_176 + 1_056));
+                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_240 + 1_120));
                 Assert.That(oldBacking.Entries, Is.Empty);
                 Assert.That(oldBacking.ReadLimits, Is.SameAs(descriptor.ReadLimits));
                 Assert.That(oldBacking.BackingToken, Is.SameAs(descriptor.BackingToken));
@@ -2273,14 +2274,14 @@ internal sealed class AssetStoreTests
         try
         {
             await store.ReplacePackageAsync(options).ConfigureAwait(false);
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_112)));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_176)));
 
             loadTask = Task.Run(
                 () => packageLease.LoadFromPackageAsync<TestAssetValue>(new AssetId(1), CancellationToken.None));
             await codec.Entered.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
             packageLease.Dispose();
 
-            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_112)));
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_176)));
             codec.Release();
 
             _ = Assert.ThrowsAsync<InvalidDataException>(
@@ -2288,7 +2289,7 @@ internal sealed class AssetStoreTests
 
             Assert.Multiple(() => {
                 Assert.That(originalBacking.Entries, Is.Empty);
-                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_112 + 1_032));
+                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_176 + 1_096));
             });
         }
         finally
@@ -2329,7 +2330,7 @@ internal sealed class AssetStoreTests
                 GC.Collect();
 
                 Assert.That(weakOptions.TryGetTarget(out _), Is.False);
-                Assert.That(backing.CpuAssetBudgetBytes, Is.EqualTo(8_595_904));
+                Assert.That(backing.CpuAssetBudgetBytes, Is.EqualTo(8_595_968));
                 Assert.That(backing.ExpectedPackageSha256.AsSpan().SequenceEqual(packageSha256), Is.True);
                 Assert.That(backing.MaximumConcurrentDecodeBytes, Is.EqualTo(234));
                 Assert.That(backing.MaximumDecodedAssetBytes, Is.EqualTo(123));

@@ -14,7 +14,7 @@ public sealed partial class AssetStore
     // Q aligns each declared field slot, not the packed CLR shell. O includes two
     // source messages; framework shells and their resource interests are not bytes.
     internal const long OriginalAnchorSourceBytes = 32;
-    internal const long OriginalBackingSourceBytes = 264;
+    internal const long OriginalBackingSourceBytes = 328;
     internal const long OriginalIssuerSourceBytes = 64;
     internal const int OriginalMaximumEntryCount = 131_072;
     internal const long OriginalOpeningHolderSourceBytes = 88;
