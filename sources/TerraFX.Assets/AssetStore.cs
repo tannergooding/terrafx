@@ -44,7 +44,16 @@ public sealed partial class AssetStore : IAsyncDisposable
     {
         _originalIssuer = issuer;
         _originalCpuAssetBudgetBytes = issuer.Budget;
-        _ioControl = new OriginalOperation(issuer, issuer.IssueOperationId(), OriginalOperationSourceBytes);
+        var ioControl = new OriginalOperation(issuer, issuer.IssueOperationId(), OriginalOperationSourceBytes);
+        var lifetime = new OriginalIoLifetime {
+            _executionState = new OriginalPackageIo {
+                _issuer = issuer,
+            },
+            _serviceReturn = ioControl,
+            _sourceClaim = checked(OriginalServiceSourceBytes - OriginalStoreSourceBytes - OriginalIssuerSourceBytes),
+        };
+        ioControl.InstallIoLifetime(lifetime);
+        _ioControl = ioControl;
         _disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 

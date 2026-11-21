@@ -227,7 +227,9 @@ internal sealed class AssetStoreAllocationTests
             (nameof(AssetPackageBacking), typeof(AssetPackageBacking), 264),
             (nameof(AssetPackageBackingToken), typeof(AssetPackageBackingToken), 24),
             ("OriginalIssuer", typeof(AssetStore.OriginalIssuer), 64),
-            ("OriginalOperation", typeof(AssetStore.OriginalOperation), 128),
+            ("OriginalOperation", typeof(AssetStore.OriginalOperation), 136),
+            (nameof(OriginalIoLifetime), typeof(OriginalIoLifetime), 96),
+            (nameof(OriginalPackageIo), typeof(OriginalPackageIo), 128),
             ("OriginalOpeningStorage", typeof(AssetStore.OriginalOpeningStorage), 88),
         ];
 
@@ -312,19 +314,22 @@ internal sealed class AssetStoreAllocationTests
             GC.KeepAlive(stores);
             GC.KeepAlive(openings);
 
-            // Source shells: Store, issuer, three controls, backing, token,
-            // read limits and holder. Three Lock objects and TCS/Task are distinct.
-            Assert.That(measuredBytes, Is.EqualTo(1_024 + (3 * 40) + excludedCompletionShellBytes));
+            // Replace the three original operation shells and add the E/L source carriers.
+            var sourceCarrierBytes = 1_024
+                + (3 * (MeasureCarrierBytes(typeof(AssetStore.OriginalOperation), SampleCount) - 128))
+                + MeasureCarrierBytes(typeof(OriginalIoLifetime), SampleCount)
+                + MeasureCarrierBytes(typeof(OriginalPackageIo), SampleCount);
+            Assert.That(measuredBytes, Is.EqualTo(sourceCarrierBytes + (3 * 40) + excludedCompletionShellBytes));
 
             for (var index = 0; index < stores.Length; index++)
             {
-                Assert.That(stores[index].OriginalSourceCapacity, Is.EqualTo(8_595_936));
+                Assert.That(stores[index].OriginalSourceCapacity, Is.EqualTo(8_596_232));
                 Assert.That(openings[index].FileAcquisitionAttempted, Is.False);
                 Assert.That(openings[index].Storage.Stream, Is.Null);
             }
 
             Assert.That(File.Exists(packagePath), Is.False);
-            TestContext.WriteLine($"Unstarted source preclaim=8595936; measured managed constructor allocations={measuredBytes};");
+            TestContext.WriteLine($"Unstarted source preclaim=8596232; measured managed constructor allocations={measuredBytes};");
             TestContext.WriteLine("The native scratch/OVERLAPPED capacities are unspent; no worker, hash, file, native close or caller-return qualification.");
             TestContext.WriteLine(
                 $"Framework={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}");
@@ -348,7 +353,7 @@ internal sealed class AssetStoreAllocationTests
             (typeof(AssetPackageBacking), 246, 328),
             (typeof(EbinReadLimits), 44, 80),
             (typeof(AssetPackageBackingToken), 0, 24),
-            (typeof(AssetStore.OriginalOperation), 112, 144),
+            (typeof(AssetStore.OriginalOperation), 120, 152),
             (typeof(AssetStore.OriginalOpeningStorage), 72, 88),
         ];
 
@@ -383,9 +388,9 @@ internal sealed class AssetStoreAllocationTests
             Assert.That(Unsafe.SizeOf<AssetPackageEntry>(), Is.EqualTo(32));
             Assert.That(anchorSlots, Is.EqualTo(32));
             Assert.That(AssetStore.OriginalProfileSourceBytes, Is.EqualTo(73_104));
-            Assert.That(AssetStore.OriginalServiceSourceBytes, Is.EqualTo(66_472));
-            Assert.That(AssetStore.GetOriginalKeepSourceBytes(131_072), Is.EqualTo(4_195_448));
-            Assert.That(AssetStore.OriginalOpeningSourceBytes, Is.EqualTo(4_334_016));
+            Assert.That(AssetStore.OriginalServiceSourceBytes, Is.EqualTo(66_752));
+            Assert.That(AssetStore.GetOriginalKeepSourceBytes(131_072), Is.EqualTo(4_195_456));
+            Assert.That(AssetStore.OriginalOpeningSourceBytes, Is.EqualTo(4_334_024));
         });
         TestContext.WriteLine("Declared source capacity includes field slots and selected data, not excluded framework/native allocation graphs.");
     }

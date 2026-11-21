@@ -21,12 +21,11 @@ public sealed partial class AssetStore
     internal const long OriginalOpeningSourceBytes =
         OriginalOperationSourceBytes + OriginalOpeningHolderSourceBytes
         + 88 + 65_560 + 4_194_392 + 40 + 56 + OriginalProfileSourceBytes;
-    internal const long OriginalOperationSourceBytes = 144 + (2 * 272);
+    internal const long OriginalOperationSourceBytes = OriginalPackageIoSourceCapacity.OperationBytes;
     internal const long OriginalProfileSourceBytes =
         88 + 48 + (3 * 56) + 32 + (64 * 56) + (3 * 536) + 65_536 + (64 * (24 + 7)) + 56;
     internal const long OriginalReadLimitsSourceBytes = 80;
-    internal const long OriginalServiceSourceBytes =
-        OriginalStoreSourceBytes + OriginalIssuerSourceBytes + OriginalOperationSourceBytes + 65_536 + 32;
+    internal const long OriginalServiceSourceBytes = OriginalPackageIoSourceCapacity.ServiceBytes;
     internal const long OriginalStoreSourceBytes = 152;
     internal const long OriginalTokenSourceBytes = 24;
     private AssetPackageBacking? _generationHead;
@@ -146,11 +145,10 @@ public sealed partial class AssetStore
         var issuer = _originalIssuer
             ?? throw new InvalidOperationException("The Store has no ordinary original source issuer.");
         issuer.CloseAdmission();
-        _ioControl?.ObserveSourceReturn(retainFailure: false);
-        _ioControl = null;
+        EndOriginalServiceProvision();
+        issuer.ReleaseSource(OriginalStoreSourceBytes);
         _generationHead = null;
         _operationHead = null;
-        issuer.ReleaseSource(OriginalServiceSourceBytes - OriginalIssuerSourceBytes);
     }
 
     private void CompleteOriginalOpeningSource(
@@ -185,9 +183,21 @@ public sealed partial class AssetStore
     {
         if (_originalIssuer is { } issuer)
         {
-            _ioControl?.ObserveSourceReturn(retainFailure: false);
+            var serviceReturn = _ioControl
+                ?? throw new InvalidOperationException("The original service has no return owner.");
+            var lifetime = serviceReturn.IoLifetime
+                ?? throw new InvalidOperationException("The original service lifetime is unavailable.");
+
+            if (!ReferenceEquals(serviceReturn.Issuer, issuer))
+            {
+                throw new InvalidOperationException("The original service issuer changed before handback.");
+            }
+
+            var (returnIssuer, sourceBytes) = lifetime.DetachUnstartedService();
+
+            serviceReturn.ObserveSourceReturn(retainFailure: false);
             _ioControl = null;
-            issuer.ReleaseSource(OriginalServiceSourceBytes - OriginalStoreSourceBytes - OriginalIssuerSourceBytes);
+            returnIssuer.ReleaseSource(sourceBytes);
         }
     }
 
@@ -521,6 +531,7 @@ public sealed partial class AssetStore
     {
         private AssetPackageBacking? _backing;
         private OriginalOpeningStorage? _inputOwner;
+        private OriginalIoLifetime? _ioLifetime;
         private readonly OriginalIssuer _issuer;
         private OriginalOperation? _next;
         private Task? _response;
@@ -548,6 +559,8 @@ public sealed partial class AssetStore
                 ?? throw new InvalidOperationException("The original opening has no installed generation.");
 
         internal bool FileAcquisitionAttempted => _fileInterest != 0;
+
+        internal OriginalIoLifetime? IoLifetime => _ioLifetime;
 
         internal OriginalIssuer Issuer => _issuer;
 
@@ -584,6 +597,18 @@ public sealed partial class AssetStore
         internal void InstallBacking(AssetPackageBacking backing)
             => _backing = backing;
 
+        internal void InstallIoLifetime(OriginalIoLifetime lifetime)
+        {
+            ArgumentNullException.ThrowIfNull(lifetime);
+
+            if (!ReferenceEquals(lifetime._serviceReturn, this) || (_ioLifetime is not null))
+            {
+                throw new InvalidOperationException("The original service lifetime installation is inconsistent.");
+            }
+
+            _ioLifetime = lifetime;
+        }
+
         internal void InstallResponse(Task response)
             => _response = response;
 
@@ -604,6 +629,7 @@ public sealed partial class AssetStore
             _inputOwner = null;
             _response = null;
             _token = default;
+            _ioLifetime = null;
             _caller = 1;
             _returnInterest = 0;
             _state = retainFailure ? 3 : 2;
