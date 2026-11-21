@@ -2256,6 +2256,63 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task FailedPackageLoadReturnsDisplacedGenerationStorageAfterItsLeaseEnds()
+    {
+        using var codec = new BlockingFailAssetCodec();
+        var registration = CreateRegistration(codec);
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 53)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var options = CreateOptions(path, package, registration);
+        await AssetStoreOriginalOwnershipTests.WarmOriginalAnchorAsync(options).ConfigureAwait(false);
+        var store = await AssetStore.CreateAsync(options).ConfigureAwait(false);
+        var packageLease = store.AcquirePackageLease();
+        var originalBacking = AssetPackageReaderTests.GetSelectedBacking(store);
+        Task<AssetLease<TestAssetValue>>? loadTask = null;
+
+        try
+        {
+            await store.ReplacePackageAsync(options).ConfigureAwait(false);
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_112)));
+
+            loadTask = Task.Run(
+                () => packageLease.LoadFromPackageAsync<TestAssetValue>(new AssetId(1), CancellationToken.None));
+            await codec.Entered.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            packageLease.Dispose();
+
+            Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + (2 * 1_112)));
+            codec.Release();
+
+            _ = Assert.ThrowsAsync<InvalidDataException>(
+                async () => await loadTask.ConfigureAwait(false));
+
+            Assert.Multiple(() => {
+                Assert.That(originalBacking.Entries, Is.Empty);
+                Assert.That(store.OriginalSourceCapacity, Is.EqualTo(66_472 + 1_112 + 1_032));
+            });
+        }
+        finally
+        {
+            codec.Release();
+            packageLease.Dispose();
+
+            if (loadTask is not null)
+            {
+                try
+                {
+                    _ = await loadTask.ConfigureAwait(false);
+                }
+                catch (InvalidDataException)
+                {
+                }
+            }
+
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task PackageBackingDoesNotRetainOpenedOptions()
     {
         var package = AssetPackageReaderTests.CreatePackage();
@@ -2566,6 +2623,42 @@ internal sealed class AssetStoreTests
                     indexWorkspaceFromSharedBytes);
             }
         }
+    }
+
+    private sealed class BlockingFailAssetCodec : IBinarySchemaCodec<TestAssetValue>, IDisposable
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly ManualResetEventSlim _release = new();
+
+        public Guid SchemaId => s_assetSchema.SchemaId;
+
+        public int SchemaMajor => s_assetSchema.Major;
+
+        public int SchemaMinor => s_assetSchema.Minor;
+
+        internal Task Entered => _entered.Task;
+
+        public void Dispose()
+            => _release.Dispose();
+
+        public BinaryRecordStatus Read(
+            scoped ReadOnlySpan<byte> source,
+            out TestAssetValue value,
+            out int bytesConsumed)
+        {
+            _ = _entered.TrySetResult();
+            _release.Wait();
+            throw new InvalidDataException("The test codec failed after acquiring its package read.");
+        }
+
+        public BinaryRecordStatus Write(
+            in TestAssetValue value,
+            scoped Span<byte> destination,
+            out int bytesWritten)
+            => new TestAssetCodec().Write(value, destination, out bytesWritten);
+
+        internal void Release()
+            => _release.Set();
     }
 
     private sealed class ContextualTestAssetCodec : IContextualBinarySchemaCodec<TestAssetValue>

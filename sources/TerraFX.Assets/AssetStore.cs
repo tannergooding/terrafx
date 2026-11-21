@@ -525,7 +525,7 @@ public sealed partial class AssetStore : IAsyncDisposable
             {
                 try
                 {
-                    replacement.ReleaseOwner();
+                    ReleaseOriginalBackingOwner(replacement);
                 }
                 catch (Exception failure)
                 {

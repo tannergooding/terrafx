@@ -89,7 +89,7 @@ public sealed partial class AssetStore
         }
         catch
         {
-            backing.ReleaseReference();
+            ReleaseOriginalBackingReference(backing);
             throw;
         }
 

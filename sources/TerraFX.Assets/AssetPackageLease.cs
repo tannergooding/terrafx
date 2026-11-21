@@ -202,7 +202,7 @@ public sealed class AssetPackageLease : IDisposable
         }
         finally
         {
-            backing.ReleaseReference();
+            store.ReleaseOriginalBackingReference(backing);
         }
     }
 

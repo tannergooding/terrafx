@@ -42,7 +42,7 @@ public sealed partial class AssetStore
         }
         catch
         {
-            backing.ReleaseReference();
+            ReleaseOriginalBackingReference(backing);
             throw;
         }
 
@@ -199,12 +199,12 @@ public sealed partial class AssetStore
                 ReleaseDecodeBudget(decodedBytes);
             }
 
+            CompleteLoad(decodedBytes, leaseCreated);
+
             if (!leaseCreated)
             {
-                backing.ReleaseReference();
+                ReleaseOriginalBackingReference(backing);
             }
-
-            CompleteLoad(decodedBytes, leaseCreated);
         }
     }
 }
