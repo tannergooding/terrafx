@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
 using System.Threading;
@@ -29,6 +30,84 @@ internal sealed class AssetStoreOriginalOwnershipTests
             "_originalGenerationId",
             BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(backing)
             ?? throw new InvalidOperationException("The original generation identity is missing."));
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Capture every concurrent Store-creation failure for deterministic assertion.")]
+    [Test]
+    public async Task ConcurrentColdCreatesWaitForOriginalAnchorInstallation()
+    {
+        const int CreateCount = 8;
+        var package = AssetPackageReaderTests.CreatePackage();
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var options = AssetPackageReaderTests.CreateOptions(
+            path,
+            package,
+            AssetPackageReaderTests.CreateRegistration());
+        var stores = new AssetStore?[CreateCount];
+        var failures = new Exception?[CreateCount];
+        var threads = new Thread?[CreateCount];
+        using var ready = new CountdownEvent(CreateCount);
+        using var start = new ManualResetEventSlim();
+
+        try
+        {
+            for (var index = 0; index < threads.Length; index++)
+            {
+                var storeIndex = index;
+                var thread = new Thread(() => {
+                    _ = ready.Signal();
+                    start.Wait();
+
+                    try
+                    {
+                        stores[storeIndex] = AssetStore.CreateAsync(options).GetAwaiter().GetResult();
+                    }
+                    catch (Exception failure)
+                    {
+                        failures[storeIndex] = failure;
+                    }
+                }) {
+                    IsBackground = true,
+                };
+                threads[index] = thread;
+                thread.Start();
+            }
+
+            Assert.That(ready.Wait(TimeSpan.FromSeconds(10)), Is.True);
+            start.Set();
+
+            foreach (var thread in threads)
+            {
+                Assert.That(thread!.Join(TimeSpan.FromSeconds(10)), Is.True);
+            }
+
+            Assert.That(failures, Has.All.Null);
+        }
+        finally
+        {
+            start.Set();
+
+            foreach (var thread in threads)
+            {
+                if (thread is { IsAlive: true })
+                {
+                    _ = thread.Join(TimeSpan.FromSeconds(10));
+                }
+            }
+
+            foreach (var store in stores)
+            {
+                if (store is not null)
+                {
+                    await store.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+
+            File.Delete(path);
+        }
+    }
 
     [TestCase(0L)]
     [TestCase(1L)]

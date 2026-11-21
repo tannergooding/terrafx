@@ -197,19 +197,34 @@ internal sealed class AssetPackageBacking
 
     internal static bool TryElectOriginalAnchor()
     {
-        var state = Interlocked.CompareExchange(ref s_originalAnchorState, 1, 0);
+        var spinner = new SpinWait();
 
-        if (state == 0)
+        while (true)
         {
-            return true;
-        }
+            var state = Volatile.Read(ref s_originalAnchorState);
 
-        if (state != 2)
-        {
-            throw new InvalidOperationException("The original acquisition anchor is unavailable.");
-        }
+            if (state == 0)
+            {
+                if (Interlocked.CompareExchange(ref s_originalAnchorState, 1, 0) == 0)
+                {
+                    return true;
+                }
 
-        return false;
+                continue;
+            }
+
+            if (state == 2)
+            {
+                return false;
+            }
+
+            if (state != 1)
+            {
+                throw new InvalidOperationException("The original acquisition anchor is unavailable.");
+            }
+
+            spinner.SpinOnce();
+        }
     }
 
     private static EbinReadLimits CreateReadLimits(int maximumDecodedAssetBytes)
