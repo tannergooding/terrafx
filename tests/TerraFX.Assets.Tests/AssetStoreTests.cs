@@ -405,6 +405,47 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeRefusesAliasedReferenceStorage()
+    {
+        var registration = CreateRegistration();
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(1),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var envelope = CreateAssetEnvelope(
+            1,
+            CreateAssetRecordWithReference(123, 2, s_assetSchema.SchemaId, checked((uint)s_assetSchema.Major)));
+        var aliasedReferences = new AssetReference[1];
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            aliasedReferences,
+            new int[1],
+            aliasedReferences,
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Reference));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Invariant));
+            Assert.That(value.Marker, Is.Zero);
+            Assert.That(referenceCount, Is.Zero);
+            Assert.That(aliasedReferences[0], Is.EqualTo(default(AssetReference)));
+        });
+    }
+
+    [Test]
     public void AssetEnvelopeDecoderBoundedDecodeRefusesInsufficientReferenceStorage()
     {
         var registration = CreateRegistration();

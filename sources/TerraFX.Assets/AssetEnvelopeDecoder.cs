@@ -96,6 +96,14 @@ internal static class AssetEnvelopeDecoder
                 fileDisposition);
         }
 
+        if ((referenceWorkspace.Length != 0) && ReferenceEquals(referenceWorkspace, uniqueReferences))
+        {
+            return CreateBoundedDecodeFailure(
+                AssetBoundedFailureStage.Reference,
+                AssetBoundedFailureKind.Invariant,
+                fileDisposition);
+        }
+
         var action = new BoundedDecodeAction<T>(
             expectedAssetId,
             codec,
