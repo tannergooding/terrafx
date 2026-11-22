@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 
 namespace TerraFX.Assets;
 
@@ -371,40 +372,103 @@ internal static class AssetEnvelopeDecoder
             }
 
             var payload = envelope.GetRecord(2);
-            var referenceOccurrenceCount = AssetReferenceScanner.CountAssetIds(
-                payload,
-                dataSchema,
-                _context.Schemas);
+            int referenceOccurrenceCount;
+            int uniqueCount;
 
-            if ((referenceOccurrenceCount > _referenceWorkspace.Length)
-                || (referenceOccurrenceCount > _referenceIndexWorkspace.Length)
-                || (referenceOccurrenceCount > _uniqueReferences.Length))
+            try
+            {
+                referenceOccurrenceCount = AssetReferenceScanner.CountAssetIds(
+                    payload,
+                    dataSchema,
+                    _context.Schemas);
+
+                if ((referenceOccurrenceCount > _referenceWorkspace.Length)
+                    || (referenceOccurrenceCount > _referenceIndexWorkspace.Length)
+                    || (referenceOccurrenceCount > _uniqueReferences.Length))
+                {
+                    _failure = CreateBoundedDecodeFailure(
+                        AssetBoundedFailureStage.Reference,
+                        AssetBoundedFailureKind.Invariant,
+                        _fileDisposition);
+                    return;
+                }
+
+                var workspace = _referenceWorkspace.AsSpan(0, referenceOccurrenceCount);
+                var indexWorkspace = _referenceIndexWorkspace.AsSpan(0, referenceOccurrenceCount);
+                uniqueCount = AssetReferenceScanner.ScanInto(
+                    payload,
+                    dataSchema,
+                    _context.Schemas,
+                    workspace,
+                    indexWorkspace);
+                AssetReferenceScanner.CopyUniqueReferences(
+                    workspace,
+                    indexWorkspace[..uniqueCount],
+                    _uniqueReferences.AsSpan(0, uniqueCount));
+            }
+            catch (NotSupportedException)
             {
                 _failure = CreateBoundedDecodeFailure(
                     AssetBoundedFailureStage.Reference,
-                    AssetBoundedFailureKind.Invariant,
+                    AssetBoundedFailureKind.UnsupportedContent,
+                    _fileDisposition);
+                return;
+            }
+            catch (InvalidDataException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Reference,
+                    AssetBoundedFailureKind.Reference,
+                    _fileDisposition);
+                return;
+            }
+            catch (OverflowException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Reference,
+                    AssetBoundedFailureKind.Layout,
                     _fileDisposition);
                 return;
             }
 
-            var workspace = _referenceWorkspace.AsSpan(0, referenceOccurrenceCount);
-            var indexWorkspace = _referenceIndexWorkspace.AsSpan(0, referenceOccurrenceCount);
-            var uniqueCount = AssetReferenceScanner.ScanInto(
-                payload,
-                dataSchema,
-                _context.Schemas,
-                workspace,
-                indexWorkspace);
-            AssetReferenceScanner.CopyUniqueReferences(
-                workspace,
-                indexWorkspace[..uniqueCount],
-                _uniqueReferences.AsSpan(0, uniqueCount));
-            var codecStatus = _codec.Read(
-                payload.EncodedBytes,
-                _context,
-                out var value,
-                out var bytesConsumed,
-                out var diagnostic);
+            BinaryRecordStatus codecStatus;
+            T? value;
+            int bytesConsumed;
+            BinarySchemaDiagnostic? diagnostic;
+
+            try
+            {
+                codecStatus = _codec.Read(
+                    payload.EncodedBytes,
+                    _context,
+                    out value,
+                    out bytesConsumed,
+                    out diagnostic);
+            }
+            catch (NotSupportedException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.UnsupportedContent,
+                    _fileDisposition);
+                return;
+            }
+            catch (InvalidDataException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.TypedRecord,
+                    _fileDisposition);
+                return;
+            }
+            catch (OverflowException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.TypedRecord,
+                    _fileDisposition);
+                return;
+            }
 
             if (codecStatus is not BinaryRecordStatus.Complete)
             {

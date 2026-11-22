@@ -329,6 +329,82 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeMapsCodecExceptionsToScalarFailures()
+    {
+        var registration = CreateRegistration(new ThrowingTestAssetCodec());
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(1),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var envelope = CreateAssetEnvelope(1, CreateAssetRecord(123));
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            [],
+            [],
+            [],
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+            Assert.That(value.Marker, Is.Zero);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeMapsInvalidReferencesToScalarFailures()
+    {
+        var registration = CreateRegistration();
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(1),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var envelope = CreateAssetEnvelope(
+            1,
+            CreateAssetRecordWithReference(123, 0, s_assetSchema.SchemaId, checked((uint)s_assetSchema.Major)));
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            new AssetReference[1],
+            new int[1],
+            new AssetReference[1],
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Reference));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Reference));
+            Assert.That(value.Marker, Is.Zero);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
     public void AssetEnvelopeDecoderBoundedDecodeRefusesInsufficientReferenceStorage()
     {
         var registration = CreateRegistration();
@@ -2852,5 +2928,32 @@ internal sealed class AssetStoreTests
 
             base.Dispose(disposing);
         }
+    }
+
+    private sealed class ThrowingTestAssetCodec : IBinarySchemaCodec<TestAssetValue>
+    {
+        private readonly TestAssetCodec _codec = new TestAssetCodec();
+
+        public Guid SchemaId => s_assetSchema.SchemaId;
+
+        public int SchemaMajor => s_assetSchema.Major;
+
+        public int SchemaMinor => s_assetSchema.Minor;
+
+        public BinaryRecordStatus Read(
+            scoped ReadOnlySpan<byte> source,
+            out TestAssetValue value,
+            out int bytesConsumed)
+        {
+            value = default;
+            bytesConsumed = 0;
+            throw new InvalidDataException("The selected TestAsset codec rejected the typed record.");
+        }
+
+        public BinaryRecordStatus Write(
+            in TestAssetValue value,
+            scoped Span<byte> destination,
+            out int bytesWritten)
+            => _codec.Write(value, destination, out bytesWritten);
     }
 }
