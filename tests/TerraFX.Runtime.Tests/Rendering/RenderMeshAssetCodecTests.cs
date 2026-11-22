@@ -1268,6 +1268,130 @@ internal sealed class RenderMeshAssetCodecTests
     }
 
     [Test]
+    public void BoundedStaticMeshClaimReturnsAfterExactTrianglePredicateFailure()
+    {
+        var path = OperatingSystem.IsWindows()
+            ? @"C:\bnd\bounded-decode-triangle.epkg"
+            : "/tmp/bnd-bounded-decode-triangle.epkg";
+        var preclaimRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            path,
+            new byte[32],
+            536_870_912,
+            268_435_456,
+            268_435_456,
+            4096,
+            out var delivery,
+            System.Threading.CancellationToken.None);
+        Assert.That(preclaimRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedDelivery = delivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        var baselineReservedBytes = admittedDelivery.ReservedBytes;
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            new Vector3(2.0f, 0.0f, 0.0f),
+        };
+        var bounds = new RenderMeshBounds(
+            Vector3.Zero,
+            new Vector3(2.0f, 0.0f, 0.0f),
+            new Vector3(1.0f, 0.0f, 0.0f),
+            1.0f);
+        var meshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(CreateMeshRecord(
+                positions,
+                [CreatePositionStream(positions), CreateNormalStream([Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ])],
+                [0, 1, 2],
+                [CreateMeshGroup(0, 3, 0)],
+                bounds)));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var meshAssetId = new AssetId(1);
+        var materialAssetId = new AssetId(checked((int)MaterialAssetId));
+        var unconsumedClaim = default(AssetBoundedOperationClaim);
+        var decoder = default(BoundedStaticMeshAssetDecoder);
+        var resultOwner = default(BoundedStaticMeshAssetDecodeResultOwner);
+        var returnedClaim = default(AssetBoundedOperationClaim);
+        var decoderClaim = default(AssetBoundedOperationClaim);
+        BoundedStaticMeshAssetPreclaimRelease release;
+
+        try
+        {
+            var createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimedCandidateForTests(
+                admittedDelivery,
+                meshAssetId,
+                materialAssetId,
+                meshEnvelope.Length,
+                materialEnvelope.Length,
+                out var createFailure,
+                out unconsumedClaim,
+                out decoder);
+            Assert.That(createRefusal, Is.EqualTo(AssetBoundedRefusal.None));
+            Assert.That(createFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+
+            var stagingBuffer = decoder.StagingBuffer;
+            materialEnvelope.AsSpan().CopyTo(stagingBuffer);
+            var materialFailure = decoder.DecodeMaterial(
+                stagingBuffer[..materialEnvelope.Length],
+                AssetBoundedFileDisposition.NotAttempted);
+            meshEnvelope.AsSpan().CopyTo(stagingBuffer);
+            var meshFailure = decoder.DecodeMesh(
+                stagingBuffer[..meshEnvelope.Length],
+                AssetBoundedFileDisposition.NotAttempted);
+            var completionFailure = decoder.CompleteClaimed(out resultOwner, out returnedClaim);
+            var resultActive = resultOwner.IsActive;
+
+            Assert.Multiple(() => {
+                Assert.That(materialFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+                Assert.That(meshFailure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+                Assert.That(meshFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+                Assert.That(completionFailure, Is.EqualTo(meshFailure));
+                Assert.That(resultActive, Is.False);
+                Assert.That(returnedClaim.IsActive, Is.True);
+            });
+
+            returnedClaim.Dispose();
+            Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+        }
+        finally
+        {
+            try
+            {
+                if (resultOwner.IsActive)
+                {
+                    resultOwner.Return(out returnedClaim);
+                }
+
+                if (returnedClaim.IsActive)
+                {
+                    returnedClaim.Dispose();
+                }
+
+                if (unconsumedClaim.IsActive)
+                {
+                    unconsumedClaim.Dispose();
+                }
+
+                decoder.Dispose(out decoderClaim);
+
+                if (decoderClaim.IsActive)
+                {
+                    decoderClaim.Dispose();
+                }
+
+                decoder.Dispose();
+            }
+            finally
+            {
+                release = admittedDelivery.ReleaseUnstartedPreclaim();
+            }
+        }
+
+        Assert.That(release.HasFailure, Is.False);
+    }
+
+    [Test]
     public async Task MeshAssetBinderChecksJointIndicesAgainstTheSelectedPackageSkeleton()
     {
         var schemas = CreateRegistry();
