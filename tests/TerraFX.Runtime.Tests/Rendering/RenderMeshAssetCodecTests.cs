@@ -415,6 +415,12 @@ internal sealed class RenderMeshAssetCodecTests
     private static EbinRecord CreateWeightStream(Vector4[] values)
         => CreateVector4Stream("native/mesh-weights", elementKind: 16, stride: 16, values);
 
+    private static long GetArrayAllocationBytes(int elementCount, int elementSize)
+    {
+        var allocationBytes = checked(24L + ((long)elementCount * elementSize));
+        return checked((allocationBytes + 7L) & ~7L);
+    }
+
     private static long MeasureClassShell(Type type, int sampleCount)
     {
         var warmInstances = new object[sampleCount];
@@ -536,6 +542,117 @@ internal sealed class RenderMeshAssetCodecTests
         var referenceWorkspace = new AssetReference[257];
         var referenceIndexWorkspace = new int[257];
         var uniqueReferences = new AssetReference[257];
+
+        if (!registration.TryGetCodec<RenderMeshAsset>(out var meshCodec)
+            || !registration.TryGetCodec<RenderMaterialAsset>(out var materialCodec))
+        {
+            throw new InvalidOperationException("The selected bounded static-Mesh codecs are unavailable.");
+        }
+
+        var meshContext = new AssetCodecContext(
+            new AssetId(1),
+            registration.Schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var materialContext = new AssetCodecContext(
+            new AssetId(checked((int)MaterialAssetId)),
+            registration.Schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var meshPayload = new EbinRecordReadView(meshEnvelope).GetRecord(2).EncodedBytes;
+        var materialPayload = new EbinRecordReadView(materialEnvelope).GetRecord(2).EncodedBytes;
+        _ = meshCodec.Read(meshPayload, meshContext, out _, out _, out _);
+        _ = materialCodec.Read(materialPayload, materialContext, out _, out _, out _);
+        var codecMeshes = new RenderMeshAsset[SampleCount];
+        var meshCodecAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            var status = meshCodec.Read(meshPayload, meshContext, out var mesh, out _, out _);
+
+            if ((status is not BinaryRecordStatus.Complete) || (mesh is null))
+            {
+                throw new InvalidOperationException("The selected Mesh codec failed its measured decode.");
+            }
+
+            codecMeshes[index] = mesh;
+        }
+
+        var meshCodecAllocatedBytesPerDecode
+            = (GC.GetAllocatedBytesForCurrentThread() - meshCodecAllocationStart) / SampleCount;
+        var codecMaterials = new RenderMaterialAsset[SampleCount];
+        var materialCodecAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            var status = materialCodec.Read(materialPayload, materialContext, out var material, out _, out _);
+
+            if ((status is not BinaryRecordStatus.Complete) || (material is null))
+            {
+                throw new InvalidOperationException("The selected Material codec failed its measured decode.");
+            }
+
+            codecMaterials[index] = material;
+        }
+
+        var materialCodecAllocatedBytesPerDecode
+            = (GC.GetAllocatedBytesForCurrentThread() - materialCodecAllocationStart) / SampleCount;
+        var directMaterials = new RenderMaterialAsset[SampleCount];
+        var materialAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            var materialFailure = AssetEnvelopeDecoder.DecodeBounded(
+                materialEnvelope,
+                new AssetId(checked((int)MaterialAssetId)),
+                materialCodec,
+                materialContext,
+                referenceWorkspace,
+                referenceIndexWorkspace,
+                uniqueReferences,
+                AssetBoundedFileDisposition.NotAttempted,
+                out var material,
+                out _);
+
+            if ((materialFailure.Kind is not AssetBoundedFailureKind.None) || (material is null))
+            {
+                throw new InvalidOperationException("The direct bounded Material codec failed a measured decode.");
+            }
+
+            directMaterials[index] = material;
+        }
+
+        var directMaterialAllocatedBytesPerDecode
+            = (GC.GetAllocatedBytesForCurrentThread() - materialAllocationStart) / SampleCount;
+        var directMeshes = new RenderMeshAsset[SampleCount];
+        var meshAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            var meshFailure = AssetEnvelopeDecoder.DecodeBounded(
+                meshEnvelope,
+                new AssetId(1),
+                meshCodec,
+                meshContext,
+                referenceWorkspace,
+                referenceIndexWorkspace,
+                uniqueReferences,
+                AssetBoundedFileDisposition.NotAttempted,
+                out var mesh,
+                out _);
+
+            if ((meshFailure.Kind is not AssetBoundedFailureKind.None)
+                || (mesh is null))
+            {
+                throw new InvalidOperationException("The direct bounded Mesh codec failed a measured decode.");
+            }
+
+            directMeshes[index] = mesh;
+        }
+
+        var directMeshAllocatedBytesPerDecode = (GC.GetAllocatedBytesForCurrentThread() - meshAllocationStart) / SampleCount;
         var warmFailure = BoundedStaticMeshAssetDecoder.Decode(
             registration,
             new AssetId(1),
@@ -606,15 +723,41 @@ internal sealed class RenderMeshAssetCodecTests
             + materialShellBytes);
         var helperContextCharge = checked(2L * contextShellBytes);
         var decodeEnvelope = checked(meshEnvelopeCharge + materialEnvelopeCharge + helperContextCharge);
+        var selectedMesh = decodedMeshes[0];
+        var selectedMaterial = decodedMaterials[0];
+        var meshOutputBytes = checked(
+            meshShellBytes
+            + GetArrayAllocationBytes(selectedMesh.Positions.Length, Unsafe.SizeOf<Vector3>())
+            + GetArrayAllocationBytes(selectedMesh.Normals.Length, Unsafe.SizeOf<Vector3>())
+            + GetArrayAllocationBytes(selectedMesh.Indices.Length, sizeof(uint))
+            + GetArrayAllocationBytes(selectedMesh.Groups.Length, Unsafe.SizeOf<RenderMeshGroup>())
+            + GetArrayAllocationBytes(selectedMesh.MaterialSlots.Length, Unsafe.SizeOf<AssetId>())
+            + GetArrayAllocationBytes(selectedMesh.EncodedRecord.Length, sizeof(byte))
+            + (selectedMesh.IndexFormat is RenderMeshIndexFormat.UInt16
+                ? GetArrayAllocationBytes(selectedMesh.Indices.Length, sizeof(ushort))
+                : 0));
+        var materialOutputBytes = checked(
+            materialShellBytes
+            + GetArrayAllocationBytes(selectedMaterial.EncodedRecord.Length, sizeof(byte)));
+        var bytesBeyondTypedOutputBytes = checked(allocatedBytesPerDecode - meshOutputBytes - materialOutputBytes);
 
         Assert.That(
             allocatedBytesPerDecode,
             Is.LessThanOrEqualTo(decodeEnvelope),
             $"Bounded typed decode allocated {allocatedBytesPerDecode} bytes; the payload/result/context envelope is {decodeEnvelope} bytes.");
         TestContext.Progress.WriteLine(
-            $"Bounded typed decode allocation {allocatedBytesPerDecode}/{decodeEnvelope} bytes; M/T/context shells {meshShellBytes}/{materialShellBytes}/{contextShellBytes} bytes.");
+            $"Bounded raw Mesh/Material codec allocations {meshCodecAllocatedBytesPerDecode}/{materialCodecAllocatedBytesPerDecode} bytes; envelope/reference decoder allocations {directMeshAllocatedBytesPerDecode}/{directMaterialAllocatedBytesPerDecode} bytes; typed helper allocation {allocatedBytesPerDecode}/{decodeEnvelope} bytes; typed output estimate {meshOutputBytes + materialOutputBytes} bytes; bytes beyond outputs {bytesBeyondTypedOutputBytes}; M/T/context shells {meshShellBytes}/{materialShellBytes}/{contextShellBytes} bytes.");
+        TestContext.Progress.WriteLine(
+            $"Bounded typed array lengths: position {selectedMesh.Positions.Length}, normal {selectedMesh.Normals.Length}, index {selectedMesh.Indices.Length}, group {selectedMesh.Groups.Length}, material slot {selectedMesh.MaterialSlots.Length}, Mesh record {selectedMesh.EncodedRecord.Length}, Material record {selectedMaterial.EncodedRecord.Length}.");
+        Assert.That(
+            directMeshAllocatedBytesPerDecode + directMaterialAllocatedBytesPerDecode,
+            Is.GreaterThanOrEqualTo(meshOutputBytes + materialOutputBytes));
         GC.KeepAlive(decodedMeshes);
         GC.KeepAlive(decodedMaterials);
+        GC.KeepAlive(directMeshes);
+        GC.KeepAlive(directMaterials);
+        GC.KeepAlive(codecMeshes);
+        GC.KeepAlive(codecMaterials);
     }
 
     [Test]
