@@ -1055,14 +1055,19 @@ internal sealed class RenderMeshAssetCodecTests
                 [0, 1, 2],
                 [CreateMeshGroup(0, 3, 0)],
                 bounds)));
+        var lateFailureBounds = new RenderMeshBounds(
+            bounds.Minimum,
+            new Vector3(0.5f, 1.0f, 0.0f),
+            bounds.SphereCenter,
+            bounds.SphereRadius);
         var malformedMeshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
             1,
             EbinPrimitives.Encode(CreateMeshRecord(
                 positions,
-                [CreatePositionStream(positions), CreatePositionStream(positions)],
+                [CreatePositionStream(positions), CreateNormalStream([Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ])],
                 [0, 1, 2],
                 [CreateMeshGroup(0, 3, 0)],
-                bounds)));
+                lateFailureBounds)));
         var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
             MaterialAssetId,
             EbinPrimitives.Encode(CreatePbrMaterialRecord()));
@@ -1197,7 +1202,7 @@ internal sealed class RenderMeshAssetCodecTests
                     Is.EqualTo(baselineReservedBytes + malformedClaimBytes));
             });
             TestContext.Progress.WriteLine(
-                $"Claimed bounded static-Mesh malformed decode allocated {malformedAllocatedBytes}/{malformedClaimBytes} bytes.");
+                $"Claimed bounded static-Mesh late bounds failure allocated {malformedAllocatedBytes}/{malformedClaimBytes} bytes.");
             malformedReturnedClaim.Dispose();
             Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
         }
