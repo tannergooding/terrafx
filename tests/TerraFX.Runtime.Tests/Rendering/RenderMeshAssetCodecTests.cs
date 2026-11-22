@@ -422,6 +422,169 @@ internal sealed class RenderMeshAssetCodecTests
     }
 
     [Test]
+    public void BoundedStaticMeshAssetDecoderAcceptsTheSealedStaticMeshPair()
+    {
+        var registration = BoundedStaticMeshAssetRegistrationFactory.Create();
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var meshRecord = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), CreateNormalStream([Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ])],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(
+                Vector3.Zero,
+                new Vector3(1.0f, 1.0f, 0.0f),
+                new Vector3(0.5f, 0.5f, 0.0f),
+                1.0f));
+        var meshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(meshRecord));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var referenceWorkspace = new AssetReference[257];
+        var referenceIndexWorkspace = new int[257];
+        var uniqueReferences = new AssetReference[257];
+        var failure = BoundedStaticMeshAssetDecoder.Decode(
+            registration,
+            new AssetId(1),
+            new AssetId(checked((int)MaterialAssetId)),
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation,
+            meshEnvelope,
+            materialEnvelope,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            out var mesh,
+            out var material,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+            Assert.That(mesh, Is.Not.Null);
+            Assert.That(mesh?.Groups.Length, Is.EqualTo(1));
+            Assert.That(mesh?.MaterialSlots[0], Is.EqualTo(new AssetId(checked((int)MaterialAssetId))));
+            Assert.That(mesh?.SkeletonAssetId, Is.Null);
+            Assert.That(material, Is.Not.Null);
+            Assert.That(material?.IsSprite, Is.False);
+            Assert.That(material?.Parameters.BaseTexture, Is.Null);
+            Assert.That(referenceCount, Is.EqualTo(1));
+            Assert.That(uniqueReferences[0], Is.EqualTo(new AssetReference(
+                new AssetId(checked((int)MaterialAssetId)),
+                new ContentSchemaIdentityAssignment("native/material").SchemaId,
+                1)));
+        });
+    }
+
+    [Test]
+    public void BoundedStaticMeshAssetDecoderRejectsMeshesOutsideTheStaticShape()
+    {
+        var registration = BoundedStaticMeshAssetRegistrationFactory.Create();
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            new Vector3(1.0f, 1.0f, 0.0f),
+            Vector3.UnitY,
+        };
+        var normals = new[] { Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ };
+        var meshRecord = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), CreateNormalStream(normals)],
+            [0, 1, 2, 0, 2, 3],
+            [CreateMeshGroup(0, 3, 0), CreateMeshGroup(3, 3, 0)],
+            new RenderMeshBounds(
+                Vector3.Zero,
+                new Vector3(1.0f, 1.0f, 0.0f),
+                new Vector3(0.5f, 0.5f, 0.0f),
+                1.0f));
+        var meshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(meshRecord));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var failure = BoundedStaticMeshAssetDecoder.Decode(
+            registration,
+            new AssetId(1),
+            new AssetId(checked((int)MaterialAssetId)),
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation,
+            meshEnvelope,
+            materialEnvelope,
+            new AssetReference[257],
+            new int[257],
+            new AssetReference[257],
+            out var mesh,
+            out var material,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+            Assert.That(mesh, Is.Null);
+            Assert.That(material, Is.Null);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
+    public void BoundedStaticMeshAssetDecoderRejectsUnexpectedMaterialReferences()
+    {
+        var registration = BoundedStaticMeshAssetRegistrationFactory.Create();
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var meshRecord = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), CreateNormalStream([Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ])],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(
+                Vector3.Zero,
+                new Vector3(1.0f, 1.0f, 0.0f),
+                new Vector3(0.5f, 0.5f, 0.0f),
+                1.0f));
+        var meshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(meshRecord));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId + 1,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var failure = BoundedStaticMeshAssetDecoder.Decode(
+            registration,
+            new AssetId(1),
+            new AssetId(checked((int)MaterialAssetId + 1)),
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation,
+            meshEnvelope,
+            materialEnvelope,
+            new AssetReference[257],
+            new int[257],
+            new AssetReference[257],
+            out var mesh,
+            out var material,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Reference));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Reference));
+            Assert.That(mesh, Is.Null);
+            Assert.That(material, Is.Null);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
     public async Task MeshAssetBinderChecksJointIndicesAgainstTheSelectedPackageSkeleton()
     {
         var schemas = CreateRegistry();

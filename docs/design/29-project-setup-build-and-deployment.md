@@ -174,6 +174,11 @@ profile and the fixed M02 digests, returning only its `SpatialProfileId` and
 `SpatialSettings`; it does not expose a public Foundation codec or grant Assets
 authority to register profiles.
 
+Assets grants `TerraFX.Runtime` access to its bounded package internals. It grants
+`TerraFX.Runtime.Tests` a separate strong-name-qualified test friendship to exercise
+the bounded static-Mesh decoder with the production Mesh/Material codecs; this does
+not add a product reference or authorize native package acquisition.
+
 #### Input router construction
 
 `TerraFX.Input.csproj` grants only `TerraFX.Runtime` a strong-name-qualified
