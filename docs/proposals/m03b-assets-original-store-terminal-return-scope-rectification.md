@@ -1,6 +1,6 @@
 # M03-B original-Store terminal-return scope rectification
 
-**Disposition: tentative contract-scope guidance under the user's unblock instruction. No universal native-thread/outer-dispatch return receipt is established. Select the narrow terminal-substrate disposition below for further source implementation, subject to owner acceptance and the actual closed call-site proof. Native-owning worker materialization and native/Scene/Consumer/AOT activation remain fail-closed.**
+**Disposition: selected implementation scope, now recorded in Chapters 02, 04, 11, and 30.** The narrow terminal-substrate transfer does not claim a universal native-thread/outer-dispatch return receipt. Native-owning worker activation remains gated on actual call-site, close, and returned-call proofs.
 
 ## 1. Decision
 
@@ -110,22 +110,19 @@ For example, native-block return alone leaves **1,184** fixed source bytes (`152
 
 Opaque Thread, Task/TCS, queue wrapper, native wait/attachment/finalizer/context and dispatch interests remain counted and owned by their actual framework/invocation protocols. Unknown bytes are explicitly outside the selected subject; no unknown source-owned storage receives a zero allowance.
 
-## 6. Exact owner decision and stop
+## 6. Selected scope and remaining proof gates
 
-Two owner dispositions are possible; **the first is tentatively selected here**, not accepted:
+The narrow terminal-substrate transfer is the implementation baseline and is now stated in Chapters 02, 04, 11, and 30. It permits return of engine source claims only after the actual native-use and cleanup helpers have returned, engine aliases are detached, and the original-issuer scalar handback completes. It does not claim that Thread/CLR/ThreadPool controls or callback wrappers were physically destroyed or returned.
 
-| Disposition | Materialization condition / remaining claims |
-|---|---|
-| Accept terminal source-dead substrate transfer | Owners must explicitly accept the narrower terminal completion/error/retention subject in Chapters 02/11/30. Then close the actual E/L detach, no-further-access, native-use/native-close, start/dispatch failure and scalar-accounting call-site proof for the chosen target. Until then no native-owning worker materialization/start/acquisition; retain E/L/service and every live data/caller claim. |
-| Require full native-thread/control destruction and every outer dispatch return | Supply a reviewed lower execution capability that acknowledges actual native-thread/control retirement **and** enclosing callback/dispatch return with a closed original-grant lifetime. Current public Thread/Task/ThreadPool APIs do not expose that complete receipt. Keep all affected E/L/service/source/caller claims; no fabricated Task, extra worker, global root or padding closes the missing capability. |
+The implementation must still close the actual E/L detach and no-further-access conditions, native-use/native-close dispositions, startup and dispatch-failure branches, and scalar-accounting call-site proof on the selected target. Keep the original Store, generation, request, fault, caller, and protected-return claims until those exact owners return or accept a proved transfer. No native-owning worker start/acquisition, Scene preparation, Consumer/AOT observation, or M05 integration follows from the prose amendment alone. A broader native-thread/outer-dispatch receipt is not selected; if later evidence shows an inert tail can regain engine access, this scope is insufficient and the affected claims remain live.
 
 The source-only decision does not cure unreturned constructors/start, an uncertain terminal queue attempt, a callback that never enters, active native I/O, partial-finalization/resurrection races, or retained original fault/context delivery. Those are genuine owning branches. Native activation also remains blocked by the unqualified target/profile and required observations under [35](../design/35-implementation-roadmap.md#4-completion-gates). Stable .NET 11 PATH children, Linux ABI, NativeAOT, Runtime Async and all Scene/Consumer gates remain as previously recorded.
 
 Next bounded work is compile-only implementation of the actual terminal bridge and one-shot detach/accounting membership, with existing Assets regressions for retained portions, repeated handback refusal, source fault identity and the no-E/L tail. Do not add another observer to report outer return. When actual code exists, use the owning ordinary Debug then Release test selection; managed tests qualify only their exercised source/returned-call behavior. No native test is authorized merely to discover the still-missing proof.
 
-## 7. Current input freeze and preservation
+## 7. Original analysis input freeze
 
-HEAD **`b961cc5e393ca7815920fedb21a6d764c6bda64c`**. Concurrent Assets source-capacity edits are inspected input, not edits made by this proposal. Refresh the snapshot rather than reuse the older clean-source union: the exact set is the package proposal's 61-member section 8 set, plus the package and retirement-root proposals, `sources\TerraFX.Assets\AssetStore.Bounded.cs`, `tests\TerraFX.Assets.Tests\AssetStoreTests.cs`, and the four new Assets files `OriginalPackageIo.cs`, `OriginalIoLifetime.cs`, `OriginalIoRequest.cs`, `OriginalPackageIoSourceCapacity.cs` (**69 inputs**). Its current union SHA-256 is **`8e8bb5a2db3534ac5cee7c8a186705167cceca947087ce50e29fe51154e37729`**, with the existing ordinal Windows-path/TAB/raw-hash, LF/UTF-8 digest definition.
+HEAD **`b961cc5e393ca7815920fedb21a6d764c6bda64c`**. This 69-input hash set identifies the original source-analysis snapshot, not the current implementation or amended design contracts. Re-freeze the current source, build inputs and contracts before any subsequent scoped review disposition.
 
 Prior proposal hashes remain **`a06d30e336cdd3745e2cd93a5a577dd07a4956bc85d7bc95f0e013312c0a1112`** (package-I/O) and **`05697cddea6cede33a09657016060950d9bc9122795e02db31055057dd22ec7e`** (retirement root). Protected dirty Runtime test and schema bytes are unchanged. All runtime links select the pinned revision in section 2. Changed input bytes require scoped reassessment before applying any later disposition.
 
