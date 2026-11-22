@@ -72,7 +72,6 @@ internal static class AssetEnvelopeDecoder
         AssetId expectedAssetId,
         AssetStoreRegistration.IAssetCodec<T> codec,
         AssetCodecContext context,
-        EbinReadLimits limits,
         AssetReference[] referenceWorkspace,
         int[] referenceIndexWorkspace,
         AssetReference[] uniqueReferences,
@@ -82,7 +81,6 @@ internal static class AssetEnvelopeDecoder
     {
         ArgumentNullException.ThrowIfNull(codec);
         ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(referenceWorkspace);
         ArgumentNullException.ThrowIfNull(referenceIndexWorkspace);
         ArgumentNullException.ThrowIfNull(uniqueReferences);
@@ -107,7 +105,7 @@ internal static class AssetEnvelopeDecoder
             fileDisposition);
         var readStatus = EbinStructuralReader.Read(
             source,
-            limits,
+            context.ReadLimits,
             EbinReadPolicy.Canonical,
             ref action,
             out var bytesConsumed,

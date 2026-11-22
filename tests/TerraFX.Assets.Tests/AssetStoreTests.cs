@@ -352,7 +352,6 @@ internal sealed class AssetStoreTests
             new AssetId(1),
             codec,
             context,
-            EbinReadLimits.Foundation,
             [],
             [],
             [],
@@ -390,7 +389,6 @@ internal sealed class AssetStoreTests
             new AssetId(1),
             codec,
             context,
-            EbinReadLimits.Foundation,
             [],
             [],
             [],
@@ -433,7 +431,6 @@ internal sealed class AssetStoreTests
             new AssetId(1),
             codec,
             context,
-            EbinReadLimits.Foundation,
             referenceWorkspace,
             referenceIndexWorkspace,
             uniqueReferences,
@@ -446,6 +443,43 @@ internal sealed class AssetStoreTests
             Assert.That(value.Marker, Is.EqualTo(123));
             Assert.That(referenceCount, Is.EqualTo(1));
             Assert.That(uniqueReferences[0], Is.EqualTo(new AssetReference(new AssetId(2), s_assetSchema.SchemaId, 1)));
+        });
+    }
+
+    [Test]
+    public void AssetEnvelopeDecoderBoundedDecodeUsesContextReadLimits()
+    {
+        var registration = CreateRegistration();
+
+        if (!registration.TryGetCodec<TestAssetValue>(out var codec))
+        {
+            throw new InvalidOperationException("The selected TestAsset codec is unavailable.");
+        }
+
+        var context = new AssetCodecContext(
+            new AssetId(1),
+            s_schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            new EbinReadLimits(64, 64, 64, 1_048_576, 1_048_576, 1_048_576, 1_048_576, 1_048_576));
+        var envelope = CreateAssetEnvelope(1, CreateAssetRecord(123));
+        var failure = AssetEnvelopeDecoder.DecodeBounded(
+            envelope,
+            new AssetId(1),
+            codec,
+            context,
+            [],
+            [],
+            [],
+            AssetBoundedFileDisposition.NotFinal,
+            out var value,
+            out var referenceCount);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Layout));
+            Assert.That(value.Marker, Is.Zero);
+            Assert.That(referenceCount, Is.Zero);
         });
     }
 
