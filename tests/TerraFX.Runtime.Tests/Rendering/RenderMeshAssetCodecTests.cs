@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -414,6 +415,29 @@ internal sealed class RenderMeshAssetCodecTests
     private static EbinRecord CreateWeightStream(Vector4[] values)
         => CreateVector4Stream("native/mesh-weights", elementKind: 16, stride: 16, values);
 
+    private static long MeasureClassShell(Type type, int sampleCount)
+    {
+        var warmInstances = new object[sampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[sampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(type);
+        }
+
+        var allocatedBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / sampleCount;
+        GC.KeepAlive(measuredInstances);
+        return allocatedBytes;
+    }
+
     private static void WriteVector3(scoped Span<byte> destination, Vector3 value)
     {
         BinaryPrimitives.WriteInt32LittleEndian(destination, BitConverter.SingleToInt32Bits(value.X));
@@ -480,6 +504,117 @@ internal sealed class RenderMeshAssetCodecTests
                 new ContentSchemaIdentityAssignment("native/material").SchemaId,
                 1)));
         });
+    }
+
+    [Test]
+    public void BoundedStaticMeshAssetDecoderAllocationFitsTheTypedDecodeEnvelope()
+    {
+        const int SampleCount = 8;
+        const int ArrayHeaderAndAlignmentBytes = 79;
+        var registration = BoundedStaticMeshAssetRegistrationFactory.Create();
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var meshRecord = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), CreateNormalStream([Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ])],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(
+                Vector3.Zero,
+                new Vector3(1.0f, 1.0f, 0.0f),
+                new Vector3(0.5f, 0.5f, 0.0f),
+                1.0f));
+        var meshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(meshRecord));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var referenceWorkspace = new AssetReference[257];
+        var referenceIndexWorkspace = new int[257];
+        var uniqueReferences = new AssetReference[257];
+        var warmFailure = BoundedStaticMeshAssetDecoder.Decode(
+            registration,
+            new AssetId(1),
+            new AssetId(checked((int)MaterialAssetId)),
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation,
+            meshEnvelope,
+            materialEnvelope,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            out var warmMesh,
+            out var warmMaterial,
+            out _);
+
+        if ((warmFailure.Kind is not AssetBoundedFailureKind.None) || (warmMesh is null) || (warmMaterial is null))
+        {
+            throw new InvalidOperationException("The selected bounded static-Mesh codecs failed their warmup decode.");
+        }
+
+        GC.KeepAlive(warmMesh);
+        GC.KeepAlive(warmMaterial);
+        var decodedMeshes = new RenderMeshAsset[SampleCount];
+        var decodedMaterials = new RenderMaterialAsset[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < SampleCount; index++)
+        {
+            var failure = BoundedStaticMeshAssetDecoder.Decode(
+                registration,
+                new AssetId(1),
+                new AssetId(checked((int)MaterialAssetId)),
+                SpatialProfileId.Default,
+                SpatialSettings.Default,
+                EbinReadLimits.Foundation,
+                meshEnvelope,
+                materialEnvelope,
+                referenceWorkspace,
+                referenceIndexWorkspace,
+                uniqueReferences,
+                out var mesh,
+                out var material,
+                out _);
+
+            if ((failure.Kind is not AssetBoundedFailureKind.None)
+                || (mesh is null)
+                || (material is null))
+            {
+                throw new InvalidOperationException("The selected bounded static-Mesh codecs failed a measured decode.");
+            }
+
+            decodedMeshes[index] = mesh;
+            decodedMaterials[index] = material;
+        }
+
+        var allocatedBytesPerDecode = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        var meshShellBytes = MeasureClassShell(typeof(RenderMeshAsset), SampleCount);
+        var materialShellBytes = MeasureClassShell(typeof(RenderMaterialAsset), SampleCount);
+        var contextShellBytes = MeasureClassShell(typeof(AssetCodecContext), SampleCount);
+        var meshEnvelopeCharge = checked(
+            (4L * meshEnvelope.Length)
+            + (13L * ArrayHeaderAndAlignmentBytes)
+            + meshShellBytes);
+        var materialEnvelopeCharge = checked(
+            materialEnvelope.Length
+            + ArrayHeaderAndAlignmentBytes
+            + materialShellBytes);
+        var helperContextCharge = checked(2L * contextShellBytes);
+        var decodeEnvelope = checked(meshEnvelopeCharge + materialEnvelopeCharge + helperContextCharge);
+
+        Assert.That(
+            allocatedBytesPerDecode,
+            Is.LessThanOrEqualTo(decodeEnvelope),
+            $"Bounded typed decode allocated {allocatedBytesPerDecode} bytes; the payload/result/context envelope is {decodeEnvelope} bytes.");
+        TestContext.Progress.WriteLine(
+            $"Bounded typed decode allocation {allocatedBytesPerDecode}/{decodeEnvelope} bytes; M/T/context shells {meshShellBytes}/{materialShellBytes}/{contextShellBytes} bytes.");
+        GC.KeepAlive(decodedMeshes);
+        GC.KeepAlive(decodedMaterials);
     }
 
     [Test]
