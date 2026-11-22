@@ -22,6 +22,14 @@ internal struct AssetBoundedOperationClaim
 
     internal readonly bool IsActive => _issuer is not null;
 
+    internal readonly int MaximumConcurrentDecodeBytes
+        => _issuer?.BoundedMaximumConcurrentDecodeBytes
+            ?? throw new InvalidOperationException("The bounded operation claim has no active original Store.");
+
+    internal readonly int MaximumLiveAssetLeases
+        => _issuer?.BoundedMaximumLiveAssetLeases
+            ?? throw new InvalidOperationException("The bounded operation claim has no active original Store.");
+
     internal readonly EbinReadLimits ReadLimits
         => _issuer?.BoundedReadLimits
             ?? throw new InvalidOperationException("The bounded operation claim has no active original Store.");

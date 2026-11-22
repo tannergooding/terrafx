@@ -438,6 +438,14 @@ internal static class AssetEnvelopeDecoder
                     _fileDisposition);
                 return;
             }
+            catch (ArgumentException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Reference,
+                    AssetBoundedFailureKind.Invariant,
+                    _fileDisposition);
+                return;
+            }
 
             BinaryRecordStatus codecStatus;
             T? value;
@@ -474,6 +482,14 @@ internal static class AssetEnvelopeDecoder
                 _failure = CreateBoundedDecodeFailure(
                     AssetBoundedFailureStage.Decode,
                     AssetBoundedFailureKind.TypedRecord,
+                    _fileDisposition);
+                return;
+            }
+            catch (ArgumentException)
+            {
+                _failure = CreateBoundedDecodeFailure(
+                    AssetBoundedFailureStage.Decode,
+                    AssetBoundedFailureKind.Invariant,
                     _fileDisposition);
                 return;
             }

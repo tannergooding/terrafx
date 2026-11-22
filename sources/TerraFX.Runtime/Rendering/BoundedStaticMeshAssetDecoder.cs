@@ -128,6 +128,13 @@ internal ref struct BoundedStaticMeshAssetDecoder
 
         try
         {
+            if ((operationClaim.MaximumConcurrentDecodeBytes < Math.Max(meshEnvelopeLength, materialEnvelopeLength))
+                || (operationClaim.MaximumLiveAssetLeases < 2))
+            {
+                unconsumedClaim = operationClaim.Detach();
+                return AssetBoundedRefusal.Capacity;
+            }
+
             var readLimits = operationClaim.ReadLimits;
 
             if ((meshEnvelopeLength > readLimits.MaximumRecordBytes)

@@ -328,10 +328,13 @@ internal sealed class AssetStoreTests
         BinaryPrimitives.WriteUInt32LittleEndian(destination.AsSpan(52), checked((uint)schema.Minor));
     }
 
-    [Test]
-    public void AssetEnvelopeDecoderBoundedDecodeMapsCodecExceptionsToScalarFailures()
+    [TestCase(false, AssetBoundedFailureKind.TypedRecord)]
+    [TestCase(true, AssetBoundedFailureKind.Invariant)]
+    public void AssetEnvelopeDecoderBoundedDecodeMapsCodecExceptionsToScalarFailures(
+        bool throwArgumentException,
+        AssetBoundedFailureKind expectedFailureKind)
     {
-        var registration = CreateRegistration(new ThrowingTestAssetCodec());
+        var registration = CreateRegistration(new ThrowingTestAssetCodec(throwArgumentException));
 
         if (!registration.TryGetCodec<TestAssetValue>(out var codec))
         {
@@ -359,7 +362,7 @@ internal sealed class AssetStoreTests
 
         Assert.Multiple(() => {
             Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
-            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+            Assert.That(failure.Kind, Is.EqualTo(expectedFailureKind));
             Assert.That(value.Marker, Is.Zero);
             Assert.That(referenceCount, Is.Zero);
         });
@@ -2974,6 +2977,12 @@ internal sealed class AssetStoreTests
     private sealed class ThrowingTestAssetCodec : IBinarySchemaCodec<TestAssetValue>
     {
         private readonly TestAssetCodec _codec = new TestAssetCodec();
+        private readonly bool _throwArgumentException;
+
+        internal ThrowingTestAssetCodec(bool throwArgumentException)
+        {
+            _throwArgumentException = throwArgumentException;
+        }
 
         public Guid SchemaId => s_assetSchema.SchemaId;
 
@@ -2988,6 +2997,12 @@ internal sealed class AssetStoreTests
         {
             value = default;
             bytesConsumed = 0;
+
+            if (_throwArgumentException)
+            {
+                throw new ArgumentException("The selected TestAsset codec rejected the bounded typed record.");
+            }
+
             throw new InvalidDataException("The selected TestAsset codec rejected the typed record.");
         }
 

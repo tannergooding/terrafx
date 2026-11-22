@@ -421,6 +421,99 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         Assert.That(admittedShortBudgetDelivery.ReleaseUnstartedPreclaim().OwnerReleased, Is.True);
     }
 
+    [TestCase(64, 4096)]
+    [TestCase(268_435_456, 1)]
+    public void TypedAssetBoundedOperationEnforcesConfiguredLimits(
+        int maximumConcurrentDecodeBytes,
+        int maximumLiveAssetLeases)
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            Assert.Ignore("The bounded static-Mesh package profile is not available on this operating system.");
+        }
+
+        const int EnvelopeLength = 128;
+        const long CpuAssetBudgetBytes = 536_870_912;
+        const int MaximumDecodedAssetBytes = 268_435_456;
+        const int MeshEnvelopeLength = EnvelopeLength;
+        const int MaterialEnvelopeLength = EnvelopeLength;
+
+        var packagePath = OperatingSystem.IsWindows()
+            ? @"C:\bnd\bounded-decode-limits.epkg"
+            : "/tmp/bnd-bounded-decode-limits.epkg";
+        var preclaimRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            packagePath,
+            new byte[32],
+            CpuAssetBudgetBytes,
+            MaximumDecodedAssetBytes,
+            maximumConcurrentDecodeBytes,
+            maximumLiveAssetLeases,
+            out var delivery,
+            CancellationToken.None);
+        Assert.That(preclaimRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedDelivery = delivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        var baselineReservedBytes = admittedDelivery.ReservedBytes;
+        var unconsumedClaim = default(AssetBoundedOperationClaim);
+        var decoder = default(BoundedStaticMeshAssetDecoder);
+        var decoderClaim = default(AssetBoundedOperationClaim);
+        BoundedStaticMeshAssetPreclaimRelease release;
+
+        try
+        {
+            var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+            var refusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+                admittedDelivery,
+                new AssetId(1),
+                new AssetId(1000),
+                MeshEnvelopeLength,
+                MaterialEnvelopeLength,
+                out var failure,
+                out unconsumedClaim,
+                out decoder);
+            var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+            var requiredBytes = BoundedStaticMeshAssetDecoder.GetMinimumKnownClaimBytes(
+                MeshEnvelopeLength,
+                MaterialEnvelopeLength);
+
+            Assert.Multiple(() => {
+                Assert.That(refusal, Is.EqualTo(AssetBoundedRefusal.Capacity));
+                Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+                Assert.That(unconsumedClaim.IsActive, Is.True);
+                Assert.That(allocatedBytes, Is.Zero);
+                Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes + requiredBytes));
+            });
+
+            unconsumedClaim.Dispose();
+            Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+        }
+        finally
+        {
+            try
+            {
+                if (unconsumedClaim.IsActive)
+                {
+                    unconsumedClaim.Dispose();
+                }
+
+                decoder.Dispose(out decoderClaim);
+
+                if (decoderClaim.IsActive)
+                {
+                    decoderClaim.Dispose();
+                }
+
+                decoder.Dispose();
+            }
+            finally
+            {
+                release = admittedDelivery.ReleaseUnstartedPreclaim();
+            }
+        }
+
+        Assert.That(release.OwnerReleased, Is.True);
+    }
+
     [Test]
     public void TypedAssetClassShellAllocationsMatchSelectedRuntime()
     {

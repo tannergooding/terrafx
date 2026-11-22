@@ -14,6 +14,30 @@ public sealed partial class AssetStore
     private const long BoundedNativePortByteReservation = 144;
     private const long BoundedOpeningBufferByteReservation = 131_391;
 
+    internal int BoundedMaximumConcurrentDecodeBytes
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _currentBacking?.MaximumConcurrentDecodeBytes
+                    ?? throw new InvalidOperationException("The bounded Assets decode limit is unavailable.");
+            }
+        }
+    }
+
+    internal int BoundedMaximumLiveAssetLeases
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _currentBacking?.MaximumLiveAssetLeases
+                    ?? throw new InvalidOperationException("The bounded Assets lease limit is unavailable.");
+            }
+        }
+    }
+
     internal EbinReadLimits BoundedReadLimits
     {
         get
