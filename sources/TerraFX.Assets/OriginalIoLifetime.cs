@@ -47,13 +47,13 @@ internal sealed class OriginalIoLifetime
         }
     }
 
-    internal static void CompleteTerminalReturn(OriginalIoLifetime lifetime)
+    internal static (AssetStore.OriginalIssuer Issuer, long SourceBytes) DetachTerminalExecutionState(
+        OriginalIoLifetime lifetime)
     {
         ArgumentNullException.ThrowIfNull(lifetime);
         var executionState = lifetime._executionState
             ?? throw new InvalidOperationException("The terminal execution state has already been detached.");
-        var (issuer, sourceBytes) = executionState.DetachTerminalExecutionState(lifetime);
-        issuer.ReleaseSource(sourceBytes);
+        return executionState.DetachTerminalExecutionState(lifetime);
     }
 
     internal (AssetStore.OriginalIssuer Issuer, long SourceBytes) DetachServiceProvision()

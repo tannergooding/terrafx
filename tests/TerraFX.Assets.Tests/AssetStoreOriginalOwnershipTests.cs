@@ -304,7 +304,7 @@ internal sealed class AssetStoreOriginalOwnershipTests
         try
         {
             _ = Assert.Throws<InvalidOperationException>(
-                () => OriginalIoLifetime.CompleteTerminalReturn(candidate.Lifetime));
+                () => OriginalIoLifetime.DetachTerminalExecutionState(candidate.Lifetime));
             Assert.That(
                 candidate.Issuer.SourceCapacity,
                 Is.EqualTo(candidate.SourceBefore + candidate.SourceClaim));
@@ -337,7 +337,7 @@ internal sealed class AssetStoreOriginalOwnershipTests
             candidate.ExecutionState.PublishRetirement(candidate.Lifetime);
             Assert.That(candidate.ExecutionState.RetiringOwner, Is.Null);
             _ = Assert.Throws<InvalidOperationException>(
-                () => OriginalIoLifetime.CompleteTerminalReturn(candidate.Lifetime));
+                () => OriginalIoLifetime.DetachTerminalExecutionState(candidate.Lifetime));
             Assert.That(
                 candidate.Issuer.SourceCapacity,
                 Is.EqualTo(candidate.SourceBefore + OriginalPackageIoSourceCapacity.LifetimeBytes));
@@ -583,6 +583,51 @@ internal sealed class AssetStoreOriginalOwnershipTests
                 Assert.That(candidate.ExecutionState._retiringOwner, Is.SameAs(candidate.Lifetime));
                 Assert.That(candidate.ExecutionState._thread, Is.SameAs(candidate.Thread));
             });
+        }
+        finally
+        {
+            await ReleaseTerminalCandidateAsync(
+                candidate.Path,
+                candidate.Store,
+                candidate.Opening,
+                candidate.Issuer,
+                candidate.Lifetime,
+                candidate.ExecutionState,
+                candidate.Thread).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task TerminalExecutionDetachReturnsScalarBeforeIssuerAccounting()
+    {
+        var candidate = CreateTerminalCandidate();
+
+        try
+        {
+            candidate.Thread.Start();
+            candidate.ExecutionState.ObserveTerminalCallbackEntered();
+            candidate.ExecutionState.BeginTerminalJoin();
+            candidate.Thread.Join();
+            candidate.ExecutionState.ObserveTerminalJoinReturned();
+
+            var (issuer, sourceBytes) = OriginalIoLifetime.DetachTerminalExecutionState(candidate.Lifetime);
+
+            Assert.Multiple(() => {
+                Assert.That(issuer, Is.SameAs(candidate.Issuer));
+                Assert.That(sourceBytes, Is.EqualTo(OriginalPackageIoSourceCapacity.ExecutionStateBytes));
+                Assert.That(
+                    candidate.Issuer.SourceCapacity,
+                    Is.EqualTo(candidate.SourceBefore + candidate.SourceClaim));
+                Assert.That(
+                    candidate.Lifetime._sourceClaim,
+                    Is.EqualTo(OriginalPackageIoSourceCapacity.LifetimeBytes));
+                Assert.That(candidate.Lifetime._executionState, Is.Null);
+            });
+
+            issuer.ReleaseSource(sourceBytes);
+            Assert.That(
+                candidate.Issuer.SourceCapacity,
+                Is.EqualTo(candidate.SourceBefore + OriginalPackageIoSourceCapacity.LifetimeBytes));
         }
         finally
         {

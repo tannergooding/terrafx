@@ -77,7 +77,8 @@ internal sealed class OriginalPackageIo
         executionState.BeginTerminalJoin();
         thread.Join();
         executionState.ObserveTerminalJoinReturned();
-        OriginalIoLifetime.CompleteTerminalReturn(lifetime);
+        var (issuer, sourceBytes) = OriginalIoLifetime.DetachTerminalExecutionState(lifetime);
+        issuer.ReleaseSource(sourceBytes);
     }
 
     private static bool IsReturnedOrUnacquired(int state)
