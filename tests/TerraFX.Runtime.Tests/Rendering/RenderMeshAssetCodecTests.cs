@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
@@ -415,6 +416,80 @@ internal sealed class RenderMeshAssetCodecTests
     private static EbinRecord CreateWeightStream(Vector4[] values)
         => CreateVector4Stream("native/mesh-weights", elementKind: 16, stride: 16, values);
 
+    private static (
+        AssetBoundedFailureFact Failure,
+        RenderMeshAsset? Mesh,
+        RenderMaterialAsset? Material,
+        int ReferenceCount) DecodeBoundedStaticMeshPair(
+            AssetStoreRegistration registration,
+            AssetId meshAssetId,
+            AssetId materialAssetId,
+            byte[] meshEnvelope,
+            byte[] materialEnvelope,
+            AssetReference[] referenceWorkspace,
+            int[] referenceIndexWorkspace,
+            AssetReference[] uniqueReferences)
+    {
+        var meshContext = new AssetCodecContext(
+            meshAssetId,
+            registration.Schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var materialContext = new AssetCodecContext(
+            materialAssetId,
+            registration.Schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var staging = new byte[Math.Max(meshEnvelope.Length, materialEnvelope.Length)];
+        var createFailure = BoundedStaticMeshAssetDecoder.Create(
+            registration,
+            meshAssetId,
+            materialAssetId,
+            meshContext,
+            materialContext,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            out var decoder);
+
+        try
+        {
+            if (createFailure.Kind is not AssetBoundedFailureKind.None)
+            {
+                return (createFailure, null, null, 0);
+            }
+
+            materialEnvelope.AsSpan().CopyTo(staging);
+            var failure = decoder.DecodeMaterial(
+                staging.AsSpan(0, materialEnvelope.Length),
+                AssetBoundedFileDisposition.NotAttempted);
+
+            if (failure.Kind is not AssetBoundedFailureKind.None)
+            {
+                return (failure, null, null, 0);
+            }
+
+            meshEnvelope.AsSpan().CopyTo(staging);
+            failure = decoder.DecodeMesh(
+                staging.AsSpan(0, meshEnvelope.Length),
+                AssetBoundedFileDisposition.NotAttempted);
+
+            if (failure.Kind is not AssetBoundedFailureKind.None)
+            {
+                return (failure, null, null, 0);
+            }
+
+            failure = decoder.Complete(out var mesh, out var material, out var referenceCount);
+            return (failure, mesh, material, referenceCount);
+        }
+        finally
+        {
+            decoder.Dispose();
+        }
+    }
+
     private static long GetArrayAllocationBytes(int elementCount, int elementSize)
     {
         var allocationBytes = checked(24L + ((long)elementCount * elementSize));
@@ -479,21 +554,15 @@ internal sealed class RenderMeshAssetCodecTests
         var referenceWorkspace = new AssetReference[257];
         var referenceIndexWorkspace = new int[257];
         var uniqueReferences = new AssetReference[257];
-        var failure = BoundedStaticMeshAssetDecoder.Decode(
+        var (failure, mesh, material, referenceCount) = DecodeBoundedStaticMeshPair(
             registration,
             new AssetId(1),
             new AssetId(checked((int)MaterialAssetId)),
-            SpatialProfileId.Default,
-            SpatialSettings.Default,
-            EbinReadLimits.Foundation,
             meshEnvelope,
             materialEnvelope,
             referenceWorkspace,
             referenceIndexWorkspace,
-            uniqueReferences,
-            out var mesh,
-            out var material,
-            out var referenceCount);
+            uniqueReferences);
 
         Assert.Multiple(() => {
             Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
@@ -513,7 +582,7 @@ internal sealed class RenderMeshAssetCodecTests
     }
 
     [Test]
-    public void BoundedStaticMeshAssetDecoderAllocationFitsTheTypedDecodeEnvelope()
+    public void BoundedStaticMeshAssetDecoderFitsTypedEnvelopeButExceedsCurrentProvision()
     {
         const int SampleCount = 8;
         const int ArrayHeaderAndAlignmentBytes = 79;
@@ -542,167 +611,141 @@ internal sealed class RenderMeshAssetCodecTests
         var referenceWorkspace = new AssetReference[257];
         var referenceIndexWorkspace = new int[257];
         var uniqueReferences = new AssetReference[257];
-
-        if (!registration.TryGetCodec<RenderMeshAsset>(out var meshCodec)
-            || !registration.TryGetCodec<RenderMaterialAsset>(out var materialCodec))
-        {
-            throw new InvalidOperationException("The selected bounded static-Mesh codecs are unavailable.");
-        }
-
-        var meshContext = new AssetCodecContext(
+        var staging = new byte[Math.Max(meshEnvelope.Length, materialEnvelope.Length)];
+        var warmMeshContext = new AssetCodecContext(
             new AssetId(1),
             registration.Schemas,
             SpatialProfileId.Default,
             SpatialSettings.Default,
             EbinReadLimits.Foundation);
-        var materialContext = new AssetCodecContext(
+        var warmMaterialContext = new AssetCodecContext(
             new AssetId(checked((int)MaterialAssetId)),
             registration.Schemas,
             SpatialProfileId.Default,
             SpatialSettings.Default,
             EbinReadLimits.Foundation);
-        var meshPayload = new EbinRecordReadView(meshEnvelope).GetRecord(2).EncodedBytes;
-        var materialPayload = new EbinRecordReadView(materialEnvelope).GetRecord(2).EncodedBytes;
-        _ = meshCodec.Read(meshPayload, meshContext, out _, out _, out _);
-        _ = materialCodec.Read(materialPayload, materialContext, out _, out _, out _);
-        var codecMeshes = new RenderMeshAsset[SampleCount];
-        var meshCodecAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-
-        for (var index = 0; index < SampleCount; index++)
-        {
-            var status = meshCodec.Read(meshPayload, meshContext, out var mesh, out _, out _);
-
-            if ((status is not BinaryRecordStatus.Complete) || (mesh is null))
-            {
-                throw new InvalidOperationException("The selected Mesh codec failed its measured decode.");
-            }
-
-            codecMeshes[index] = mesh;
-        }
-
-        var meshCodecAllocatedBytesPerDecode
-            = (GC.GetAllocatedBytesForCurrentThread() - meshCodecAllocationStart) / SampleCount;
-        var codecMaterials = new RenderMaterialAsset[SampleCount];
-        var materialCodecAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-
-        for (var index = 0; index < SampleCount; index++)
-        {
-            var status = materialCodec.Read(materialPayload, materialContext, out var material, out _, out _);
-
-            if ((status is not BinaryRecordStatus.Complete) || (material is null))
-            {
-                throw new InvalidOperationException("The selected Material codec failed its measured decode.");
-            }
-
-            codecMaterials[index] = material;
-        }
-
-        var materialCodecAllocatedBytesPerDecode
-            = (GC.GetAllocatedBytesForCurrentThread() - materialCodecAllocationStart) / SampleCount;
-        var directMaterials = new RenderMaterialAsset[SampleCount];
-        var materialAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-
-        for (var index = 0; index < SampleCount; index++)
-        {
-            var materialFailure = AssetEnvelopeDecoder.DecodeBounded(
-                materialEnvelope,
-                new AssetId(checked((int)MaterialAssetId)),
-                materialCodec,
-                materialContext,
-                referenceWorkspace,
-                referenceIndexWorkspace,
-                uniqueReferences,
-                AssetBoundedFileDisposition.NotAttempted,
-                out var material,
-                out _);
-
-            if ((materialFailure.Kind is not AssetBoundedFailureKind.None) || (material is null))
-            {
-                throw new InvalidOperationException("The direct bounded Material codec failed a measured decode.");
-            }
-
-            directMaterials[index] = material;
-        }
-
-        var directMaterialAllocatedBytesPerDecode
-            = (GC.GetAllocatedBytesForCurrentThread() - materialAllocationStart) / SampleCount;
-        var directMeshes = new RenderMeshAsset[SampleCount];
-        var meshAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-
-        for (var index = 0; index < SampleCount; index++)
-        {
-            var meshFailure = AssetEnvelopeDecoder.DecodeBounded(
-                meshEnvelope,
-                new AssetId(1),
-                meshCodec,
-                meshContext,
-                referenceWorkspace,
-                referenceIndexWorkspace,
-                uniqueReferences,
-                AssetBoundedFileDisposition.NotAttempted,
-                out var mesh,
-                out _);
-
-            if ((meshFailure.Kind is not AssetBoundedFailureKind.None)
-                || (mesh is null))
-            {
-                throw new InvalidOperationException("The direct bounded Mesh codec failed a measured decode.");
-            }
-
-            directMeshes[index] = mesh;
-        }
-
-        var directMeshAllocatedBytesPerDecode = (GC.GetAllocatedBytesForCurrentThread() - meshAllocationStart) / SampleCount;
-        var warmFailure = BoundedStaticMeshAssetDecoder.Decode(
+        var warmCreateFailure = BoundedStaticMeshAssetDecoder.Create(
             registration,
             new AssetId(1),
             new AssetId(checked((int)MaterialAssetId)),
-            SpatialProfileId.Default,
-            SpatialSettings.Default,
-            EbinReadLimits.Foundation,
-            meshEnvelope,
-            materialEnvelope,
+            warmMeshContext,
+            warmMaterialContext,
             referenceWorkspace,
             referenceIndexWorkspace,
             uniqueReferences,
-            out var warmMesh,
-            out var warmMaterial,
-            out _);
+            out var warmDecoder);
 
-        if ((warmFailure.Kind is not AssetBoundedFailureKind.None) || (warmMesh is null) || (warmMaterial is null))
+        var warmMesh = (RenderMeshAsset?)null;
+        var warmMaterial = (RenderMaterialAsset?)null;
+        var warmReferenceCount = 0;
+
+        try
         {
-            throw new InvalidOperationException("The selected bounded static-Mesh codecs failed their warmup decode.");
+            if (warmCreateFailure.Kind is not AssetBoundedFailureKind.None)
+            {
+                throw new InvalidOperationException("The selected bounded static-Mesh operation could not be created for warmup.");
+            }
+
+            materialEnvelope.AsSpan().CopyTo(staging);
+            var failure = warmDecoder.DecodeMaterial(
+                staging.AsSpan(0, materialEnvelope.Length),
+                AssetBoundedFileDisposition.NotAttempted);
+            meshEnvelope.AsSpan().CopyTo(staging);
+
+            if (failure.Kind is AssetBoundedFailureKind.None)
+            {
+                failure = warmDecoder.DecodeMesh(
+                    staging.AsSpan(0, meshEnvelope.Length),
+                    AssetBoundedFileDisposition.NotAttempted);
+            }
+
+            if (failure.Kind is AssetBoundedFailureKind.None)
+            {
+                failure = warmDecoder.Complete(out warmMesh, out warmMaterial, out warmReferenceCount);
+            }
+
+            if ((failure.Kind is not AssetBoundedFailureKind.None)
+                || (warmMesh is null)
+                || (warmMaterial is null)
+                || (warmReferenceCount != 1))
+            {
+                throw new InvalidOperationException("The selected bounded static-Mesh operation failed its warmup decode.");
+            }
+        }
+        finally
+        {
+            warmDecoder.Dispose();
         }
 
-        GC.KeepAlive(warmMesh);
-        GC.KeepAlive(warmMaterial);
         var decodedMeshes = new RenderMeshAsset[SampleCount];
         var decodedMaterials = new RenderMaterialAsset[SampleCount];
         var allocationStart = GC.GetAllocatedBytesForCurrentThread();
 
         for (var index = 0; index < SampleCount; index++)
         {
-            var failure = BoundedStaticMeshAssetDecoder.Decode(
+            var meshContext = new AssetCodecContext(
+                new AssetId(1),
+                registration.Schemas,
+                SpatialProfileId.Default,
+                SpatialSettings.Default,
+                EbinReadLimits.Foundation);
+            var materialContext = new AssetCodecContext(
+                new AssetId(checked((int)MaterialAssetId)),
+                registration.Schemas,
+                SpatialProfileId.Default,
+                SpatialSettings.Default,
+                EbinReadLimits.Foundation);
+            var createFailure = BoundedStaticMeshAssetDecoder.Create(
                 registration,
                 new AssetId(1),
                 new AssetId(checked((int)MaterialAssetId)),
-                SpatialProfileId.Default,
-                SpatialSettings.Default,
-                EbinReadLimits.Foundation,
-                meshEnvelope,
-                materialEnvelope,
+                meshContext,
+                materialContext,
                 referenceWorkspace,
                 referenceIndexWorkspace,
                 uniqueReferences,
-                out var mesh,
-                out var material,
-                out _);
+                out var decoder);
 
-            if ((failure.Kind is not AssetBoundedFailureKind.None)
-                || (mesh is null)
-                || (material is null))
+            var mesh = (RenderMeshAsset?)null;
+            var material = (RenderMaterialAsset?)null;
+            var referenceCount = 0;
+
+            try
             {
-                throw new InvalidOperationException("The selected bounded static-Mesh codecs failed a measured decode.");
+                if (createFailure.Kind is not AssetBoundedFailureKind.None)
+                {
+                    throw new InvalidOperationException("The selected bounded static-Mesh operation could not be created for measurement.");
+                }
+
+                materialEnvelope.AsSpan().CopyTo(staging);
+                var failure = decoder.DecodeMaterial(
+                    staging.AsSpan(0, materialEnvelope.Length),
+                    AssetBoundedFileDisposition.NotAttempted);
+                meshEnvelope.AsSpan().CopyTo(staging);
+
+                if (failure.Kind is AssetBoundedFailureKind.None)
+                {
+                    failure = decoder.DecodeMesh(
+                        staging.AsSpan(0, meshEnvelope.Length),
+                        AssetBoundedFileDisposition.NotAttempted);
+                }
+
+                if (failure.Kind is AssetBoundedFailureKind.None)
+                {
+                    failure = decoder.Complete(out mesh, out material, out referenceCount);
+                }
+
+                if ((failure.Kind is not AssetBoundedFailureKind.None)
+                    || (mesh is null)
+                    || (material is null)
+                    || (referenceCount != 1))
+                {
+                    throw new InvalidOperationException("The selected bounded static-Mesh operation failed a measured decode.");
+                }
+            }
+            finally
+            {
+                decoder.Dispose();
             }
 
             decodedMeshes[index] = mesh;
@@ -723,6 +766,22 @@ internal sealed class RenderMeshAssetCodecTests
             + materialShellBytes);
         var helperContextCharge = checked(2L * contextShellBytes);
         var decodeEnvelope = checked(meshEnvelopeCharge + materialEnvelopeCharge + helperContextCharge);
+        var (referenceWorkspaceCharge, referenceResultCharge) = AssetReferenceScanner.GetFixedScanDataBytes(
+            referenceCount: 257,
+            uniqueCount: 257);
+        var runtimePerStoreProvisionField = typeof(BoundedStaticMeshAssetValidation).GetField(
+            "PerStoreProvisionBytes",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The selected bounded static-Mesh per-Store provision is missing.");
+        var runtimePerStoreProvisionBytes = (long)(runtimePerStoreProvisionField.GetRawConstantValue()
+            ?? throw new InvalidOperationException("The selected bounded static-Mesh per-Store provision has no constant value."));
+        var minimumRuntimeProvisionWithoutOperationRemainder = checked(
+            Math.Max(meshEnvelope.Length, materialEnvelope.Length)
+            + ArrayHeaderAndAlignmentBytes
+            + meshEnvelopeCharge
+            + materialEnvelopeCharge
+            + referenceWorkspaceCharge
+            + referenceResultCharge);
         var selectedMesh = decodedMeshes[0];
         var selectedMaterial = decodedMaterials[0];
         var meshOutputBytes = checked(
@@ -746,18 +805,16 @@ internal sealed class RenderMeshAssetCodecTests
             Is.LessThanOrEqualTo(decodeEnvelope),
             $"Bounded typed decode allocated {allocatedBytesPerDecode} bytes; the payload/result/context envelope is {decodeEnvelope} bytes.");
         TestContext.Progress.WriteLine(
-            $"Bounded raw Mesh/Material codec allocations {meshCodecAllocatedBytesPerDecode}/{materialCodecAllocatedBytesPerDecode} bytes; envelope/reference decoder allocations {directMeshAllocatedBytesPerDecode}/{directMaterialAllocatedBytesPerDecode} bytes; typed helper allocation {allocatedBytesPerDecode}/{decodeEnvelope} bytes; typed output estimate {meshOutputBytes + materialOutputBytes} bytes; bytes beyond outputs {bytesBeyondTypedOutputBytes}; M/T/context shells {meshShellBytes}/{materialShellBytes}/{contextShellBytes} bytes.");
+            $"Bounded staged typed decode allocation {allocatedBytesPerDecode}/{decodeEnvelope} bytes; typed output estimate {meshOutputBytes + materialOutputBytes} bytes; bytes beyond outputs {bytesBeyondTypedOutputBytes}; M/T/context shells {meshShellBytes}/{materialShellBytes}/{contextShellBytes} bytes.");
         TestContext.Progress.WriteLine(
             $"Bounded typed array lengths: position {selectedMesh.Positions.Length}, normal {selectedMesh.Normals.Length}, index {selectedMesh.Indices.Length}, group {selectedMesh.Groups.Length}, material slot {selectedMesh.MaterialSlots.Length}, Mesh record {selectedMesh.EncodedRecord.Length}, Material record {selectedMaterial.EncodedRecord.Length}.");
-        Assert.That(
-            directMeshAllocatedBytesPerDecode + directMaterialAllocatedBytesPerDecode,
-            Is.GreaterThanOrEqualTo(meshOutputBytes + materialOutputBytes));
+        TestContext.Progress.WriteLine(
+            $"Bounded static-Mesh minimum typed provision {minimumRuntimeProvisionWithoutOperationRemainder} bytes vs current per-Store provision {runtimePerStoreProvisionBytes}; C_op and retained-result return are excluded.");
+        Assert.That(minimumRuntimeProvisionWithoutOperationRemainder, Is.GreaterThan(runtimePerStoreProvisionBytes));
         GC.KeepAlive(decodedMeshes);
         GC.KeepAlive(decodedMaterials);
-        GC.KeepAlive(directMeshes);
-        GC.KeepAlive(directMaterials);
-        GC.KeepAlive(codecMeshes);
-        GC.KeepAlive(codecMaterials);
+        GC.KeepAlive(warmMesh);
+        GC.KeepAlive(warmMaterial);
     }
 
     [Test]
@@ -787,21 +844,15 @@ internal sealed class RenderMeshAssetCodecTests
         var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
             MaterialAssetId,
             EbinPrimitives.Encode(CreatePbrMaterialRecord()));
-        var failure = BoundedStaticMeshAssetDecoder.Decode(
+        var (failure, mesh, material, referenceCount) = DecodeBoundedStaticMeshPair(
             registration,
             new AssetId(1),
             new AssetId(checked((int)MaterialAssetId)),
-            SpatialProfileId.Default,
-            SpatialSettings.Default,
-            EbinReadLimits.Foundation,
             meshEnvelope,
             materialEnvelope,
             new AssetReference[257],
             new int[257],
-            new AssetReference[257],
-            out var mesh,
-            out var material,
-            out var referenceCount);
+            new AssetReference[257]);
 
         Assert.Multiple(() => {
             Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
@@ -837,21 +888,15 @@ internal sealed class RenderMeshAssetCodecTests
         var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
             MaterialAssetId + 1,
             EbinPrimitives.Encode(CreatePbrMaterialRecord()));
-        var failure = BoundedStaticMeshAssetDecoder.Decode(
+        var (failure, mesh, material, referenceCount) = DecodeBoundedStaticMeshPair(
             registration,
             new AssetId(1),
             new AssetId(checked((int)MaterialAssetId + 1)),
-            SpatialProfileId.Default,
-            SpatialSettings.Default,
-            EbinReadLimits.Foundation,
             meshEnvelope,
             materialEnvelope,
             new AssetReference[257],
             new int[257],
-            new AssetReference[257],
-            out var mesh,
-            out var material,
-            out var referenceCount);
+            new AssetReference[257]);
 
         Assert.Multiple(() => {
             Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Reference));
