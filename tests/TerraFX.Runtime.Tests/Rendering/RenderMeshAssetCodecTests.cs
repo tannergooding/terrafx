@@ -582,6 +582,65 @@ internal sealed class RenderMeshAssetCodecTests
     }
 
     [Test]
+    public void BoundedStaticMeshAssetDecoderEnforcesMaterialBeforeMesh()
+    {
+        var registration = BoundedStaticMeshAssetRegistrationFactory.Create();
+        var meshAssetId = new AssetId(1);
+        var materialAssetId = new AssetId(checked((int)MaterialAssetId));
+        var meshContext = new AssetCodecContext(
+            meshAssetId,
+            registration.Schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var materialContext = new AssetCodecContext(
+            materialAssetId,
+            registration.Schemas,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            EbinReadLimits.Foundation);
+        var createFailure = BoundedStaticMeshAssetDecoder.Create(
+            registration,
+            meshAssetId,
+            materialAssetId,
+            meshContext,
+            materialContext,
+            new AssetReference[257],
+            new int[257],
+            new AssetReference[257],
+            out var decoder);
+
+        try
+        {
+            if (createFailure.Kind is not AssetBoundedFailureKind.None)
+            {
+                throw new InvalidOperationException("The selected bounded static-Mesh operation could not be created.");
+            }
+
+            var failure = decoder.DecodeMesh(
+                [],
+                AssetBoundedFileDisposition.NotAttempted);
+            var completionFailure = decoder.Complete(
+                out var mesh,
+                out var material,
+                out var referenceCount);
+
+            Assert.Multiple(() => {
+                Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+                Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.Invariant));
+                Assert.That(completionFailure, Is.EqualTo(failure));
+                Assert.That(mesh, Is.Null);
+                Assert.That(material, Is.Null);
+                Assert.That(referenceCount, Is.Zero);
+            });
+        }
+        finally
+        {
+            decoder.Dispose();
+        }
+    }
+
+    [Test]
     public void BoundedStaticMeshAssetDecoderFitsTypedEnvelopeButExceedsCurrentProvision()
     {
         const int SampleCount = 8;
