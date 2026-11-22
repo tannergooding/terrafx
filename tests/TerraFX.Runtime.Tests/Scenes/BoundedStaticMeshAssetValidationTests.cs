@@ -290,6 +290,107 @@ internal sealed class BoundedStaticMeshAssetValidationTests
     }
 
     [Test]
+    public void TypedAssetBoundedOperationClaimIsBudgetedAndReturnedBeforeRelease()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            Assert.Ignore("The bounded static-Mesh package profile is not available on this operating system.");
+        }
+
+        const long OperationBytes = 4096;
+        const long CpuAssetBudgetBytes = 536_870_912;
+        const int MaximumDecodedAssetBytes = 268_435_456;
+        const int MaximumConcurrentDecodeBytes = 268_435_456;
+        const int MaximumLiveAssetLeases = 4096;
+
+        var packagePath = OperatingSystem.IsWindows()
+            ? @"C:\bnd\bounded-operation.epkg"
+            : "/tmp/bnd-bounded-operation.epkg";
+        var expectedDigest = new byte[32];
+
+        var warmRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            packagePath,
+            expectedDigest,
+            CpuAssetBudgetBytes,
+            MaximumDecodedAssetBytes,
+            MaximumConcurrentDecodeBytes,
+            MaximumLiveAssetLeases,
+            out var warmDelivery,
+            CancellationToken.None);
+        Assert.That(warmRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedWarmDelivery = warmDelivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        Assert.That(admittedWarmDelivery.ReleaseUnstartedPreclaim().OwnerReleased, Is.True);
+
+        var baselineRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            packagePath,
+            expectedDigest,
+            CpuAssetBudgetBytes,
+            MaximumDecodedAssetBytes,
+            MaximumConcurrentDecodeBytes,
+            MaximumLiveAssetLeases,
+            out var baselineDelivery,
+            CancellationToken.None);
+        Assert.That(baselineRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedBaselineDelivery = baselineDelivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        var baselineReservedBytes = admittedBaselineDelivery.ReservedBytes;
+        Assert.That(admittedBaselineDelivery.ReleaseUnstartedPreclaim().OwnerReleased, Is.True);
+
+        var exactBudgetRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            packagePath,
+            expectedDigest,
+            checked(baselineReservedBytes + OperationBytes),
+            MaximumDecodedAssetBytes,
+            MaximumConcurrentDecodeBytes,
+            MaximumLiveAssetLeases,
+            out var exactBudgetDelivery,
+            CancellationToken.None);
+        Assert.That(exactBudgetRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedExactBudgetDelivery = exactBudgetDelivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        Assert.That(admittedExactBudgetDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+
+        var claimRefusal = admittedExactBudgetDelivery.TryClaimOperation(OperationBytes, out var claim);
+        Assert.That(claimRefusal, Is.EqualTo(AssetBoundedRefusal.None));
+        Assert.That(admittedExactBudgetDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes + OperationBytes));
+        var duplicateClaimRefusal = admittedExactBudgetDelivery.TryClaimOperation(1, out var duplicateClaim);
+        Assert.Multiple(() => {
+            Assert.That(duplicateClaimRefusal, Is.EqualTo(AssetBoundedRefusal.Busy));
+            Assert.That(duplicateClaim.IsActive, Is.False);
+        });
+        var blockedRelease = admittedExactBudgetDelivery.ReleaseUnstartedPreclaim();
+        Assert.Multiple(() => {
+            Assert.That(blockedRelease.OwnerReleased, Is.False);
+            Assert.That(blockedRelease.Refusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.Busy));
+        });
+
+        claim.Dispose();
+        Assert.That(admittedExactBudgetDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+        Assert.That(admittedExactBudgetDelivery.ReleaseUnstartedPreclaim().OwnerReleased, Is.True);
+
+        var shortBudgetRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            packagePath,
+            expectedDigest,
+            checked(baselineReservedBytes + OperationBytes - 1),
+            MaximumDecodedAssetBytes,
+            MaximumConcurrentDecodeBytes,
+            MaximumLiveAssetLeases,
+            out var shortBudgetDelivery,
+            CancellationToken.None);
+        Assert.That(shortBudgetRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedShortBudgetDelivery = shortBudgetDelivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        var shortClaimRefusal = admittedShortBudgetDelivery.TryClaimOperation(OperationBytes, out var shortClaim);
+        Assert.Multiple(() => {
+            Assert.That(shortClaimRefusal, Is.EqualTo(AssetBoundedRefusal.Capacity));
+            Assert.That(shortClaim.IsActive, Is.False);
+            Assert.That(admittedShortBudgetDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+        });
+        Assert.That(admittedShortBudgetDelivery.ReleaseUnstartedPreclaim().OwnerReleased, Is.True);
+    }
+
+    [Test]
     public void TypedAssetClassShellAllocationsMatchSelectedRuntime()
     {
         const int SampleCount = 64;

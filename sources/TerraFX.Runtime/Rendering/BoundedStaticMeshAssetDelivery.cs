@@ -60,8 +60,32 @@ internal sealed class BoundedStaticMeshAssetDelivery
             ?? throw new InvalidOperationException("The bounded Assets delivery lost its original issuer.");
         var release = issuer.ReleaseUnstartedBoundedPreclaim();
         _terminalPreclaimRelease = ConvertPreclaimRelease(release);
-        _ = Interlocked.CompareExchange(ref _issuer, null, issuer);
-        Volatile.Write(ref _state, 2);
+
+        if (release.OwnerReleased)
+        {
+            _ = Interlocked.CompareExchange(ref _issuer, null, issuer);
+            Volatile.Write(ref _state, 2);
+        }
+        else
+        {
+            Volatile.Write(ref _state, 0);
+        }
+
         return _terminalPreclaimRelease;
+    }
+
+    internal AssetBoundedRefusal TryClaimOperation(long bytes, out AssetBoundedOperationClaim claim)
+    {
+        claim = default;
+
+        if (Volatile.Read(ref _state) != 0)
+        {
+            return AssetBoundedRefusal.Busy;
+        }
+
+        var issuer = Volatile.Read(ref _issuer);
+        return (issuer is not null)
+            ? issuer.TryClaimBoundedOperation(bytes, out claim)
+            : AssetBoundedRefusal.Closed;
     }
 }

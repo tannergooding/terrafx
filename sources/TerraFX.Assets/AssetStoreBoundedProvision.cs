@@ -21,11 +21,14 @@ internal sealed class AssetStoreBoundedProvision
     private readonly int _maximumDecodedAssetBytes;
     private readonly int _maximumLiveAssetLeases;
     private readonly AssetBoundedNativePort _nativePort;
+    private long _nextOperationClaimId = 1;
+    private long _operationClaimBytes;
+    private long _operationClaimId;
     private readonly bool _ownsSharedProvision;
     private readonly byte[] _packageDirectoryBuffer;
     private readonly byte[] _packageProfileBuffer;
     private AssetStoreRegistration? _registration;
-    private readonly long _reservedBytes;
+    private long _reservedBytes;
     private readonly long _sharedProvisionBytes;
     private int _state;
     private AssetBoundedPreclaimRelease _terminalPreclaimRelease;
@@ -105,6 +108,16 @@ internal sealed class AssetStoreBoundedProvision
             return _terminalPreclaimRelease;
         }
 
+        if (_operationClaimId is not 0)
+        {
+            return new AssetBoundedPreclaimRelease(
+                ownerReleased: false,
+                AssetBoundedRefusal.Busy,
+                hasFailure: false,
+                failure: default,
+                retainedSharedProvisionBytes: 0);
+        }
+
         var state = _state;
 
         if (state is not (StatePreclaimed or StateFailed or StateBound))
@@ -143,6 +156,22 @@ internal sealed class AssetStoreBoundedProvision
         return _terminalPreclaimRelease;
     }
 
+    internal void ReturnOperationClaim(long operationId, long bytes)
+    {
+        if ((_state is not StateBound)
+            || (_operationClaimId != operationId)
+            || (_operationClaimBytes != bytes)
+            || (bytes <= 0)
+            || (_reservedBytes < bytes))
+        {
+            throw new InvalidOperationException("The bounded operation claim does not match the active Store reservation.");
+        }
+
+        _operationClaimId = 0;
+        _operationClaimBytes = 0;
+        _reservedBytes -= bytes;
+    }
+
     internal bool TryBindRegistration(AssetStoreRegistration registration)
     {
         if ((_state != StatePreclaimed)
@@ -155,5 +184,41 @@ internal sealed class AssetStoreBoundedProvision
         _registration = registration;
         _state = StateBound;
         return true;
+    }
+
+    internal AssetBoundedRefusal TryClaimOperation(long bytes, out long operationId)
+    {
+        operationId = 0;
+
+        if (_state is not StateBound)
+        {
+            return (_state is StateEnded) ? AssetBoundedRefusal.Closed : AssetBoundedRefusal.Busy;
+        }
+
+        if (bytes <= 0)
+        {
+            return AssetBoundedRefusal.InvalidOptions;
+        }
+
+        if (_operationClaimId is not 0)
+        {
+            return AssetBoundedRefusal.Busy;
+        }
+
+        if (_nextOperationClaimId is <= 0 or long.MaxValue)
+        {
+            return AssetBoundedRefusal.ProfileUnavailable;
+        }
+
+        if (bytes > (_cpuAssetBudgetBytes - _reservedBytes))
+        {
+            return AssetBoundedRefusal.Capacity;
+        }
+
+        operationId = _nextOperationClaimId++;
+        _operationClaimId = operationId;
+        _operationClaimBytes = bytes;
+        _reservedBytes += bytes;
+        return AssetBoundedRefusal.None;
     }
 }

@@ -7,8 +7,8 @@ namespace TerraFX.Assets;
 
 public sealed partial class AssetStore
 {
-    // The shared backing shell grew by 40 bytes for the ordinary-store candidate.
-    private const long BoundedControlByteReservation = 584;
+    // The control reservation includes the 40-byte Store growth and 24-byte bounded claim state.
+    private const long BoundedControlByteReservation = 608;
     private const long BoundedNativeFileStateByteReservation = 80;
     private const long BoundedNativePortByteReservation = 144;
     private const long BoundedOpeningBufferByteReservation = 131_391;
@@ -259,8 +259,23 @@ public sealed partial class AssetStore
             var backing = _currentBacking
                 ?? throw new InvalidOperationException("The bounded Assets preclaim has already ended.");
             var release = backing.ReleaseUnstartedBoundedPreclaim();
-            _currentBacking = null;
+
+            if (release.OwnerReleased)
+            {
+                _currentBacking = null;
+            }
+
             return release;
+        }
+    }
+
+    internal void ReturnBoundedOperationClaim(long operationId, long bytes)
+    {
+        lock (_gate)
+        {
+            var backing = _currentBacking
+                ?? throw new InvalidOperationException("The bounded operation claim lost its original Store backing.");
+            backing.ReturnBoundedOperationClaim(operationId, bytes);
         }
     }
 
@@ -272,6 +287,30 @@ public sealed partial class AssetStore
         {
             return (_currentBacking is { } backing)
                 && backing.TryBindBoundedStaticMeshRegistration(registration);
+        }
+    }
+
+    internal AssetBoundedRefusal TryClaimBoundedOperation(long bytes, out AssetBoundedOperationClaim claim)
+    {
+        claim = default;
+
+        lock (_gate)
+        {
+            var backing = _currentBacking;
+
+            if (backing is null)
+            {
+                return AssetBoundedRefusal.Closed;
+            }
+
+            var refusal = backing.TryClaimBoundedOperation(bytes, out var operationId);
+
+            if (refusal is AssetBoundedRefusal.None)
+            {
+                claim = new AssetBoundedOperationClaim(this, operationId, bytes);
+            }
+
+            return refusal;
         }
     }
 }

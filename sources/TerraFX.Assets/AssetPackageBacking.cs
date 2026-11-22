@@ -437,6 +437,12 @@ internal sealed class AssetPackageBacking
             }
 
             var release = boundedProvision.ReleaseUnstartedPreclaim();
+
+            if (!release.OwnerReleased)
+            {
+                return release;
+            }
+
             _boundedProvision = null;
             _registration = null;
             _referenceCount = 0;
@@ -467,6 +473,16 @@ internal sealed class AssetPackageBacking
         lock (_gate)
         {
             _originalSourceInterests |= 4;
+        }
+    }
+
+    internal void ReturnBoundedOperationClaim(long operationId, long bytes)
+    {
+        lock (_gate)
+        {
+            var boundedProvision = _boundedProvision
+                ?? throw new InvalidOperationException("The package backing has no bounded opening provision.");
+            boundedProvision.ReturnOperationClaim(operationId, bytes);
         }
     }
 
@@ -562,6 +578,22 @@ internal sealed class AssetPackageBacking
 
             _registration = registration;
             return true;
+        }
+    }
+
+    internal AssetBoundedRefusal TryClaimBoundedOperation(long bytes, out long operationId)
+    {
+        lock (_gate)
+        {
+            if ((_boundedProvision is not { } boundedProvision)
+                || (_stream is not null)
+                || (_releaseState != 0))
+            {
+                operationId = 0;
+                return AssetBoundedRefusal.Closed;
+            }
+
+            return boundedProvision.TryClaimOperation(bytes, out operationId);
         }
     }
 

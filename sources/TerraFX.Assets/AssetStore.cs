@@ -76,12 +76,17 @@ public sealed partial class AssetStore : IAsyncDisposable
     internal static Task<TResult> CreatePreCanceledTask<TResult>(CancellationToken cancellationToken)
         => CreatePreCanceledTaskCore<TResult>(cancellationToken);
 
+    private static void ClearOpeningOptions(ref AssetStoreOptions? options)
+        => options = null;
+
     private static async Task<AssetStore> CreateAsyncCore(
-        AssetStoreOptions options,
+        AssetStoreOptions? options,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(options);
         var store = PreclaimOriginalOpening(options, out var opening);
+        ClearOpeningOptions(ref options);
 
         try
         {
