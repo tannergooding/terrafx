@@ -92,7 +92,8 @@ internal ref struct BoundedStaticMeshAssetDecoder
             uniqueReferences,
             out decoder);
 
-    internal static AssetBoundedRefusal CreateClaimed(
+    // This test-only path covers known managed storage, not the complete B0 operation profile.
+    internal static AssetBoundedRefusal CreateClaimedCandidateForTests(
         BoundedStaticMeshAssetDelivery delivery,
         AssetId meshAssetId,
         AssetId materialAssetId,

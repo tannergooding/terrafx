@@ -1089,7 +1089,7 @@ internal sealed class RenderMeshAssetCodecTests
         try
         {
             var validAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-            var createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+            var createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimedCandidateForTests(
                 admittedDelivery,
                 meshAssetId,
                 materialAssetId,
@@ -1153,7 +1153,7 @@ internal sealed class RenderMeshAssetCodecTests
             Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
 
             var malformedAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-            createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+            createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimedCandidateForTests(
                 admittedDelivery,
                 meshAssetId,
                 materialAssetId,

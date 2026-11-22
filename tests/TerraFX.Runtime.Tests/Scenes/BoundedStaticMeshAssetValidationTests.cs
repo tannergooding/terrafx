@@ -358,7 +358,7 @@ internal sealed class BoundedStaticMeshAssetValidationTests
             ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
         Assert.That(admittedExactBudgetDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
 
-        var creationRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+        var creationRefusal = BoundedStaticMeshAssetDecoder.CreateClaimedCandidateForTests(
             admittedExactBudgetDelivery,
             new AssetId(1),
             new AssetId(1000),
@@ -403,7 +403,7 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         var admittedShortBudgetDelivery = shortBudgetDelivery
             ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
         var shortAllocationStart = GC.GetAllocatedBytesForCurrentThread();
-        var shortCreateRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+        var shortCreateRefusal = BoundedStaticMeshAssetDecoder.CreateClaimedCandidateForTests(
             admittedShortBudgetDelivery,
             new AssetId(1),
             new AssetId(1000),
@@ -467,7 +467,7 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         try
         {
             var allocationStart = GC.GetAllocatedBytesForCurrentThread();
-            var refusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+            var refusal = BoundedStaticMeshAssetDecoder.CreateClaimedCandidateForTests(
                 admittedDelivery,
                 new AssetId(1),
                 new AssetId(1000),
