@@ -443,7 +443,7 @@ internal sealed class RenderMeshAssetCodecTests
             SpatialSettings.Default,
             EbinReadLimits.Foundation);
         var staging = new byte[Math.Max(meshEnvelope.Length, materialEnvelope.Length)];
-        var createFailure = BoundedStaticMeshAssetDecoder.Create(
+        var createFailure = BoundedStaticMeshAssetDecoder.CreateCandidateForTests(
             registration,
             meshAssetId,
             materialAssetId,
@@ -481,7 +481,7 @@ internal sealed class RenderMeshAssetCodecTests
                 return (failure, null, null, 0);
             }
 
-            failure = decoder.Complete(out var mesh, out var material, out var referenceCount);
+            failure = decoder.CompleteUnfundedCandidate(out var mesh, out var material, out var referenceCount);
             return (failure, mesh, material, referenceCount);
         }
         finally
@@ -599,7 +599,7 @@ internal sealed class RenderMeshAssetCodecTests
             SpatialProfileId.Default,
             SpatialSettings.Default,
             EbinReadLimits.Foundation);
-        var createFailure = BoundedStaticMeshAssetDecoder.Create(
+        var createFailure = BoundedStaticMeshAssetDecoder.CreateCandidateForTests(
             registration,
             meshAssetId,
             materialAssetId,
@@ -620,7 +620,7 @@ internal sealed class RenderMeshAssetCodecTests
             var failure = decoder.DecodeMesh(
                 [],
                 AssetBoundedFileDisposition.NotAttempted);
-            var completionFailure = decoder.Complete(
+            var completionFailure = decoder.CompleteUnfundedCandidate(
                 out var mesh,
                 out var material,
                 out var referenceCount);
@@ -683,7 +683,7 @@ internal sealed class RenderMeshAssetCodecTests
             SpatialProfileId.Default,
             SpatialSettings.Default,
             EbinReadLimits.Foundation);
-        var warmCreateFailure = BoundedStaticMeshAssetDecoder.Create(
+        var warmCreateFailure = BoundedStaticMeshAssetDecoder.CreateCandidateForTests(
             registration,
             new AssetId(1),
             new AssetId(checked((int)MaterialAssetId)),
@@ -720,7 +720,7 @@ internal sealed class RenderMeshAssetCodecTests
 
             if (failure.Kind is AssetBoundedFailureKind.None)
             {
-                failure = warmDecoder.Complete(out warmMesh, out warmMaterial, out warmReferenceCount);
+                failure = warmDecoder.CompleteUnfundedCandidate(out warmMesh, out warmMaterial, out warmReferenceCount);
             }
 
             if ((failure.Kind is not AssetBoundedFailureKind.None)
@@ -754,7 +754,7 @@ internal sealed class RenderMeshAssetCodecTests
                 SpatialProfileId.Default,
                 SpatialSettings.Default,
                 EbinReadLimits.Foundation);
-            var createFailure = BoundedStaticMeshAssetDecoder.Create(
+            var createFailure = BoundedStaticMeshAssetDecoder.CreateCandidateForTests(
                 registration,
                 new AssetId(1),
                 new AssetId(checked((int)MaterialAssetId)),
@@ -791,7 +791,7 @@ internal sealed class RenderMeshAssetCodecTests
 
                 if (failure.Kind is AssetBoundedFailureKind.None)
                 {
-                    failure = decoder.Complete(out mesh, out material, out referenceCount);
+                    failure = decoder.CompleteUnfundedCandidate(out mesh, out material, out referenceCount);
                 }
 
                 if ((failure.Kind is not AssetBoundedFailureKind.None)
@@ -1008,6 +1008,258 @@ internal sealed class RenderMeshAssetCodecTests
             Assert.That(material, Is.Null);
             Assert.That(referenceCount, Is.Zero);
         });
+    }
+
+    [Test]
+    public void BoundedStaticMeshAssetDecoderTransfersClaimThroughTypedResultOwner()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            Assert.Ignore("The bounded static-Mesh package profile is not available on this operating system.");
+        }
+
+        var packagePath = OperatingSystem.IsWindows()
+            ? @"C:\bnd\bounded-decode-owner.epkg"
+            : "/tmp/bnd-bounded-decode-owner.epkg";
+        var preclaimRefusal = BoundedStaticMeshAssetValidation.TryPreclaim(
+            packagePath,
+            new byte[32],
+            536_870_912,
+            268_435_456,
+            268_435_456,
+            4096,
+            out var delivery,
+            System.Threading.CancellationToken.None);
+        Assert.That(preclaimRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
+        var admittedDelivery = delivery
+            ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        var baselineReservedBytes = admittedDelivery.ReservedBytes;
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var bounds = new RenderMeshBounds(
+            Vector3.Zero,
+            new Vector3(1.0f, 1.0f, 0.0f),
+            new Vector3(0.5f, 0.5f, 0.0f),
+            1.0f);
+        var validMeshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(CreateMeshRecord(
+                positions,
+                [
+                    CreatePositionStream(positions),
+                    CreateNormalStream([Vector3.UnitZ, Vector3.UnitZ, Vector3.UnitZ]),
+                ],
+                [0, 1, 2],
+                [CreateMeshGroup(0, 3, 0)],
+                bounds)));
+        var malformedMeshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(CreateMeshRecord(
+                positions,
+                [CreatePositionStream(positions), CreatePositionStream(positions)],
+                [0, 1, 2],
+                [CreateMeshGroup(0, 3, 0)],
+                bounds)));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var meshAssetId = new AssetId(1);
+        var materialAssetId = new AssetId(checked((int)MaterialAssetId));
+        var validClaimBytes = BoundedStaticMeshAssetDecoder.GetMinimumKnownClaimBytes(
+            validMeshEnvelope.Length,
+            materialEnvelope.Length);
+        var malformedClaimBytes = BoundedStaticMeshAssetDecoder.GetMinimumKnownClaimBytes(
+            malformedMeshEnvelope.Length,
+            materialEnvelope.Length);
+        var unconsumedClaim = default(AssetBoundedOperationClaim);
+        var decoder = default(BoundedStaticMeshAssetDecoder);
+        var resultOwner = default(BoundedStaticMeshAssetDecodeResultOwner);
+        var returnedClaim = default(AssetBoundedOperationClaim);
+        var decoderClaim = default(AssetBoundedOperationClaim);
+        var malformedUnconsumedClaim = default(AssetBoundedOperationClaim);
+        var malformedDecoder = default(BoundedStaticMeshAssetDecoder);
+        var malformedResultOwner = default(BoundedStaticMeshAssetDecodeResultOwner);
+        var malformedReturnedClaim = default(AssetBoundedOperationClaim);
+        var malformedDecoderClaim = default(AssetBoundedOperationClaim);
+        BoundedStaticMeshAssetPreclaimRelease release;
+
+        try
+        {
+            var validAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+            var createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+                admittedDelivery,
+                meshAssetId,
+                materialAssetId,
+                validMeshEnvelope.Length,
+                materialEnvelope.Length,
+                out var createFailure,
+                out unconsumedClaim,
+                out decoder);
+            Assert.That(createRefusal, Is.EqualTo(AssetBoundedRefusal.None));
+            Assert.That(createFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+
+            AssetBoundedFailureFact materialFailure;
+            AssetBoundedFailureFact meshFailure;
+
+            {
+                var stagingBuffer = decoder.StagingBuffer;
+                materialEnvelope.AsSpan().CopyTo(stagingBuffer);
+                materialFailure = decoder.DecodeMaterial(
+                    stagingBuffer[..materialEnvelope.Length],
+                    AssetBoundedFileDisposition.NotAttempted);
+                validMeshEnvelope.AsSpan().CopyTo(stagingBuffer);
+                meshFailure = decoder.DecodeMesh(
+                    stagingBuffer[..validMeshEnvelope.Length],
+                    AssetBoundedFileDisposition.NotAttempted);
+            }
+
+            Assert.That(materialFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+            Assert.That(meshFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+            var completionFailure = decoder.CompleteClaimed(out resultOwner, out returnedClaim);
+            var validAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - validAllocationStart;
+            var resultActive = resultOwner.IsActive;
+            var resultPositionCount = resultActive ? resultOwner.Mesh.Positions.Length : 0;
+            var resultMaterialSlotCount = resultActive ? resultOwner.Mesh.MaterialSlots.Length : 0;
+            var resultMaterialSlot = (resultActive && (resultMaterialSlotCount == 1))
+                ? resultOwner.Mesh.MaterialSlots[0]
+                : default;
+            var resultReferenceCount = resultActive ? resultOwner.MeshReferenceCount : 0;
+            var resultIsSprite = resultActive && resultOwner.Material.IsSprite;
+            Assert.Multiple(() => {
+                Assert.That(completionFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+                Assert.That(resultActive, Is.True);
+                Assert.That(resultPositionCount, Is.EqualTo(3));
+                Assert.That(resultMaterialSlotCount, Is.EqualTo(1));
+                Assert.That(resultMaterialSlot, Is.EqualTo(materialAssetId));
+                Assert.That(resultReferenceCount, Is.EqualTo(1));
+                Assert.That(resultIsSprite, Is.False);
+                Assert.That(validAllocatedBytes, Is.LessThanOrEqualTo(validClaimBytes));
+                Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes + validClaimBytes));
+            });
+            TestContext.Progress.WriteLine(
+                $"Claimed bounded static-Mesh success allocated {validAllocatedBytes}/{validClaimBytes} bytes.");
+
+            resultOwner.Return(out returnedClaim);
+            var resultOwnerReturned = !resultOwner.IsActive;
+            Assert.Multiple(() => {
+                Assert.That(resultOwnerReturned, Is.True);
+                Assert.That(returnedClaim.IsActive, Is.True);
+                Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes + validClaimBytes));
+            });
+            returnedClaim.Dispose();
+            Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+
+            var malformedAllocationStart = GC.GetAllocatedBytesForCurrentThread();
+            createRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
+                admittedDelivery,
+                meshAssetId,
+                materialAssetId,
+                malformedMeshEnvelope.Length,
+                materialEnvelope.Length,
+                out createFailure,
+                out malformedUnconsumedClaim,
+                out malformedDecoder);
+            Assert.That(createRefusal, Is.EqualTo(AssetBoundedRefusal.None));
+            Assert.That(createFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+
+            AssetBoundedFailureFact malformedMeshFailure;
+
+            {
+                var stagingBuffer = malformedDecoder.StagingBuffer;
+                materialEnvelope.AsSpan().CopyTo(stagingBuffer);
+                materialFailure = malformedDecoder.DecodeMaterial(
+                    stagingBuffer[..materialEnvelope.Length],
+                    AssetBoundedFileDisposition.NotAttempted);
+                malformedMeshEnvelope.AsSpan().CopyTo(stagingBuffer);
+                malformedMeshFailure = malformedDecoder.DecodeMesh(
+                    stagingBuffer[..malformedMeshEnvelope.Length],
+                    AssetBoundedFileDisposition.NotAttempted);
+            }
+
+            Assert.That(materialFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
+            Assert.That(malformedMeshFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+            var malformedCompletionFailure = malformedDecoder.CompleteClaimed(
+                out malformedResultOwner,
+                out malformedReturnedClaim);
+            var malformedAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - malformedAllocationStart;
+            var malformedResultActive = malformedResultOwner.IsActive;
+            Assert.Multiple(() => {
+                Assert.That(malformedCompletionFailure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+                Assert.That(malformedCompletionFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+                Assert.That(malformedResultActive, Is.False);
+                Assert.That(malformedReturnedClaim.IsActive, Is.True);
+                Assert.That(malformedAllocatedBytes, Is.LessThanOrEqualTo(malformedClaimBytes));
+                Assert.That(
+                    admittedDelivery.ReservedBytes,
+                    Is.EqualTo(baselineReservedBytes + malformedClaimBytes));
+            });
+            TestContext.Progress.WriteLine(
+                $"Claimed bounded static-Mesh malformed decode allocated {malformedAllocatedBytes}/{malformedClaimBytes} bytes.");
+            malformedReturnedClaim.Dispose();
+            Assert.That(admittedDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
+        }
+        finally
+        {
+            try
+            {
+                if (resultOwner.IsActive)
+                {
+                    resultOwner.Return(out returnedClaim);
+                }
+
+                if (returnedClaim.IsActive)
+                {
+                    returnedClaim.Dispose();
+                }
+
+                if (unconsumedClaim.IsActive)
+                {
+                    unconsumedClaim.Dispose();
+                }
+
+                decoder.Dispose(out decoderClaim);
+
+                if (decoderClaim.IsActive)
+                {
+                    decoderClaim.Dispose();
+                }
+
+                decoder.Dispose();
+
+                if (malformedResultOwner.IsActive)
+                {
+                    malformedResultOwner.Return(out malformedReturnedClaim);
+                }
+
+                if (malformedReturnedClaim.IsActive)
+                {
+                    malformedReturnedClaim.Dispose();
+                }
+
+                if (malformedUnconsumedClaim.IsActive)
+                {
+                    malformedUnconsumedClaim.Dispose();
+                }
+
+                malformedDecoder.Dispose(out malformedDecoderClaim);
+
+                if (malformedDecoderClaim.IsActive)
+                {
+                    malformedDecoderClaim.Dispose();
+                }
+
+                malformedDecoder.Dispose();
+            }
+            finally
+            {
+                release = admittedDelivery.ReleaseUnstartedPreclaim();
+            }
+        }
+
+        Assert.That(release.OwnerReleased, Is.True);
     }
 
     [Test]

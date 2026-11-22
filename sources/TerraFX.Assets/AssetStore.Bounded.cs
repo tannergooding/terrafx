@@ -2,6 +2,7 @@
 
 using System;
 using System.Threading;
+using TerraFX;
 
 namespace TerraFX.Assets;
 
@@ -12,6 +13,30 @@ public sealed partial class AssetStore
     private const long BoundedNativeFileStateByteReservation = 80;
     private const long BoundedNativePortByteReservation = 144;
     private const long BoundedOpeningBufferByteReservation = 131_391;
+
+    internal EbinReadLimits BoundedReadLimits
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _currentBacking?.ReadLimits
+                    ?? throw new InvalidOperationException("The bounded Assets read limits are unavailable.");
+            }
+        }
+    }
+
+    internal AssetStoreRegistration BoundedRegistration
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _currentBacking?.Registration
+                    ?? throw new InvalidOperationException("The bounded Assets registration is unavailable.");
+            }
+        }
+    }
 
     internal long BoundedReservedBytes
     {

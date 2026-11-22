@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using TerraFX;
 
 namespace TerraFX.Assets;
 
@@ -20,6 +21,14 @@ internal struct AssetBoundedOperationClaim
     internal readonly long Bytes => _bytes;
 
     internal readonly bool IsActive => _issuer is not null;
+
+    internal readonly EbinReadLimits ReadLimits
+        => _issuer?.BoundedReadLimits
+            ?? throw new InvalidOperationException("The bounded operation claim has no active original Store.");
+
+    internal readonly AssetStoreRegistration Registration
+        => _issuer?.BoundedRegistration
+            ?? throw new InvalidOperationException("The bounded operation claim has no active original Store.");
 
     internal AssetBoundedOperationClaim Detach()
     {

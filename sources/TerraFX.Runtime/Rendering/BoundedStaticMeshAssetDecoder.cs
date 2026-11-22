@@ -5,11 +5,14 @@ using TerraFX.Assets;
 
 namespace TerraFX.Rendering;
 
-// The caller preclaims contexts, workspaces, staging, and result storage; payload spans are borrowed one at a time.
-// The caller preclaims contexts, staging, workspaces, and result storage; the operation borrows one payload span at a time.
+// The claimed path owns one staging buffer and transfers decoded values only through a result owner.
 internal ref struct BoundedStaticMeshAssetDecoder
 {
-    private const byte StateCompleted = 4;
+    private const long ArrayHeaderAndAlignmentBytes = 79;
+    private const long CodecContextShellBytes = 64;
+    private const long MaterialShellBytes = 240;
+    private const int MaximumReferenceCount = 257;
+    private const long MeshShellBytes = 176;
     private const byte StateCreated = 1;
     private const byte StateDisposed = 5;
     private const byte StateFailed = 6;
@@ -26,10 +29,12 @@ internal ref struct BoundedStaticMeshAssetDecoder
     private readonly AssetStoreRegistration.IAssetCodec<RenderMeshAsset> _meshCodec;
     private readonly AssetCodecContext _meshContext;
     private int _meshReferenceCount;
-    private readonly int[] _referenceIndexWorkspace;
-    private readonly AssetReference[] _referenceWorkspace;
+    private AssetBoundedOperationClaim _operationClaim;
+    private int[] _referenceIndexWorkspace;
+    private AssetReference[] _referenceWorkspace;
+    private byte[]? _stagingBuffer;
     private byte _state;
-    private readonly AssetReference[] _uniqueReferences;
+    private AssetReference[] _uniqueReferences;
 
     private BoundedStaticMeshAssetDecoder(
         AssetId meshAssetId,
@@ -40,7 +45,9 @@ internal ref struct BoundedStaticMeshAssetDecoder
         AssetCodecContext materialContext,
         AssetReference[] referenceWorkspace,
         int[] referenceIndexWorkspace,
-        AssetReference[] uniqueReferences)
+        AssetReference[] uniqueReferences,
+        AssetBoundedOperationClaim operationClaim,
+        byte[]? stagingBuffer)
     {
         _failure = default;
         _material = null;
@@ -52,13 +59,166 @@ internal ref struct BoundedStaticMeshAssetDecoder
         _meshCodec = meshCodec;
         _meshContext = meshContext;
         _meshReferenceCount = 0;
+        _operationClaim = operationClaim;
         _referenceIndexWorkspace = referenceIndexWorkspace;
         _referenceWorkspace = referenceWorkspace;
+        _stagingBuffer = stagingBuffer;
         _state = StateCreated;
         _uniqueReferences = uniqueReferences;
     }
 
-    internal static AssetBoundedFailureFact Create(
+    internal readonly Span<byte> StagingBuffer
+        => _stagingBuffer
+            ?? throw new InvalidOperationException("The bounded operation has no claimed staging buffer.");
+
+    internal static AssetBoundedFailureFact CreateCandidateForTests(
+        AssetStoreRegistration registration,
+        AssetId meshAssetId,
+        AssetId materialAssetId,
+        AssetCodecContext meshContext,
+        AssetCodecContext materialContext,
+        AssetReference[] referenceWorkspace,
+        int[] referenceIndexWorkspace,
+        AssetReference[] uniqueReferences,
+        out BoundedStaticMeshAssetDecoder decoder)
+        => CreateCandidateCore(
+            registration,
+            meshAssetId,
+            materialAssetId,
+            meshContext,
+            materialContext,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            out decoder);
+
+    internal static AssetBoundedRefusal CreateClaimed(
+        BoundedStaticMeshAssetDelivery delivery,
+        AssetId meshAssetId,
+        AssetId materialAssetId,
+        int meshEnvelopeLength,
+        int materialEnvelopeLength,
+        out AssetBoundedFailureFact failure,
+        out AssetBoundedOperationClaim unconsumedClaim,
+        out BoundedStaticMeshAssetDecoder decoder)
+    {
+        failure = default;
+        unconsumedClaim = default;
+        decoder = default;
+
+        if ((delivery is null)
+            || !meshAssetId.IsValid
+            || !materialAssetId.IsValid
+            || (meshAssetId == materialAssetId)
+            || (meshEnvelopeLength <= 0)
+            || (materialEnvelopeLength <= 0))
+        {
+            return AssetBoundedRefusal.InvalidOptions;
+        }
+
+        var claimBytes = GetMinimumKnownClaimBytes(meshEnvelopeLength, materialEnvelopeLength);
+        var claimRefusal = delivery.TryClaimOperation(claimBytes, out var operationClaim);
+
+        if (claimRefusal is not AssetBoundedRefusal.None)
+        {
+            return claimRefusal;
+        }
+
+        AssetBoundedOperationClaim handoffClaim = default;
+
+        try
+        {
+            var readLimits = operationClaim.ReadLimits;
+
+            if ((meshEnvelopeLength > readLimits.MaximumRecordBytes)
+                || (materialEnvelopeLength > readLimits.MaximumRecordBytes))
+            {
+                unconsumedClaim = operationClaim.Detach();
+                return AssetBoundedRefusal.InvalidOptions;
+            }
+
+            var registration = operationClaim.Registration;
+            var meshContext = new AssetCodecContext(
+                meshAssetId,
+                registration.Schemas,
+                SpatialProfileId.Default,
+                SpatialSettings.Default,
+                readLimits);
+            var materialContext = new AssetCodecContext(
+                materialAssetId,
+                registration.Schemas,
+                SpatialProfileId.Default,
+                SpatialSettings.Default,
+                readLimits);
+            var referenceWorkspace = new AssetReference[MaximumReferenceCount];
+            var referenceIndexWorkspace = new int[MaximumReferenceCount];
+            var uniqueReferences = new AssetReference[MaximumReferenceCount];
+            var stagingBuffer = new byte[Math.Max(meshEnvelopeLength, materialEnvelopeLength)];
+            handoffClaim = operationClaim.Detach();
+            var createRefusal = CreateClaimedCore(
+                handoffClaim,
+                registration,
+                meshAssetId,
+                materialAssetId,
+                meshContext,
+                materialContext,
+                referenceWorkspace,
+                referenceIndexWorkspace,
+                uniqueReferences,
+                stagingBuffer,
+                meshEnvelopeLength,
+                materialEnvelopeLength,
+                out failure,
+                out unconsumedClaim,
+                out decoder);
+            handoffClaim = default;
+            return createRefusal;
+        }
+        catch (OutOfMemoryException)
+        {
+            if (handoffClaim.IsActive)
+            {
+                unconsumedClaim = handoffClaim.Detach();
+            }
+            else if (operationClaim.IsActive)
+            {
+                unconsumedClaim = operationClaim.Detach();
+            }
+
+            decoder = default;
+            failure = default;
+            return AssetBoundedRefusal.Capacity;
+        }
+    }
+
+    internal static long GetMinimumKnownClaimBytes(int meshEnvelopeLength, int materialEnvelopeLength)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(meshEnvelopeLength);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(materialEnvelopeLength);
+        var (referenceWorkspaceBytes, referenceResultBytes) = AssetReferenceScanner.GetFixedScanDataBytes(
+            MaximumReferenceCount,
+            MaximumReferenceCount);
+        var stagingLength = Math.Max(meshEnvelopeLength, materialEnvelopeLength);
+        var stagingBytes = checked(64L + (((long)stagingLength + 15L) & ~15L));
+        var meshBytes = checked(
+            (4L * meshEnvelopeLength)
+            + (13L * ArrayHeaderAndAlignmentBytes)
+            + MeshShellBytes);
+        var materialBytes = checked(
+            materialEnvelopeLength
+            + ArrayHeaderAndAlignmentBytes
+            + MaterialShellBytes);
+
+        return checked(
+            stagingBytes
+            + meshBytes
+            + materialBytes
+            + referenceWorkspaceBytes
+            + referenceResultBytes
+            + (2L * CodecContextShellBytes));
+    }
+
+    private static AssetBoundedFailureFact CreateCandidateCore(
         AssetStoreRegistration registration,
         AssetId meshAssetId,
         AssetId materialAssetId,
@@ -113,8 +273,90 @@ internal ref struct BoundedStaticMeshAssetDecoder
             materialContext,
             referenceWorkspace,
             referenceIndexWorkspace,
-            uniqueReferences);
+            uniqueReferences,
+            default,
+            null);
         return default;
+    }
+
+    private static AssetBoundedRefusal CreateClaimedCore(
+        AssetBoundedOperationClaim operationClaim,
+        AssetStoreRegistration registration,
+        AssetId meshAssetId,
+        AssetId materialAssetId,
+        AssetCodecContext meshContext,
+        AssetCodecContext materialContext,
+        AssetReference[] referenceWorkspace,
+        int[] referenceIndexWorkspace,
+        AssetReference[] uniqueReferences,
+        byte[] stagingBuffer,
+        int meshEnvelopeLength,
+        int materialEnvelopeLength,
+        out AssetBoundedFailureFact failure,
+        out AssetBoundedOperationClaim unconsumedClaim,
+        out BoundedStaticMeshAssetDecoder decoder)
+    {
+        failure = default;
+        unconsumedClaim = default;
+        decoder = default;
+
+        if (!operationClaim.IsActive)
+        {
+            return AssetBoundedRefusal.Busy;
+        }
+
+        if ((registration is null)
+            || (meshContext is null)
+            || (materialContext is null)
+            || (referenceWorkspace is null)
+            || (referenceIndexWorkspace is null)
+            || (uniqueReferences is null)
+            || (stagingBuffer is null)
+            || (meshEnvelopeLength <= 0)
+            || (materialEnvelopeLength <= 0)
+            || (meshEnvelopeLength > meshContext.ReadLimits.MaximumRecordBytes)
+            || (materialEnvelopeLength > materialContext.ReadLimits.MaximumRecordBytes)
+            || (stagingBuffer.Length != Math.Max(meshEnvelopeLength, materialEnvelopeLength))
+            || (referenceWorkspace.Length != MaximumReferenceCount)
+            || (referenceIndexWorkspace.Length != MaximumReferenceCount)
+            || (uniqueReferences.Length != MaximumReferenceCount))
+        {
+            unconsumedClaim = operationClaim.Detach();
+            return AssetBoundedRefusal.InvalidOptions;
+        }
+
+        if (operationClaim.Bytes < GetMinimumKnownClaimBytes(meshEnvelopeLength, materialEnvelopeLength))
+        {
+            unconsumedClaim = operationClaim.Detach();
+            return AssetBoundedRefusal.Capacity;
+        }
+
+        if (!ReferenceEquals(operationClaim.Registration, registration))
+        {
+            unconsumedClaim = operationClaim.Detach();
+            return AssetBoundedRefusal.UnsupportedRegistration;
+        }
+
+        failure = CreateCandidateCore(
+            registration,
+            meshAssetId,
+            materialAssetId,
+            meshContext,
+            materialContext,
+            referenceWorkspace,
+            referenceIndexWorkspace,
+            uniqueReferences,
+            out decoder);
+
+        if (failure.Kind is not AssetBoundedFailureKind.None)
+        {
+            unconsumedClaim = operationClaim.Detach();
+            return AssetBoundedRefusal.None;
+        }
+
+        decoder._operationClaim = operationClaim.Detach();
+        decoder._stagingBuffer = stagingBuffer;
+        return AssetBoundedRefusal.None;
     }
 
     private static AssetBoundedFailureFact CreateFailure(
@@ -130,7 +372,50 @@ internal ref struct BoundedStaticMeshAssetDecoder
             0,
             fileDisposition);
 
-    internal AssetBoundedFailureFact Complete(
+    internal AssetBoundedFailureFact CompleteClaimed(
+        out BoundedStaticMeshAssetDecodeResultOwner resultOwner,
+        out AssetBoundedOperationClaim returnedClaim)
+    {
+        resultOwner = default;
+        returnedClaim = default;
+
+        if (!_operationClaim.IsActive)
+        {
+            this = default;
+            return CreateFailure(
+                AssetBoundedFailureStage.Publication,
+                AssetBoundedFailureKind.Invariant,
+                AssetBoundedFileDisposition.NotAttempted);
+        }
+
+        if (_state is StateFailed)
+        {
+            var failure = _failure;
+            returnedClaim = _operationClaim.Detach();
+            this = default;
+            return failure;
+        }
+
+        if ((_state is not StateMeshDecoded) || (_mesh is not { } mesh) || (_material is not { } material))
+        {
+            returnedClaim = _operationClaim.Detach();
+            this = default;
+            return CreateFailure(
+                AssetBoundedFailureStage.Publication,
+                AssetBoundedFailureKind.Invariant,
+                AssetBoundedFileDisposition.NotAttempted);
+        }
+
+        resultOwner = new BoundedStaticMeshAssetDecodeResultOwner(
+            mesh,
+            material,
+            _meshReferenceCount,
+            _operationClaim.Detach());
+        this = default;
+        return default;
+    }
+
+    internal AssetBoundedFailureFact CompleteUnfundedCandidate(
         out RenderMeshAsset? mesh,
         out RenderMaterialAsset? material,
         out int meshReferenceCount)
@@ -155,9 +440,7 @@ internal ref struct BoundedStaticMeshAssetDecoder
         mesh = _mesh;
         material = _material;
         meshReferenceCount = _meshReferenceCount;
-        _mesh = null;
-        _material = null;
-        _state = StateCompleted;
+        this = default;
         return default;
     }
 
@@ -283,8 +566,21 @@ internal ref struct BoundedStaticMeshAssetDecoder
 
     internal void Dispose()
     {
-        _mesh = null;
-        _material = null;
+        if (_operationClaim.IsActive)
+        {
+            throw new InvalidOperationException("The bounded operation claim must be returned through Dispose before releasing its provision.");
+        }
+
+        this = default;
+        _state = StateDisposed;
+    }
+
+    internal void Dispose(out AssetBoundedOperationClaim operationClaim)
+    {
+        operationClaim = _operationClaim.IsActive
+            ? _operationClaim.Detach()
+            : default;
+        this = default;
         _state = StateDisposed;
     }
 
