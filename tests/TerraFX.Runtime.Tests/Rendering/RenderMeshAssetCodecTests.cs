@@ -877,6 +877,50 @@ internal sealed class RenderMeshAssetCodecTests
     }
 
     [Test]
+    public void BoundedStaticMeshAssetDecoderMapsMalformedMeshToScalarFailure()
+    {
+        var registration = BoundedStaticMeshAssetRegistrationFactory.Create();
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var meshRecord = CreateMeshRecord(
+            positions,
+            [CreatePositionStream(positions), CreatePositionStream(positions)],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(
+                Vector3.Zero,
+                new Vector3(1.0f, 1.0f, 0.0f),
+                new Vector3(0.5f, 0.5f, 0.0f),
+                1.0f));
+        var meshEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            1,
+            EbinPrimitives.Encode(meshRecord));
+        var materialEnvelope = SceneAssetStoreTests.Package.CreateEnvelope(
+            MaterialAssetId,
+            EbinPrimitives.Encode(CreatePbrMaterialRecord()));
+        var (failure, mesh, material, referenceCount) = DecodeBoundedStaticMeshPair(
+            registration,
+            new AssetId(1),
+            new AssetId(checked((int)MaterialAssetId)),
+            meshEnvelope,
+            materialEnvelope,
+            new AssetReference[257],
+            new int[257],
+            new AssetReference[257]);
+
+        Assert.Multiple(() => {
+            Assert.That(failure.Stage, Is.EqualTo(AssetBoundedFailureStage.Decode));
+            Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.TypedRecord));
+            Assert.That(mesh, Is.Null);
+            Assert.That(material, Is.Null);
+            Assert.That(referenceCount, Is.Zero);
+        });
+    }
+
+    [Test]
     public void BoundedStaticMeshAssetDecoderRejectsMeshesOutsideTheStaticShape()
     {
         var registration = BoundedStaticMeshAssetRegistrationFactory.Create();

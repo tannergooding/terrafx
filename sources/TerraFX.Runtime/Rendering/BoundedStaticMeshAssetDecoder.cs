@@ -6,6 +6,7 @@ using TerraFX.Assets;
 namespace TerraFX.Rendering;
 
 // The caller preclaims contexts, workspaces, staging, and result storage; payload spans are borrowed one at a time.
+// The caller preclaims contexts, staging, workspaces, and result storage; the operation borrows one payload span at a time.
 internal ref struct BoundedStaticMeshAssetDecoder
 {
     private const byte StateCompleted = 4;
