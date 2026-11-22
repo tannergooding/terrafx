@@ -402,6 +402,7 @@ internal sealed class BoundedStaticMeshAssetValidationTests
         Assert.That(shortBudgetRefusal, Is.EqualTo(BoundedStaticMeshAssetRefusal.None));
         var admittedShortBudgetDelivery = shortBudgetDelivery
             ?? throw new InvalidOperationException("The successful bounded preclaim returned no delivery owner.");
+        var shortAllocationStart = GC.GetAllocatedBytesForCurrentThread();
         var shortCreateRefusal = BoundedStaticMeshAssetDecoder.CreateClaimed(
             admittedShortBudgetDelivery,
             new AssetId(1),
@@ -411,21 +412,26 @@ internal sealed class BoundedStaticMeshAssetValidationTests
             out var shortCreateFailure,
             out var shortUnconsumedClaim,
             out var shortDecoder);
+        var shortAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - shortAllocationStart;
         Assert.Multiple(() => {
             Assert.That(shortCreateRefusal, Is.EqualTo(AssetBoundedRefusal.Capacity));
             Assert.That(shortCreateFailure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
             Assert.That(shortUnconsumedClaim.IsActive, Is.False);
+            Assert.That(shortAllocatedBytes, Is.Zero);
             Assert.That(admittedShortBudgetDelivery.ReservedBytes, Is.EqualTo(baselineReservedBytes));
         });
         shortDecoder.Dispose();
         Assert.That(admittedShortBudgetDelivery.ReleaseUnstartedPreclaim().OwnerReleased, Is.True);
     }
 
-    [TestCase(64, 4096)]
-    [TestCase(268_435_456, 1)]
+    [TestCase(64, 4096, 268_435_456, AssetBoundedRefusal.Capacity)]
+    [TestCase(268_435_456, 1, 268_435_456, AssetBoundedRefusal.Capacity)]
+    [TestCase(268_435_456, 4096, 64, AssetBoundedRefusal.InvalidOptions)]
     public void TypedAssetBoundedOperationEnforcesConfiguredLimits(
         int maximumConcurrentDecodeBytes,
-        int maximumLiveAssetLeases)
+        int maximumLiveAssetLeases,
+        int maximumDecodedAssetBytes,
+        AssetBoundedRefusal expectedRefusal)
     {
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
         {
@@ -434,7 +440,6 @@ internal sealed class BoundedStaticMeshAssetValidationTests
 
         const int EnvelopeLength = 128;
         const long CpuAssetBudgetBytes = 536_870_912;
-        const int MaximumDecodedAssetBytes = 268_435_456;
         const int MeshEnvelopeLength = EnvelopeLength;
         const int MaterialEnvelopeLength = EnvelopeLength;
 
@@ -445,7 +450,7 @@ internal sealed class BoundedStaticMeshAssetValidationTests
             packagePath,
             new byte[32],
             CpuAssetBudgetBytes,
-            MaximumDecodedAssetBytes,
+            maximumDecodedAssetBytes,
             maximumConcurrentDecodeBytes,
             maximumLiveAssetLeases,
             out var delivery,
@@ -477,7 +482,7 @@ internal sealed class BoundedStaticMeshAssetValidationTests
                 MaterialEnvelopeLength);
 
             Assert.Multiple(() => {
-                Assert.That(refusal, Is.EqualTo(AssetBoundedRefusal.Capacity));
+                Assert.That(refusal, Is.EqualTo(expectedRefusal));
                 Assert.That(failure.Kind, Is.EqualTo(AssetBoundedFailureKind.None));
                 Assert.That(unconsumedClaim.IsActive, Is.True);
                 Assert.That(allocatedBytes, Is.Zero);
