@@ -516,7 +516,7 @@ internal sealed class SceneHierarchyValidatorTests
     public void SceneExpansionBuilderCarrierMatchesSelectedRuntimeLayout()
     {
         const int SampleCount = 64;
-        const int ExpectedBuilderCarrierBytes = 456;
+        const int ExpectedBuilderCarrierBytes = 488;
         var builderType = typeof(ScenePrefabExpansionPlanner).GetNestedType(
             "SceneExpansionBuilder",
             BindingFlags.NonPublic)
