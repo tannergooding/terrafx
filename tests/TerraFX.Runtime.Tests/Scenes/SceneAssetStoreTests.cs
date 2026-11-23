@@ -528,6 +528,7 @@ internal sealed partial class SceneAssetStoreTests
                     + arrayBytes(2, sizeof(int))
                     + (2L * arrayBytes(0, sizeof(int)))
                     + 256L
+                    + IntPtr.Size
                     + 2048L
                     + ScenePreparationDataBounds.GetReferenceBindingValidationArrayBytesUpperBound(
                         ReferenceBindingComponentGroupCount,
