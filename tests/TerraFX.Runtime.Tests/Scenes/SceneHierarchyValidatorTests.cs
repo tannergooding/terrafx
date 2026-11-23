@@ -572,6 +572,54 @@ internal sealed class SceneHierarchyValidatorTests
     }
 
     [Test]
+    public void ScenePlannerStateMachineMatchesSelectedRuntimeLayout()
+    {
+        const int SampleCount = 64;
+        const int ExpectedClassShellBytes = 224;
+        const int ExpectedStructBytes = 168;
+        var method = typeof(ScenePrefabExpansionPlanner).GetMethod(
+            "PrepareCoreAsync",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("The Scene planner preparation method is unavailable.");
+        var stateMachineType = method.GetCustomAttribute<AsyncStateMachineAttribute>()?.StateMachineType
+            ?? throw new InvalidOperationException("The Scene planner async state machine is unavailable.");
+
+        if (stateMachineType.IsValueType)
+        {
+            var sizeOf = typeof(Unsafe).GetMethod(nameof(Unsafe.SizeOf), BindingFlags.Public | BindingFlags.Static)
+                ?? throw new InvalidOperationException("The generic runtime size helper is unavailable.");
+            var stateMachineSize = sizeOf.MakeGenericMethod(stateMachineType).Invoke(null, null)
+                ?? throw new InvalidOperationException("The Scene planner state-machine size is unavailable.");
+            var measuredStructBytes = Convert.ToInt32(stateMachineSize, System.Globalization.CultureInfo.InvariantCulture);
+
+            TestContext.Progress.WriteLine($"Scene planner value-type state machine: {measuredStructBytes} B.");
+            Assert.That(measuredStructBytes, Is.EqualTo(ExpectedStructBytes));
+            return;
+        }
+
+        var warmInstances = new object[SampleCount];
+
+        for (var index = 0; index < warmInstances.Length; index++)
+        {
+            warmInstances[index] = RuntimeHelpers.GetUninitializedObject(stateMachineType);
+        }
+
+        GC.KeepAlive(warmInstances);
+        var measuredInstances = new object[SampleCount];
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var index = 0; index < measuredInstances.Length; index++)
+        {
+            measuredInstances[index] = RuntimeHelpers.GetUninitializedObject(stateMachineType);
+        }
+
+        var measuredClassBytes = (GC.GetAllocatedBytesForCurrentThread() - allocationStart) / SampleCount;
+        GC.KeepAlive(measuredInstances);
+        TestContext.Progress.WriteLine($"Scene planner class state-machine shell: {measuredClassBytes} B.");
+        Assert.That(measuredClassBytes, Is.EqualTo(ExpectedClassShellBytes));
+    }
+
+    [Test]
     public void WorkspaceByteReservationMatchesCompiledObjectAndArrayLayout()
     {
         const int SampleCount = 64;
