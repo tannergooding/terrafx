@@ -248,12 +248,15 @@ internal sealed class SceneSupportRegistrationTests
         var registry = (SceneWorldRegistry)world.GetSceneParticipant(support);
         TestContext.Progress.WriteLine(
             $"Scene reservation payload sizes: limits {Unsafe.SizeOf<SceneExpansionLimits>()} B, source {Unsafe.SizeOf<SceneExpansionReservationSource>()} B.");
+        _ = SceneExpansionReservationSource.ForWorld(world, registry, useControl: null, useRestoredStorage: false);
+        var sourceAllocationStart = GC.GetAllocatedBytesForCurrentThread();
 
         var worldSource = SceneExpansionReservationSource.ForWorld(
             world,
             registry,
             useControl: null,
             useRestoredStorage: false);
+        var sourceAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - sourceAllocationStart;
         using var worldReservation = worldSource.ReserveStorage(512)
             ?? throw new InvalidOperationException("The World-owned Scene reservation was unexpectedly refused.");
         Assert.That(worldReservation.DataBytes, Is.EqualTo(512));
@@ -269,6 +272,7 @@ internal sealed class SceneSupportRegistrationTests
         using var preparationWorkspace = preparationSource.ReserveWorkspace(256)
             ?? throw new InvalidOperationException("The preparation workspace reservation was unexpectedly refused.");
         Assert.Multiple(() => {
+            Assert.That(sourceAllocatedBytes, Is.Zero);
             Assert.That(preparationStorage.DataBytes, Is.EqualTo(512));
             Assert.That(preparationWorkspace.DataBytes, Is.EqualTo(256));
         });
