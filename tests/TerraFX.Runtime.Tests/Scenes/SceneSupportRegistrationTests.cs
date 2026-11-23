@@ -239,6 +239,42 @@ internal sealed class SceneSupportRegistrationTests
     }
 
     [Test]
+    public void SceneExpansionReservationSourceUsesWorldAndPreparationOwners()
+    {
+        var worldRegistrationBuilder = new WorldRegistrationBuilder(CreateSchemaRegistry());
+        var support = SceneSupport.CreateRegistration();
+        _ = worldRegistrationBuilder.RegisterSceneSupport(support);
+        using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+        var registry = (SceneWorldRegistry)world.GetSceneParticipant(support);
+        TestContext.Progress.WriteLine(
+            $"Scene reservation payload sizes: limits {Unsafe.SizeOf<SceneExpansionLimits>()} B, source {Unsafe.SizeOf<SceneExpansionReservationSource>()} B.");
+
+        var worldSource = SceneExpansionReservationSource.ForWorld(
+            world,
+            registry,
+            useControl: null,
+            useRestoredStorage: false);
+        using var worldReservation = worldSource.ReserveStorage(512)
+            ?? throw new InvalidOperationException("The World-owned Scene reservation was unexpectedly refused.");
+        Assert.That(worldReservation.DataBytes, Is.EqualTo(512));
+
+        using var use = world.AcquireGuidUse(workspaceLimit: 4096);
+        var preparationSource = SceneExpansionReservationSource.ForWorld(
+            world,
+            registry,
+            use.Control,
+            useRestoredStorage: false);
+        using var preparationStorage = preparationSource.ReserveStorage(512)
+            ?? throw new InvalidOperationException("The preparation-owned Scene reservation was unexpectedly refused.");
+        using var preparationWorkspace = preparationSource.ReserveWorkspace(256)
+            ?? throw new InvalidOperationException("The preparation workspace reservation was unexpectedly refused.");
+        Assert.Multiple(() => {
+            Assert.That(preparationStorage.DataBytes, Is.EqualTo(512));
+            Assert.That(preparationWorkspace.DataBytes, Is.EqualTo(256));
+        });
+    }
+
+    [Test]
     public void SceneStorageReservationsAreThreadSafeAndRespectTheWorldBudget()
     {
         var schemas = CreateSchemaRegistry();

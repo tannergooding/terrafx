@@ -919,14 +919,14 @@ internal static class ScenePrefabExpansionPlanner
         {
             var (sceneSource, rootCount, requiredBytes) = await CountAndMeasureAsync(sceneLease).ConfigureAwait(false);
 
-            if (_limits.ReserveWorkspace is { } reserveWorkspace)
+            if (_limits.HasWorkspaceReservation)
             {
-                _storageReservation = reserveWorkspace(requiredBytes)
+                _storageReservation = _limits.ReserveWorkspace(requiredBytes)
                     ?? throw new InvalidOperationException("The selected Scene preparation cap cannot reserve the retained Scene expansion plan.");
             }
-            else if (_limits.ReserveStorage is { } reserveStorage)
+            else if (_limits.HasStorageReservation)
             {
-                _storageReservation = reserveStorage(requiredBytes)
+                _storageReservation = _limits.ReserveStorage(requiredBytes)
                     ?? throw new InvalidOperationException("The World-owned state budget cannot reserve the retained Scene expansion plan.");
             }
 
@@ -1030,7 +1030,7 @@ internal static class ScenePrefabExpansionPlanner
             var prefabLeases = _prefabLeases
                 ?? throw new InvalidOperationException("The Scene expansion lost its Prefab lease set.");
 
-            if ((_limits.ReserveWorkspace is not null)
+            if (_limits.HasWorkspaceReservation
                 && ((_storageReservation is null)
                     || !_storageReservation.TryTransferWorkspaceToStorage()))
             {

@@ -241,16 +241,6 @@ public sealed class SceneLoader
         CancellationToken cancellationToken)
     {
         var useControl = preparationOwner.PreparationControl;
-        WorldSceneStorageReservation? ReserveStorage(long bytes)
-        {
-            return _world.TryReserveSceneStorage(_registry, bytes, useControl);
-        }
-
-        WorldSceneStorageReservation? ReserveWorkspace(long bytes)
-        {
-            return _world.TryReserveSceneWorkspace(_registry, useControl, bytes);
-        }
-
         var limits = new SceneExpansionLimits(
             options.MaximumExpandedEntities,
             options.MaximumPrefabEntities,
@@ -258,9 +248,12 @@ public sealed class SceneLoader
             options.MaximumPrefabDepth,
             options.MaximumHierarchyDepth,
             options.MaximumPreparationBytes,
-            ReserveStorage,
             rootExternalBindingCount: options.ExternalBindings.Length,
-            reserveWorkspace: ReserveWorkspace);
+            reservationSource: SceneExpansionReservationSource.ForWorld(
+                _world,
+                _registry,
+                useControl,
+                useRestoredStorage: false));
         return ScenePrefabExpansionPlanner.PrepareAsync(
             _assets,
             sceneId,
@@ -306,12 +299,6 @@ public sealed class SceneLoader
         WorldGuidUseControl? useControl,
         CancellationToken cancellationToken)
     {
-        Func<long, WorldSceneStorageReservation?> reserveStorage = useRestoredStorage
-            ? bytes => _world.TryReserveRestoredSceneStorage(_registry, bytes)
-            : bytes => _world.TryReserveSceneStorage(_registry, bytes, useControl);
-        var reserveWorkspace = (useControl is null)
-            ? reserveStorage
-            : bytes => _world.TryReserveSceneWorkspace(_registry, useControl, bytes);
         var limits = new SceneExpansionLimits(
             options.MaximumExpandedEntities,
             options.MaximumPrefabEntities,
@@ -319,9 +306,12 @@ public sealed class SceneLoader
             options.MaximumPrefabDepth,
             options.MaximumHierarchyDepth,
             (useControl is null) ? _world.MaximumOwnedStateBytes : options.MaximumPreparationBytes,
-            reserveStorage,
             rootExternalBindingCount: options.ExternalBindings.Length,
-            reserveWorkspace: (useControl is null) ? null : reserveWorkspace);
+            reservationSource: SceneExpansionReservationSource.ForWorld(
+                _world,
+                _registry,
+                useControl,
+                useRestoredStorage));
         var plan = (packageLease is null)
             ? await ScenePrefabExpansionPlanner.PrepareAsync(
                 _assets,
@@ -353,10 +343,22 @@ public sealed class SceneLoader
 
             if (resourcePreparer is not null)
             {
+                WorldSceneStorageReservation? ReserveStorage(long bytes)
+                {
+                    return limits.ReserveStorage(bytes);
+                }
+
+                WorldSceneStorageReservation? ReserveWorkspace(long bytes)
+                {
+                    return limits.HasWorkspaceReservation
+                        ? limits.ReserveWorkspace(bytes)
+                        : limits.ReserveStorage(bytes);
+                }
+
                 var preparedAssets = await resourcePreparer.PrepareAsync(
                     plan,
-                    reserveStorage,
-                    reserveWorkspace,
+                    ReserveStorage,
+                    ReserveWorkspace,
                     cancellationToken).ConfigureAwait(false);
 
                 if (preparedAssets is not null)
