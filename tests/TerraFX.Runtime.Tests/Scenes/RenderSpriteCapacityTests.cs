@@ -202,8 +202,11 @@ internal sealed partial class SceneAssetStoreTests
             }
 
             var loader = new SceneLoader(world, assets);
-            var firstInstance = ActivateScene(loader, world, new AssetId(firstSceneAssetId));
-            var secondInstance = ActivateScene(loader, world, new AssetId(secondSceneAssetId));
+            var largeSceneOptions = new SceneLoadOptions {
+                MaximumPreparationBytes = 536_870_912,
+            };
+            var firstInstance = ActivateScene(loader, world, new AssetId(firstSceneAssetId), largeSceneOptions);
+            var secondInstance = ActivateScene(loader, world, new AssetId(secondSceneAssetId), largeSceneOptions);
             Assert.That(firstInstance.EntityCount, Is.EqualTo(maximumDrawInstances / 2));
             Assert.That(secondInstance.EntityCount, Is.EqualTo(maximumDrawInstances / 2));
             var renderer = Renderer.CreateHeadless();
@@ -228,7 +231,7 @@ internal sealed partial class SceneAssetStoreTests
                     snapshot.SpriteCameraOrders[1].DrawIndices,
                     Has.Length.EqualTo(maximumDrawInstances));
 
-                var additionalInstance = ActivateScene(loader, world, new AssetId(additionalSceneAssetId));
+                var additionalInstance = ActivateScene(loader, world, new AssetId(additionalSceneAssetId), largeSceneOptions);
                 Assert.That(() => renderer.Extract(world, options), Throws.InvalidOperationException);
                 var overLimitPublication = world.Step().Publication;
                 var overLimitFrame = overLimitPublication.Frame2

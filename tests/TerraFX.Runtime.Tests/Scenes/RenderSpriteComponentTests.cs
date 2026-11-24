@@ -421,6 +421,7 @@ internal sealed partial class SceneAssetStoreTests
             var preparedAssets = resourcePreparer.PrepareAsync(
                 plan,
                 bytes => world.TryReserveSceneStorage(sceneRegistry, bytes),
+                bytes => world.TryReserveSceneStorage(sceneRegistry, bytes),
                 System.Threading.CancellationToken.None).GetAwaiter().GetResult();
             plan.AttachPreparedAssets(
                 preparedAssets ?? throw new InvalidOperationException("The Sprite asset references produced no prepared bundle."));

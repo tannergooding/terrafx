@@ -70,32 +70,16 @@ internal sealed partial class SceneAssetStoreTests
 
             RenderExtractionResponse? response = null;
             var cameraId = Guid.Empty;
-            var nextTickBeforeExtraction = 0L;
-
-            await host.InvokeAsync(context => {
+            await HostedWorldCommitTestHelpers.InvokeAtCommittedFrameAsync(host, world!, selectedWorld => {
                 if (!activation.Instance!.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var cameraEntity))
                 {
                     throw new InvalidOperationException("The activated Scene did not retain its camera Entity.");
                 }
 
-                cameraId = world!.GetEntityId(cameraEntity);
-                nextTickBeforeExtraction = world.NextTickIndex;
-            }).ConfigureAwait(false);
-
-            var nextTickAfterExtraction = nextTickBeforeExtraction;
-
-            for (var attempt = 0; (attempt < 100) && (nextTickAfterExtraction <= nextTickBeforeExtraction); attempt++)
-            {
-                await Task.Delay(25).ConfigureAwait(false);
-                await host!.InvokeAsync(_ => nextTickAfterExtraction = world!.NextTickIndex).ConfigureAwait(false);
-            }
-
-            Assert.That(nextTickAfterExtraction, Is.GreaterThan(nextTickBeforeExtraction));
-
-            await host!.InvokeAsync(_ => {
-                var currentFrame = world!.CurrentFrame3;
+                cameraId = selectedWorld.GetEntityId(cameraEntity);
+                var currentFrame = selectedWorld.CurrentFrame3;
                 response = host.Renderer.Extract(
-                    world,
+                    selectedWorld,
                     new RenderExtractionOptions3D(
                         currentFrame,
                         new PixelSize(640, 480),
@@ -125,10 +109,11 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(committedFrame.Equals(nextFrame), Is.True);
             RenderExtractionResponse? changedFrameResponse = null;
 
-            await host.InvokeAsync(_ => changedFrameResponse = host.Renderer.Extract(
-                    world!,
+            await HostedWorldCommitTestHelpers.InvokeAtCommittedFrameAsync(host, world!, selectedWorld =>
+                changedFrameResponse = host.Renderer.Extract(
+                    selectedWorld,
                     new RenderExtractionOptions3D(
-                        world!.CurrentFrame3,
+                        selectedWorld.CurrentFrame3,
                         new PixelSize(640, 480),
                         [cameraId]))).ConfigureAwait(false);
 
@@ -240,12 +225,12 @@ internal sealed partial class SceneAssetStoreTests
             using var prepared = await loader!.PrepareAsync(new AssetId(3), new SceneLoadOptions()).ConfigureAwait(false);
             var activation = await loader.ActivateAsync(prepared).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(activation.Status, Is.EqualTo(SceneActivationStatus.Activated));
-            await Task.Delay(50).ConfigureAwait(false);
 
             Task<SaveReceipt>? saveTask = null;
-            await host.InvokeAsync(_ => saveTask = host.Persistence.SaveAsync(
-                world!,
-                new SaveOptions(validSavePath, SaveDurabilityPolicy.BestEffort))).ConfigureAwait(false);
+            await HostedWorldCommitTestHelpers.InvokeAtPersistenceCaptureAsync(host, world!, selectedWorld =>
+                saveTask = host.Persistence.SaveAsync(
+                    selectedWorld,
+                    new SaveOptions(validSavePath, SaveDurabilityPolicy.BestEffort))).ConfigureAwait(false);
             var validReceipt = await (saveTask
                 ?? throw new InvalidOperationException("The active Scene Save operation was not admitted.")).ConfigureAwait(false);
 
@@ -258,9 +243,10 @@ internal sealed partial class SceneAssetStoreTests
             await host.Assets.ReplacePackageAsync(
                 new AssetStoreOptions(replacementPackagePath, SHA256.HashData(replacementPackage), assetRegistration),
                 System.Threading.CancellationToken.None).ConfigureAwait(false);
-            await host.InvokeAsync(_ => saveTask = host.Persistence.SaveAsync(
-                world!,
-                new SaveOptions(mismatchedSavePath, SaveDurabilityPolicy.BestEffort))).ConfigureAwait(false);
+            await HostedWorldCommitTestHelpers.InvokeAtPersistenceCaptureAsync(host, world!, selectedWorld =>
+                saveTask = host.Persistence.SaveAsync(
+                    selectedWorld,
+                    new SaveOptions(mismatchedSavePath, SaveDurabilityPolicy.BestEffort))).ConfigureAwait(false);
             var mismatchedReceipt = await (saveTask
                 ?? throw new InvalidOperationException("The mismatched active Scene Save operation was not admitted.")).ConfigureAwait(false);
 

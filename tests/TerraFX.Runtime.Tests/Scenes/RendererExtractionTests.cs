@@ -27,9 +27,10 @@ internal sealed partial class SceneAssetStoreTests
     private static SceneInstance ActivateScene(
         SceneLoader loader,
         World world,
-        AssetId assetId)
+        AssetId assetId,
+        SceneLoadOptions? options = null)
     {
-        using var prepared = loader.PrepareAsync(assetId, new SceneLoadOptions()).GetAwaiter().GetResult();
+        using var prepared = loader.PrepareAsync(assetId, options ?? new SceneLoadOptions()).GetAwaiter().GetResult();
         var activation = loader.ActivateAsync(prepared);
         world.PumpControlBoundary();
         var receipt = activation.GetAwaiter().GetResult();
